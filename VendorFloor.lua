@@ -152,6 +152,16 @@ local function VendorPrice(item)
 	return sell or 0, name, link, icon
 end
 
+-- Units per auction, capped at the item's stack size. Some auction house versions report
+-- grouped or listed counts for single items (a bag "830×" for one buyout), which turned
+-- one auction above the vendor price into hundreds of fake units below it.
+local function Units(item, quantity)
+	quantity = max(floor(quantity or 1), 1)
+	local stack = select(8, GetItemInfo(item))
+	if stack and stack > 0 and quantity > stack then quantity = stack end
+	return quantity
+end
+
 local function IsIgnored(itemID)
 	return db.ignore and db.ignore[itemID] and true or false
 end
@@ -421,10 +431,10 @@ local function ItemOffer(d)
 	for i = 1, AH.GetNumItemSearchResults(d.key) do
 		local info = AH.GetItemSearchResultInfo(d.key, i)
 		if info and info.auctionID and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem then
-			local quantity = max(info.quantity or 1, 1)
+			local quantity = Units(info.itemLink or d.id, info.quantity)
 			local vendor = info.itemLink and VendorPrice(info.itemLink) or d.vendor
 			local unit = info.buyoutAmount / quantity
-			if vendor and vendor - unit >= db.minProfit then
+			if vendor and unit >= 1 and vendor - unit >= db.minProfit then
 				count, profit = count + quantity, profit + (vendor - unit) * quantity
 				if not best or unit < best.unit then
 					best = { auctionID = info.auctionID, buyout = info.buyoutAmount, quantity = quantity,
@@ -605,12 +615,12 @@ local function FullRecord(index)
 	if not itemID then return true end
 	if not hasAll then return false end
 	if not buyout or buyout <= 0 or (owner and owner == full.player) or IsIgnored(itemID) then return true end
-	count = max(count or 1, 1)
 	local link = AH.GetReplicateItemLink and AH.GetReplicateItemLink(index)
 	local vendor, name, itemLink, icon = VendorPrice(link or itemID)
 	if vendor == nil then return false end
+	count = Units(link or itemID, count)
 	local unit = buyout / count
-	if vendor <= 0 or vendor - unit < db.minProfit then return true end
+	if vendor <= 0 or unit < 1 or vendor - unit < db.minProfit then return true end
 	local key, plain = KeyFor(itemID, link)
 	local k = DealKey(key)
 	local g = full.found[k]

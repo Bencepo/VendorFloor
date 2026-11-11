@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.4.1-beta
+
+- Fix: single items (e.g. bags) could show hundreds of units for one auction, with a unit price below 1 copper and a huge fake profit. Units per auction are now capped at the stack size, and prices below 1 copper per unit are ignored.
+
 ## 0.4.0-beta
 
 - Ledger per day and per item: spending, sales and real profit per calendar day (last 120 days), and per item how many were bought and sold and how long they waited until the sale.
