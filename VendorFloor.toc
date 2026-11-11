@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: VendorFloor
+## Notes: Findet Auktionen unter Händlerpreis und kauft sie per Klick. Eigenes kleines Fenster neben dem Auktionshaus, läuft neben Auctionator. /vfloor
+## Notes-enUS: Finds auctions listed below vendor price and buys them on click. Small window next to the auction house, works alongside Auctionator. /vfloor
+## Author: Bencepo
+## Version: 0.1.0
+## X-License: All Rights Reserved
+## SavedVariables: VendorFloorDB
+## OptionalDeps: Auctionator
+
+VendorFloor.lua
