@@ -300,10 +300,46 @@ local function SellableUnits()
 	return n
 end
 
+-- Sales are counted from the bags, not from the button: whatever sells a bought item at a
+-- merchant (this button, a junk seller addon, a right-click) lowers its count in the bags.
+-- The counts are kept up to date outside the merchant, so a sale right when the merchant
+-- opens is counted as well.
+local bagCounts, merchantOpen = nil, false
+
+local function CountBought()
+	local db = DB()
+	local c = {}
+	if not db then return c end
+	for bag = 0, 4 do
+		for slot = 1, NumSlots(bag) do
+			local itemID, count = ContainerItem(bag, slot)
+			if itemID and db.bought[itemID] then c[itemID] = (c[itemID] or 0) + (count or 1) end
+		end
+	end
+	return c
+end
+
+local function TrackBags()
+	local now = CountBought()
+	if merchantOpen and bagCounts then
+		local sold = false
+		for itemID, before in pairs(bagCounts) do
+			local gone = before - (now[itemID] or 0)
+			local price = gone > 0 and SellPrice(itemID)
+			if price and price > 0 then
+				ns.RecordSale(itemID, gone, price * gone)
+				sold = true
+			end
+		end
+		if sold then now = CountBought() end
+	end
+	bagCounts = now
+end
+
 local function Sell()
 	local db = DB()
 	if not db then return end
-	local stacks, units, income, profitBefore = 0, 0, 0, session.sold - session.soldCost
+	local stacks, units, income, profit = 0, 0, 0, 0
 	local left = {}
 	for itemID, b in pairs(db.bought) do left[itemID] = b.units end
 	for bag = 0, 4 do
@@ -313,8 +349,9 @@ local function Sell()
 			local price = itemID and SellPrice(itemID)
 			if itemID and left[itemID] and not locked and count <= left[itemID] and price and price > 0 then
 				UseItem(bag, slot)
+				local bought = db.bought[itemID]
+				profit = profit + price * count - (bought and bought.units > 0 and bought.cost / bought.units * count or 0)
 				left[itemID] = left[itemID] - count
-				ns.RecordSale(itemID, count, price * count)
 				stacks, units, income = stacks + 1, units + count, income + price * count
 			end
 		end
@@ -322,8 +359,7 @@ local function Sell()
 	if stacks == 0 then
 		Print(L["Nothing to sell."])
 	else
-		Print(L["Sold %d items for %s (profit %s)."]:format(units, Money(income),
-			Money(session.sold - session.soldCost - profitBefore)))
+		Print(L["Sold %d items for %s (profit %s)."]:format(units, Money(income), Money(profit)))
 	end
 	Changed()
 end
@@ -369,7 +405,7 @@ end
 
 local events = CreateFrame("Frame")
 for _, event in ipairs({ "MAIL_SHOW", "MAIL_INBOX_UPDATE", "MAIL_CLOSED", "MERCHANT_SHOW", "MERCHANT_CLOSED",
-	"BAG_UPDATE_DELAYED" }) do
+	"BAG_UPDATE_DELAYED", "PLAYER_ENTERING_WORLD" }) do
 	pcall(events.RegisterEvent, events, event)
 end
 events:SetScript("OnEvent", function(_, event)
@@ -383,13 +419,19 @@ events:SetScript("OnEvent", function(_, event)
 	elseif event == "MAIL_CLOSED" then
 		if collecting then StopCollecting() end
 		if mailButton then mailButton:Hide() end
+	elseif event == "BAG_UPDATE_DELAYED" or event == "PLAYER_ENTERING_WORLD" then
+		TrackBags()
 	elseif event == "MERCHANT_SHOW" then
+		merchantOpen = true
+		TrackBags()
 		if not sellButton and MerchantFrame then
 			sellButton = MakeButton(MerchantFrame, Sell,
 				L["Sells the items VendorFloor bought, at most as many as it bought."], L["Sell purchases (%d)"]:format(0))
 		end
 		if sellButton then sellButton:Show() end
 	elseif event == "MERCHANT_CLOSED" then
+		TrackBags()
+		merchantOpen = false
 		if sellButton then sellButton:Hide() end
 	end
 	ns.UpdateTradeButtons()

@@ -20,4 +20,4 @@ globals = {
 	"BINDING_NAME_VENDORFLOOR_BUYNEXT",
 }
 
-exclude_files = { ".release/**" }
+exclude_files = { ".release/**", "Libs/**" }

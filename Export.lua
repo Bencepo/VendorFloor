@@ -205,6 +205,22 @@ local function MinimapButton(name, icon, db, onClick, onTooltip)
 	return b
 end
 
+-- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
+-- managers can collect it. The own button above is only used if the libraries are missing.
+local function MinimapIcon(name, icon, db, onClick, onTooltip)
+	local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
+	local dbi = LibStub and LibStub("LibDBIcon-1.0", true)
+	if not (ldb and dbi) then return MinimapButton(name .. "MinimapButton", icon, db, onClick, onTooltip) end
+	if db.minimapPos == nil and db.angle then db.minimapPos = db.angle % 360 end
+	local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
+		type = "launcher", label = name, icon = icon,
+		OnClick = function(_, button) onClick(button) end,
+		OnTooltipShow = function(tip) onTooltip(tip) end,
+	})
+	if not dbi:IsRegistered(name) then dbi:Register(name, obj, db) end
+	return { SetShown = function(_, show) if show then dbi:Show(name) else dbi:Hide(name) end end }
+end
+
 local minimapButton
 
 local function MinimapClick(button)
@@ -248,9 +264,13 @@ local minimapEvents = CreateFrame("Frame")
 minimapEvents:RegisterEvent("PLAYER_LOGIN")
 minimapEvents:SetScript("OnEvent", function()
 	if not ns.db then return end
-	local ok, b = pcall(MinimapButton, "VendorFloorMinimapButton", "Interface\\Icons\\INV_Misc_Coin_02",
+	local ok, b = pcall(MinimapIcon, "VendorFloor", "Interface\\Icons\\INV_Misc_Coin_02",
 		MinimapSettings(), MinimapClick, MinimapTooltip)
-	if ok then minimapButton = b end
+	if ok then
+		minimapButton = b
+	else
+		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r minimap button failed: " .. tostring(b))
+	end
 end)
 
 function VendorFloor_OnCompartmentClick(_, button)
