@@ -1,7 +1,14 @@
 # Changelog
 
-## 0.4.1-beta
+## 0.5.0-beta
 
+- Three tabs, never mixed: **Vendor** (below what a merchant pays), **Market** (far below the usual price, to sell again on the auction house) and **Disenchant** (green and blue weapons and armor below what disenchanting them brings).
+- Price history: every full scan stores the usual price of each item (median, last 14 days). The market tab uses it; it gets better with every day of full scans.
+- Disenchant values after the Classic disenchant tables, with the materials at their usual price (an estimate: WoW Forever may differ).
+- Posting: in the market tab a "Post" button puts the next item bought there on the auction house for 24 hours, just under its usual price and never below cost plus the minimum profit. One auction per click. Sales come from the seller mails and go into the ledger.
+- Minimum profit in percent and per bag slot (whole auction), for all tabs: `/vfloor percent 20`, `/vfloor slot 10s`, also in the settings.
+- Quick rounds: items found below vendor price before are kept on a watch list; continuous mode checks the most frequent of them one by one (two quick rounds, then one full item list), and runs a full scan whenever one is allowed. `/vfloor quick` starts one by hand.
+- Taskbar flash on new finds while the game is in the background (`/vfloor flash`, settings).
 - New look: flat dark window in the colours of the web page, gold accents, flat buttons (also at the mailbox and merchant), a "Continuous" switch, zebra rows and a clearer progress bar. Larger text throughout; the buy button shows its amounts in dark text so they stay readable on gold.
 - Fix: single items (e.g. bags) could show hundreds of units for one auction, with a unit price below 1 copper and a huge fake profit. Units per auction are now capped at the stack size, and prices below 1 copper per unit are ignored.
 - Fixed: the "Sell purchases" button at a merchant (and "Collect purchases" at the mailbox) could appear as an empty red bar without its text until the bags changed.

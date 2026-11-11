@@ -78,10 +78,48 @@ local function Item(itemID)
 end
 
 -- A purchase: qty units of itemID for cost copper, worth value copper at a vendor.
-function ns.RecordBuy(itemID, qty, cost, value)
+-- Market and disenchant purchases are kept apart: they are not sold to a merchant.
+-- Market: what was bought, to post on the auction house (sales come from the mail invoices).
+-- Disenchant: only the spending, the materials are the player's.
+local function RecordOther(itemID, qty, cost, mode)
+	local db = DB()
+	local field = mode == "market" and "mtotal" or "detotal"
+	db[field] = db[field] or { buys = 0, spent = 0, sold = 0, soldCost = 0 }
+	Add(db[field], "buys", 1)
+	Add(db[field], "spent", cost or 0)
+	if mode == "market" then
+		db.mbought = db.mbought or {}
+		local b = db.mbought[itemID] or { units = 0, cost = 0 }
+		b.units, b.cost, b.ts = b.units + qty, b.cost + (cost or 0), time()
+		b.name = b.name or GetItemInfo(itemID)
+		db.mbought[itemID] = b
+	end
+	Changed()
+end
+
+-- A sale on the auction house of something bought for the market (from the seller invoice).
+local function RecordMarketSale(itemID, qty, income)
+	local db = DB()
+	local b = db.mbought and db.mbought[itemID]
+	if not b or b.units <= 0 then return end
+	qty = min(max(qty or 1, 1), b.units)
+	local cost = b.cost / b.units * qty
+	b.units, b.cost = b.units - qty, max(b.cost - cost, 0)
+	if b.units <= 0 then db.mbought[itemID] = nil end
+	db.mtotal = db.mtotal or { buys = 0, spent = 0, sold = 0, soldCost = 0 }
+	Add(db.mtotal, "sold", income)
+	Add(db.mtotal, "soldCost", cost)
+	Changed()
+end
+
+function ns.RecordBuy(itemID, qty, cost, value, mode)
 	local db = DB()
 	if not db or not itemID then return end
 	qty = max(floor(qty or 1), 1)
+	if mode == "market" or mode == "de" then
+		RecordOther(itemID, qty, cost, mode)
+		return
+	end
 	local b = db.bought[itemID] or { units = 0, cost = 0 }
 	local now = time()
 	-- average purchase time of the units held, for the holding time on sale
@@ -141,10 +179,53 @@ function ns.LedgerLine()
 end
 
 function ns.TotalLine()
-	local t = DB().total
+	local db = DB()
+	local t = db.total
 	local _, unsold = ns.Unsold()
-	return L["Total: %d buys, spent %s, sold %s, profit %s, still to sell %s"]:format(t.buys or 0,
+	local line = L["Total: %d buys, spent %s, sold %s, profit %s, still to sell %s"]:format(t.buys or 0,
 		Money(t.spent or 0), Money(t.sold or 0), Money((t.sold or 0) - (t.soldCost or 0)), Money(unsold))
+	local m = db.mtotal
+	if m then
+		line = line .. " | " .. L["Market: %d buys, spent %s, sold %s, profit %s"]:format(m.buys or 0, Money(m.spent or 0),
+			Money(m.sold or 0), Money((m.sold or 0) - (m.soldCost or 0)))
+	end
+	local de = db.detotal
+	if de then
+		line = line .. " | " .. L["Disenchant: %d buys, spent %s"]:format(de.buys or 0, Money(de.spent or 0))
+	end
+	return line
+end
+
+---------------------------------------------------------------------------
+-- Auction house sales of market purchases: the seller invoices in the mailbox.
+-- Each invoice counts once (remembered by item, price and when the mail expires).
+---------------------------------------------------------------------------
+
+local function ScanInvoices()
+	local db = DB()
+	if not (db and db.mbought and next(db.mbought) and GetInboxNumItems and GetInboxInvoiceInfo) then return end
+	db.invoices = db.invoices or {}
+	local byName = {}
+	for itemID, b in pairs(db.mbought) do
+		local name = b.name or GetItemInfo(itemID)
+		if name then byName[name] = itemID end
+	end
+	local now = time()
+	for i = 1, GetInboxNumItems() do
+		local invoiceType, itemName, _, bid, buyout, _, consignment, _, _, _, count = GetInboxInvoiceInfo(i)
+		local itemID = invoiceType == "seller" and itemName and byName[itemName]
+		if itemID then
+			local daysLeft = select(7, GetInboxHeaderInfo(i)) or 0
+			local id = itemName .. ":" .. tostring(buyout or bid or 0) .. ":" .. floor((now + daysLeft * 86400) / 600)
+			if not db.invoices[id] then
+				db.invoices[id] = now
+				RecordMarketSale(itemID, tonumber(count) or 1, (buyout or bid or 0) - (consignment or 0))
+			end
+		end
+	end
+	for id, at in pairs(db.invoices) do
+		if now - at > 35 * 86400 then db.invoices[id] = nil end
+	end
 end
 
 -- Read-only view of the ledger for other addons (LevelTrail reads it if installed).
@@ -410,6 +491,7 @@ for _, event in ipairs({ "MAIL_SHOW", "MAIL_INBOX_UPDATE", "MAIL_CLOSED", "MERCH
 end
 events:SetScript("OnEvent", function(_, event)
 	if not DB() then return end
+	if event == "MAIL_SHOW" or event == "MAIL_INBOX_UPDATE" then pcall(ScanInvoices) end
 	if event == "MAIL_SHOW" then
 		if not mailButton and MailFrame then
 			mailButton = MakeButton(MailFrame, StartCollecting,
