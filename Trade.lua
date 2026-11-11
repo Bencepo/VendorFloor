@@ -43,19 +43,57 @@ end
 
 local function Add(t, field, amount) t[field] = (t[field] or 0) + amount end
 
+local KEEP_DAYS = 120
+
+-- Spending, sales and profit per calendar day (last 120 days).
+local function Day()
+	local db = DB()
+	db.days = db.days or {}
+	local key = date("%Y-%m-%d")
+	local d = db.days[key]
+	if not d then
+		d = {}
+		db.days[key] = d
+		local keys = {}
+		for k in pairs(db.days) do keys[#keys + 1] = k end
+		if #keys > KEEP_DAYS then
+			table.sort(keys)
+			for i = 1, #keys - KEEP_DAYS do db.days[keys[i]] = nil end
+		end
+	end
+	return d
+end
+
+-- Totals per item, for the best items and their holding time.
+local function Item(itemID)
+	local db = DB()
+	db.items = db.items or {}
+	local it = db.items[itemID]
+	if not it then
+		it = {}
+		db.items[itemID] = it
+	end
+	if not it.name then it.name = GetItemInfo(itemID) end
+	return it
+end
+
 -- A purchase: qty units of itemID for cost copper, worth value copper at a vendor.
 function ns.RecordBuy(itemID, qty, cost, value)
 	local db = DB()
 	if not db or not itemID then return end
 	qty = max(floor(qty or 1), 1)
 	local b = db.bought[itemID] or { units = 0, cost = 0 }
+	local now = time()
+	-- average purchase time of the units held, for the holding time on sale
+	b.ts = floor(((b.ts or now) * b.units + now * qty) / (b.units + qty))
 	b.units, b.cost = b.units + qty, b.cost + (cost or 0)
 	db.bought[itemID] = b
-	for _, t in ipairs({ session, db.total }) do
+	for _, t in ipairs({ session, db.total, Day(), Item(itemID) }) do
 		Add(t, "buys", 1)
 		Add(t, "spent", cost or 0)
 		Add(t, "value", value or 0)
 	end
+	Add(Item(itemID), "units", qty)
 	Changed()
 end
 
@@ -66,11 +104,18 @@ function ns.RecordSale(itemID, qty, income)
 	if not b or b.units <= 0 then return end
 	qty = min(qty, b.units)
 	local cost = b.cost / b.units * qty
+	local held = b.ts and max(time() - b.ts, 0) or nil
 	b.units, b.cost = b.units - qty, max(b.cost - cost, 0)
 	if b.units <= 0 then db.bought[itemID] = nil end
-	for _, t in ipairs({ session, db.total }) do
+	for _, t in ipairs({ session, db.total, Day(), Item(itemID) }) do
 		Add(t, "sold", income)
 		Add(t, "soldCost", cost)
+	end
+	local it = Item(itemID)
+	Add(it, "soldUnits", qty)
+	if held then
+		Add(it, "heldSec", held * qty)
+		Add(it, "heldUnits", qty)
 	end
 end
 
@@ -100,6 +145,22 @@ function ns.TotalLine()
 	local _, unsold = ns.Unsold()
 	return L["Total: %d buys, spent %s, sold %s, profit %s, still to sell %s"]:format(t.buys or 0,
 		Money(t.spent or 0), Money(t.sold or 0), Money((t.sold or 0) - (t.soldCost or 0)), Money(unsold))
+end
+
+-- Read-only view of the ledger for other addons (LevelTrail reads it if installed).
+-- Amounts in copper; days maps "YYYY-MM-DD" to { buys, spent, sold, soldCost }.
+function VendorFloor_Ledger()
+	local db = DB()
+	if not db or not db.total then return nil end
+	local t = db.total
+	local units, unsold = ns.Unsold()
+	local days = {}
+	for k, d in pairs(db.days or {}) do
+		days[k] = { buys = d.buys or 0, spent = d.spent or 0, sold = d.sold or 0, soldCost = floor(d.soldCost or 0) }
+	end
+	return { version = 1, buys = t.buys or 0, spent = t.spent or 0, sold = t.sold or 0,
+		soldCost = floor(t.soldCost or 0), profit = floor((t.sold or 0) - (t.soldCost or 0)),
+		unsoldUnits = units, unsoldValue = unsold, days = days }
 end
 
 function ns.ForgetPurchases()

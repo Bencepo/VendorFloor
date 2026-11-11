@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0-beta
+
+- Ledger per day and per item: spending, sales and real profit per calendar day (last 120 days), and per item how many were bought and sold and how long they waited until the sale.
+- `/vfloor export`: the ledger as text to copy into the new web page https://bencepo.github.io/vendorfloor/ (profit per day, best items, holding time). Nothing is uploaded; the page runs in your browser.
+- LevelTrail, if installed, shows your VendorFloor profit next to your gold curve and per play session.
+
 ## 0.3.0-beta
 
 - Full scan: reads every auction of the auction house at once (allowed every 15 minutes). Each auction comes with its buyout, so finds appear complete and without checking each item. Between full scans the normal rounds keep running.

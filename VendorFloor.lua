@@ -17,6 +17,7 @@ local floor, min, max = math.floor, math.min, math.max
 
 local VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
 if VERSION == "" or VERSION:find("^@") then VERSION = "dev" end
+ns.VERSION = VERSION
 
 local PREFIX = "|cff33ff99VendorFloor:|r "
 local ROWS, ROW_HEIGHT = 12, 20
@@ -1309,6 +1310,7 @@ local function Help()
 		L["/vfloor ignore list | clear – show or clear the ignore list"],
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
+		L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"],
 		L["/vfloor forget – forget the purchases still to sell"],
 		L["/vfloor reset – reset the window position"],
 		L["/vfloor options – open the settings"],
@@ -1342,6 +1344,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(#names > 0 and L["Ignore list: %s"]:format(table.concat(names, ", ")) or L["The ignore list is empty."])
 	elseif cmd == "stats" then
 		Print(ns.TotalLine())
+	elseif cmd == "export" then
+		ns.ShowExport()
 	elseif cmd == "full" then
 		StartFull()
 	elseif cmd == "forget" then

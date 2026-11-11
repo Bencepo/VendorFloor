@@ -12,3 +12,4 @@
 Locales.lua
 VendorFloor.lua
 Trade.lua
+Export.lua

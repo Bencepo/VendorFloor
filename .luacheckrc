@@ -11,6 +11,7 @@ ignore = { "113", "212/self" }
 globals = {
 	"VendorFloorDB",
 	"VendorFloor_BuyNext",
+	"VendorFloor_Ledger",
 	"SLASH_VENDORFLOOR1",
 	"SLASH_VENDORFLOOR2",
 	"SlashCmdList",

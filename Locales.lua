@@ -97,6 +97,10 @@ L["/vfloor full – start a full scan (every 15 minutes)"] = "/vfloor full – V
 L["/vfloor stats – totals since install"] = "/vfloor stats – Bilanz seit der Installation"
 L["/vfloor forget – forget the purchases still to sell"] = "/vfloor forget – gemerkte, noch nicht verkaufte Käufe vergessen"
 L["Tracked purchases cleared."] = "Gemerkte Käufe gelöscht."
+L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"] = "/vfloor export – Bilanz zum Kopieren nach bencepo.github.io/vendorfloor"
+L["Press Ctrl+C, then paste it at %s. Esc closes."] = "Strg+C drücken, dann auf %s einfügen. Esc schließt."
+L["Export failed: %s"] = "Export fehlgeschlagen: %s"
+L["%d buys, profit %s, still to sell %s"] = "%d Käufe, Gewinn %s, noch zu verkaufen %s"
 L["/vfloor reset – reset the window position"] = "/vfloor reset – Fensterposition zurücksetzen"
 L["/vfloor options – open the settings"] = "/vfloor options – Einstellungen öffnen"
 
