@@ -32,6 +32,7 @@ local MARKET_DAYS = 14         -- days of price history kept per item (one value
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
 local QUICK_ITEMS = 40         -- items a quick round checks
 local MODES = { "vendor", "market", "de" }
+local TABS = { "vendor", "market", "de", "craft" }
 
 local defaults = {
 	minPercent = 0,       -- minimum profit in percent of the price (0: off)
@@ -825,6 +826,7 @@ ns.MarketValue = MarketValue
 local function PlainKey(itemID)
 	return DealKey(AH.MakeItemKey and AH.MakeItemKey(itemID) or { itemID = itemID })
 end
+ns.PlainKey = PlainKey
 
 ---------------------------------------------------------------------------
 -- Disenchanting: expected materials of green and blue weapons and armor by item level,
@@ -963,6 +965,7 @@ local function FinishFull(failed)
 		if not found[d.k] and d ~= buy.deal then RemoveDeal(d) end
 	end
 	full.items = nil
+	ns.craftDirty = true
 	SortDeals()
 	SetStatus(L["Full scan done: %d auctions. Vendor %d, market %d, disenchant %d finds."]:format(full.count or 0,
 		counts.vendor, counts.market, counts.de))
@@ -1183,16 +1186,53 @@ local TAB_HINT = {
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
 	market = "Auctions far below their usual price, to sell again on the auction house. Filled by full scans; the usual price gets better with every day of full scans.",
 	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). Filled by full scans. Needs Enchanting.",
+	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes; prices come from full scans and merchants you visit.",
 }
+
+-- Crafting tab: rows show recipes instead of auctions.
+local function RefreshCraft()
+	local list, miss = {}, 0
+	if ns.CraftResults then list, miss = ns.CraftResults() end
+	local maxOffset = max(#list - ROWS, 0)
+	offset = max(min(offset, maxOffset), 0)
+	ui.empty:SetShown(#list == 0)
+	ui.empty:SetText(L[TAB_HINT.craft])
+	for i = 1, ROWS do
+		local row, c = ui.rows[i], list[i + offset]
+		row.deal, row.craft = nil, c
+		if c then
+			row.icon:SetTexture(c.icon)
+			row.name:SetText((c.link or c.name) .. (c.qty ~= 1 and (" ×" .. c.qty) or ""))
+			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s)|r"):format(Money(c.cost), Money(c.revenue),
+				Money(c.profit), c.route == "ah" and L["AH"] or L["merchant"]))
+			row.mark:Hide()
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	local profs = ns.CraftProfessions and ns.CraftProfessions() or {}
+	ui.summary:SetText(#list > 0 and L["%d crafts with profit · %s"]:format(#list, table.concat(profs, ", ")) or "")
+	ui.count:SetText(#list > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #list), #list) or "")
+	if miss > 0 then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
+	ui.action:SetText(L["Read recipes: open a profession window"])
+	ui.action:SetEnabled(false)
+	ui.loop:SetChecked(db.loop)
+	if ns.UpdatePostButton then ns.UpdatePostButton() end
+end
 
 Refresh = function()
 	if not ui then return end
 	local view = View()
 	local maxOffset = max(#view - ROWS, 0)
 	offset = max(min(offset, maxOffset), 0)
-	for _, mode in ipairs(MODES) do
+	for _, mode in ipairs(TABS) do
 		local n = 0
-		for _, d in ipairs(order) do if (d.mode or "vendor") == mode then n = n + 1 end end
+		if mode == "craft" then
+			n = ns.CraftResults and #(ns.CraftResults()) or 0
+		else
+			for _, d in ipairs(order) do if (d.mode or "vendor") == mode then n = n + 1 end end
+		end
 		local tab = ui.tabs[mode]
 		tab:SetText(n > 0 and ("%s (%d)"):format(tab.label, n) or tab.label)
 		tab:SetOn(db.tab == mode)
@@ -1201,7 +1241,7 @@ Refresh = function()
 	ui.empty:SetText(L[TAB_HINT[db.tab] or TAB_HINT.vendor])
 	for i = 1, ROWS do
 		local row, d = ui.rows[i], view[i + offset]
-		row.deal = d
+		row.deal, row.craft = d, nil
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
@@ -1239,6 +1279,11 @@ Refresh = function()
 			label = L["Reading auctions: %d"]:format(scan.seen or 0)
 		end
 		ui.bar.text:SetText(label)
+	end
+
+	if db.tab == "craft" then
+		RefreshCraft()
+		return
 	end
 
 	-- summary: what the whole list of this tab would cost and bring
@@ -1540,10 +1585,10 @@ local function BuildUI()
 
 	-- tabs: one list per kind of find, never mixed
 	f.tabs = {}
-	local labels = { vendor = L["Vendor"], market = L["Market"], de = L["Disenchant"] }
+	local labels = { vendor = L["Vendor"], market = L["Market"], de = L["Disenchant"], craft = L["Crafting"] }
 	local prev
-	for _, mode in ipairs(MODES) do
-		local tab = FlatButton(f, 150, 24)
+	for _, mode in ipairs(TABS) do
+		local tab = FlatButton(f, 136, 24)
 		tab.label = labels[mode]
 		if prev then tab:SetPoint("LEFT", prev, "RIGHT", 6, 0) else tab:SetPoint("TOPLEFT", 10, -68) end
 		tab:SetScript("OnClick", function()
@@ -1606,6 +1651,23 @@ local function BuildUI()
 			if button == "RightButton" then Ignore(self.deal) else Select(self.deal) end
 		end)
 		row:SetScript("OnEnter", function(self)
+			local c = self.craft
+			if c then
+				GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+				GameTooltip:SetHyperlink(c.link or ("item:" .. c.out))
+				GameTooltip:AddLine(" ")
+				GameTooltip:AddLine(L["%s: %s"]:format(c.prof, c.recipe or ""), 0.88, 0.66, 0.23)
+				for _, r in ipairs(c.parts) do
+					local name = GetItemInfo(r.id) or ("item:" .. r.id)
+					GameTooltip:AddDoubleLine(("%d× %s"):format(r.qty, name), ("%s (%s)"):format(Money(r.unit * r.qty),
+						r.src == "ah" and L["AH"] or L["merchant"]), 1, 1, 1, 1, 1, 1)
+				end
+				GameTooltip:AddDoubleLine(L["Reagents"], Money(c.cost), 0.7, 0.7, 0.7, 1, 1, 1)
+				GameTooltip:AddDoubleLine(c.route == "ah" and L["Sells on the AH for (after cut)"] or L["A merchant pays"], Money(c.revenue), 0.7, 0.7, 0.7, 1, 1, 1)
+				GameTooltip:AddDoubleLine(L["Profit"], Money(c.profit), 0.25, 1, 0.25, 0.25, 1, 0.25)
+				GameTooltip:Show()
+				return
+			end
 			local d = self.deal
 			if not d then return end
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
@@ -1706,6 +1768,16 @@ local function ShowWindow()
 	if statusText == "" then SetStatus(L["Ready. \"Scan\" reads the auction house item list."]) end
 	ui:Show()
 	Refresh()
+end
+
+function ns.RefreshWindow()
+	if ui and ui:IsShown() then Refresh() end
+end
+
+-- Open the window on a tab (the crafting button in the profession window uses it).
+function ns.OpenTab(mode)
+	db.tab, offset = mode, 0
+	ShowWindow()
 end
 
 ---------------------------------------------------------------------------
@@ -1968,6 +2040,7 @@ local function Help()
 		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
 		L["/vfloor discount <n> – market tab: percent below the usual price"],
 		L["/vfloor quick – quick round over the watch list"],
+		L["/vfloor craft – crafts with profit in chat"],
 		L["/vfloor flash – taskbar flash on or off"],
 		L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"],
 		L["/vfloor minimap – minimap button on or off"],
@@ -2019,6 +2092,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 	elseif cmd == "flash" then
 		db.flash = not db.flash
 		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))
+	elseif cmd == "craft" then
+		ns.PrintCraft()
 	elseif cmd == "quick" then
 		if not StartQuick() then Print(L["The watch list needs at least 5 items. They come from finds below vendor price."]) end
 	elseif cmd == "debug" then
