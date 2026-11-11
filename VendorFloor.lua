@@ -22,7 +22,7 @@ ns.VERSION = VERSION
 local PREFIX = "|cff33ff99VendorFloor:|r "
 local ROWS, ROW_HEIGHT = 12, 20
 local SEND_TIMEOUT = 15
-local CHECK_TIMEOUT = 6    -- seconds a check waits for the auction house before it tries again later
+local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
 local FULL_WAIT = 10 * 60      -- seconds a full scan waits for the auction house to answer
@@ -396,9 +396,15 @@ end
 local function FinishCheck(d, offer)
 	if offer == false then
 		-- no answer: try once more at the end of the queue, keep what is already listed
+		-- An item search without any auctions left sends no answer at all; after the second
+		-- silent check the find counts as gone and is skipped like one without a buyout.
 		d.retries = (d.retries or 0) + 1
 		if d.retries <= 1 then
 			queue[#queue + 1] = d
+		else
+			d.retries = nil
+			if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
+			queued[d.k] = nil
 		end
 		wipe(buy)
 		if not queue[1] and not scan.active then RoundDone() end
