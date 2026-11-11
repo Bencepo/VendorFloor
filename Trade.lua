@@ -334,9 +334,12 @@ end
 
 local sellButton
 
-local function MakeButton(parent, onClick, tooltip)
+local function MakeButton(parent, onClick, tooltip, label)
 	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	b:SetSize(170, 24)
+	b:SetText(label)
+	-- MERCHANT_SHOW and MAIL_SHOW fire before their window is visible: refresh once it is
+	parent:HookScript("OnShow", function() if ns.UpdateTradeButtons then ns.UpdateTradeButtons() end end)
 	b:SetPoint("TOPLEFT", parent, "TOPRIGHT", 4, -30)
 	b:SetScript("OnClick", onClick)
 	b:SetScript("OnEnter", function(self)
@@ -352,12 +355,12 @@ local function MakeButton(parent, onClick, tooltip)
 end
 
 function ns.UpdateTradeButtons()
-	if mailButton and mailButton:IsVisible() then
+	if mailButton and mailButton:IsShown() then
 		local n = MailCount()
 		mailButton:SetText(L["Collect purchases (%d)"]:format(n))
 		mailButton:SetEnabled(n > 0 and not collecting)
 	end
-	if sellButton and sellButton:IsVisible() then
+	if sellButton and sellButton:IsShown() then
 		local n = SellableUnits()
 		sellButton:SetText(L["Sell purchases (%d)"]:format(n))
 		sellButton:SetEnabled(n > 0)
@@ -374,7 +377,7 @@ events:SetScript("OnEvent", function(_, event)
 	if event == "MAIL_SHOW" then
 		if not mailButton and MailFrame then
 			mailButton = MakeButton(MailFrame, StartCollecting,
-				L["VendorFloor takes the items it bought out of the auction house mail."])
+				L["VendorFloor takes the items it bought out of the auction house mail."], L["Collect purchases (%d)"]:format(0))
 		end
 		if mailButton then mailButton:Show() end
 	elseif event == "MAIL_CLOSED" then
@@ -383,7 +386,7 @@ events:SetScript("OnEvent", function(_, event)
 	elseif event == "MERCHANT_SHOW" then
 		if not sellButton and MerchantFrame then
 			sellButton = MakeButton(MerchantFrame, Sell,
-				L["Sells the items VendorFloor bought, at most as many as it bought."])
+				L["Sells the items VendorFloor bought, at most as many as it bought."], L["Sell purchases (%d)"]:format(0))
 		end
 		if sellButton then sellButton:Show() end
 	elseif event == "MERCHANT_CLOSED" then
