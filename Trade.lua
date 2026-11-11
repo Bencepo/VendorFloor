@@ -79,8 +79,11 @@ end
 
 -- A purchase: qty units of itemID for cost copper, worth value copper at a vendor.
 -- Disenchant purchases are kept apart: they are not sold to a merchant, only the spending counts.
-local function RecordOther(cost)
+local function RecordOther(itemID, qty, cost)
 	local db = DB()
+	-- to be collected from the mail: units per item until they are taken out
+	db.debought = db.debought or {}
+	db.debought[itemID] = (db.debought[itemID] or 0) + qty
 	db.detotal = db.detotal or { buys = 0, spent = 0 }
 	Add(db.detotal, "buys", 1)
 	Add(db.detotal, "spent", cost or 0)
@@ -92,7 +95,7 @@ function ns.RecordBuy(itemID, qty, cost, value, mode)
 	if not db or not itemID then return end
 	qty = max(floor(qty or 1), 1)
 	if mode == "de" then
-		RecordOther(cost)
+		RecordOther(itemID, qty, cost)
 		return
 	end
 	local b = db.bought[itemID] or { units = 0, cost = 0 }
@@ -211,6 +214,11 @@ local function IsPurchase(index)
 	return invoiceType == nil or invoiceType == "buyer"
 end
 
+-- Items to collect from the mail: bought for the vendor tab, or for disenchanting.
+local function Collectable(db, itemID)
+	return db.bought[itemID] ~= nil or (db.debought and (db.debought[itemID] or 0) > 0)
+end
+
 -- The next attachment holding an item VendorFloor bought: mail index, attachment index.
 local function NextMailItem()
 	local db = DB()
@@ -219,7 +227,7 @@ local function NextMailItem()
 		if IsPurchase(i) then
 			for a = 1, ATTACHMENTS do
 				local _, itemID = GetInboxItem(i, a)
-				if itemID and db.bought[itemID] then return i, a end
+				if itemID and Collectable(db, itemID) then return i, a end
 			end
 		end
 	end
@@ -234,7 +242,7 @@ local function MailCount()
 		if IsPurchase(i) then
 			for a = 1, ATTACHMENTS do
 				local _, itemID, _, count = GetInboxItem(i, a)
-				if itemID and db.bought[itemID] then n = n + (count or 1) end
+				if itemID and Collectable(db, itemID) then n = n + (count or 1) end
 			end
 		end
 	end
@@ -265,7 +273,12 @@ driver:SetScript("OnUpdate", function(self)
 		StopCollecting(L["Collected %d items."]:format(taken))
 		return
 	end
-	local _, _, _, count = GetInboxItem(i, a)
+	local _, itemID, _, count = GetInboxItem(i, a)
+	local db = DB()
+	if itemID and db.debought and db.debought[itemID] and not db.bought[itemID] then
+		local left = db.debought[itemID] - (count or 1)
+		db.debought[itemID] = left > 0 and left or nil
+	end
 	TakeInboxItem(i, a)
 	taken = taken + (count or 1)
 	nextTake = GetTime() + TAKE_INTERVAL

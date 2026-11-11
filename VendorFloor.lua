@@ -245,6 +245,12 @@ local function IsCommodity(key)
 	return info.isCommodity and true or false
 end
 
+-- Messages about a disenchant find name its disenchant value instead of the vendor price.
+local function DeText(d, text)
+	if d and d.mode == "de" then return (text:gsub("vendor pays %%s", "disenchanting brings about %%s")) end
+	return text
+end
+
 -- Take the find into the list and announce it.
 local newFinds = {} -- new finds per tab since the last round summary
 
@@ -669,7 +675,7 @@ local function ReadItem()
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 	buy.state = "item_ready"
 	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = best.auctionID, best.buyout, best.quantity, best.vendor, best.link
-	SetStatus(L["%s ×%d for %s, vendor pays %s."]:format(best.link or d.link or d.name, best.quantity,
+	SetStatus(L[DeText(d, "%s ×%d for %s, vendor pays %s.")]:format(best.link or d.link or d.name, best.quantity,
 		Money(best.buyout), Money(best.vendor * best.quantity)))
 	Refresh()
 end
@@ -704,7 +710,7 @@ local function Action()
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
 			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
-		Print(L["Purchase sent: %s ×%d for %s (vendor pays %s)."]:format(buy.link or d.link or d.name, buy.qty,
+		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
 	elseif state == "commodity_ready" then
@@ -812,6 +818,7 @@ local function FullRecord(index)
 	if not it then
 		it = { key = key, plainKey = plain, id = itemID, vendor = vendor, name = name, link = itemLink or link,
 			icon = icon, a = {} }
+		if link then it.link = link end
 		full.items[pk] = it
 	end
 	it.a[#it.a + 1] = { unit, count, owner and owner == full.player or nil }
@@ -1317,8 +1324,8 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price), Money(d.vendor),
-				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
+			row.info:SetText(("%s > %s%s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price),
+				d.mode == "de" and L["DE ~"] or "", Money(d.vendor), Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
 		else
@@ -2060,7 +2067,7 @@ function handlers.COMMODITY_PRICE_UPDATED(_, total)
 	local d = buy.deal
 	if total and total <= buy.qty * (d.vendor - db.minProfit) then
 		buy.state, buy.total, buy.t = "quote_ok", total, GetTime()
-		SetStatus(L["Quote: %d× for %s, vendor pays %s."]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
+		SetStatus(L[DeText(d, "Quote: %d× for %s, vendor pays %s.")]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
 		Refresh()
 	else
 		CancelQuote()
@@ -2075,7 +2082,7 @@ end
 function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	if buy.state ~= "confirming" then return end
 	local d = buy.deal
-	Print(L["Bought: %s ×%d for %s (vendor pays %s)."]:format(d.link or d.name, buy.qty, Money(buy.total),
+	Print(L[DeText(d, "Bought: %s ×%d for %s (vendor pays %s).")]:format(d.link or d.name, buy.qty, Money(buy.total),
 		Money(buy.qty * d.vendor)))
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	RemoveDeal(d)
