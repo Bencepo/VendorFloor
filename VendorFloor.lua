@@ -20,7 +20,7 @@ if VERSION == "" or VERSION:find("^@") then VERSION = "dev" end
 ns.VERSION = VERSION
 
 local PREFIX = "|cff33ff99VendorFloor:|r "
-local ROWS, ROW_HEIGHT = 12, 20
+local ROWS, ROW_HEIGHT = 12, 22
 local SEND_TIMEOUT = 15
 local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
@@ -954,10 +954,18 @@ ns.Flat = Flat
 local function FlatButton(parent, width, height, kind)
 	local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
 	b:SetSize(width or 80, height or 22)
-	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	fs:SetPoint("CENTER", 0, 0)
 	b:SetFontString(fs)
 	b.kind, b.on, b.hover = kind, false, false
+	if kind == "primary" then
+		-- dark text on gold: drop the colour codes of money amounts, they would vanish on gold
+		local setText = b.SetText
+		function b:SetText(text)
+			text = text and tostring(text):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "") or text
+			setText(self, text)
+		end
+	end
 	function b:Restyle()
 		local enabled = self:IsEnabled()
 		local bg, border, text
@@ -987,7 +995,7 @@ ns.FlatButton = FlatButton
 
 -- A switch with a label (checked = on), with SetChecked/GetChecked like a check button.
 local function FlatToggle(parent, label, width)
-	local b = FlatButton(parent, width or 96, 22)
+	local b = FlatButton(parent, width or 96, 24)
 	b.checked = false
 	function b:SetChecked(v) self.checked = v and true or false self:SetText((self.checked and "|TInterface\\RaidFrame\\ReadyCheck-Ready:12|t " or "") .. label) self:SetOn(self.checked) end
 	function b:GetChecked() return self.checked end
@@ -999,7 +1007,7 @@ end
 local function BuildUI()
 	if ui then return end
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
-	f:SetSize(520, 178 + ROWS * ROW_HEIGHT)
+	f:SetSize(580, 194 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
 	Flat(f, C.bg, C.line)
 	f:SetMovable(true)
@@ -1042,7 +1050,7 @@ local function BuildUI()
 	close:SetText("x")
 	close:SetScript("OnClick", function() f:Hide() end)
 
-	f.scan = FlatButton(f, 78, 22)
+	f.scan = FlatButton(f, 90, 24)
 	f.scan:SetPoint("TOPLEFT", 10, -38)
 	f.scan:SetScript("OnClick", function()
 		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
@@ -1053,7 +1061,7 @@ local function BuildUI()
 	end)
 
 	-- full scan: every auction at once, allowed every 15 minutes
-	f.full = FlatButton(f, 116, 22)
+	f.full = FlatButton(f, 130, 24)
 	f.full:SetPoint("LEFT", f.scan, "RIGHT", 6, 0)
 	f.full:SetScript("OnClick", function() StartFull() end)
 	f.full:HookScript("OnEnter", function(self)
@@ -1067,7 +1075,7 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 
-	local loop = FlatToggle(f, L["Continuous"], 100)
+	local loop = FlatToggle(f, L["Continuous"], 120)
 	loop:SetPoint("LEFT", f.full, "RIGHT", 6, 0)
 	loop:SetChecked(db.loop)
 	loop:SetScript("OnClick", function(self)
@@ -1082,9 +1090,9 @@ local function BuildUI()
 	-- Minimum profit per unit: how far below the vendor price an auction must be
 	local profit = CreateFrame("EditBox", nil, f, "BackdropTemplate")
 	Flat(profit, C.well, C.line)
-	profit:SetFontObject("GameFontHighlightSmall")
+	profit:SetFontObject("GameFontHighlight")
 	profit:SetTextInsets(6, 6, 0, 0)
-	profit:SetSize(78, 22)
+	profit:SetSize(84, 24)
 	profit:SetPoint("TOPRIGHT", -10, -38)
 	profit:HookScript("OnEditFocusGained", function(self) self:SetBackdropBorderColor(unpack(C.gold)) end)
 	profit:HookScript("OnEditFocusLost", function(self) self:SetBackdropBorderColor(unpack(C.line)) end)
@@ -1119,15 +1127,15 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 	f.profit = profit
-	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 	profitText:SetPoint("RIGHT", profit, "LEFT", -8, 0)
 	profitText:SetText(L["Min. profit/unit"])
 
 	-- progress bar under the buttons
 	f.bar = CreateFrame("StatusBar", nil, f)
-	f.bar:SetPoint("TOPLEFT", 10, -66)
+	f.bar:SetPoint("TOPLEFT", 10, -68)
 	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
-	f.bar:SetHeight(12)
+	f.bar:SetHeight(14)
 	f.bar:SetStatusBarTexture(WHITE)
 	f.bar:SetStatusBarColor(unpack(C.gold))
 	f.bar:SetMinMaxValues(0, 1)
@@ -1137,14 +1145,14 @@ local function BuildUI()
 	f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.bar.text:SetPoint("CENTER", 0, 0)
 	local font = f.bar.text:GetFont()
-	if font then f.bar.text:SetFont(font, 9, "OUTLINE") end
+	if font then f.bar.text:SetFont(font, 11, "OUTLINE") end
 	f.bar:Hide()
 
 	f.rows = {}
 	for i = 1, ROWS do
 		local row = CreateFrame("Button", nil, f)
 		row:SetHeight(ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 10, -84 - (i - 1) * ROW_HEIGHT)
+		row:SetPoint("TOPLEFT", 10, -88 - (i - 1) * ROW_HEIGHT)
 		row:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		if i % 2 == 0 then
@@ -1162,10 +1170,10 @@ local function BuildUI()
 		row.icon:SetSize(ROW_HEIGHT - 2, ROW_HEIGHT - 2)
 		row.icon:SetPoint("LEFT", 2, 0)
 		row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 		row.info:SetPoint("RIGHT", -2, 0)
 		row.info:SetJustifyH("RIGHT")
-		row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 		row.name:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
 		row.name:SetPoint("RIGHT", row.info, "LEFT", -6, 0)
 		row.name:SetJustifyH("LEFT")
@@ -1195,21 +1203,21 @@ local function BuildUI()
 		f.rows[i] = row
 	end
 
-	f.ledger = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	f.ledger:SetPoint("BOTTOMLEFT", 10, 52)
+	f.ledger = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+	f.ledger:SetPoint("BOTTOMLEFT", 10, 60)
 	f.ledger:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.ledger:SetJustifyH("LEFT")
 	f.ledger:SetWordWrap(false)
 	f.ledger:SetText(ns.LedgerLine and ns.LedgerLine() or "")
 
-	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.summary:SetPoint("BOTTOMLEFT", 10, 70)
+	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.summary:SetPoint("BOTTOMLEFT", 10, 79)
 	f.summary:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.summary:SetJustifyH("LEFT")
 	f.summary:SetWordWrap(false)
 
-	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	f.status:SetPoint("BOTTOMLEFT", 10, 36)
+	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	f.status:SetPoint("BOTTOMLEFT", 10, 43)
 	f.status:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.status:SetJustifyH("LEFT")
 	f.status:SetWordWrap(false)
@@ -1218,10 +1226,10 @@ local function BuildUI()
 	local foot = f:CreateTexture(nil, "ARTWORK")
 	foot:SetColorTexture(unpack(C.line))
 	foot:SetHeight(1)
-	foot:SetPoint("BOTTOMLEFT", 1, 88)
-	foot:SetPoint("BOTTOMRIGHT", -1, 88)
+	foot:SetPoint("BOTTOMLEFT", 1, 98)
+	foot:SetPoint("BOTTOMRIGHT", -1, 98)
 
-	f.action = FlatButton(f, 100, 26, "primary")
+	f.action = FlatButton(f, 100, 30, "primary")
 	f.action:SetPoint("BOTTOMLEFT", 10, 8)
 	f.action:SetPoint("BOTTOMRIGHT", -10, 8)
 	f.action:SetScript("OnClick", VendorFloor_BuyNext)
