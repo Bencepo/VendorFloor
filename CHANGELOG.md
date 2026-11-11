@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.6.1-beta
+
+- Much faster buying of gear finds (disenchant tab, gear in the vendor tab): a purchase check that gets no answer gives up after 5 instead of 15 seconds, tries the plain item key right away, and remembers per item which key works.
+- Each tab scans for itself: "Scan" on the disenchant tab reads only green and blue weapons and armor, the vendor tab only looks for vendor finds (lighter on the frame rate). The crafting tab gets a "Prices" button: one search per reagent and product of your recipes, the current price goes into the price history. Continuous mode follows the tab shown; full scans still fill every tab.
+- Realistic material prices: disenchant values and crafting use the price of the cheapest listings (the price a sale has to beat, or the price you buy at) instead of the median, which was too optimistic (a shard valued at 25s that sells for 22s).
+- Disenchant values now follow the WoW Forever table: rows by the level required to equip the item (not its item level), the same row for green and blue items, a shard chance of about 4% for greens. Before, the Classic table by item level gave values one band too high or too low.
+- Disenchant finds are grouped by item: all levels and suffixes of an item are one row (they disenchant the same). Buying tries the cheapest variant first, then the next.
+- Disenchant finds show their disenchant value ("DE ~13s 19c") instead of a vendor price in the list, the status line and chat.
+- Items bought on the disenchant tab can be taken out of the mail with "Collect purchases" as well.
+- Removed the market tab and posting: too many questionable finds and checks. Price history stays (disenchant materials, crafting).
+- Disenchant tab between full scans: normal scans and quick rounds also find gear below its disenchant value (with the prices stored by earlier full scans).
+- The finds of the last full scan (up to an hour old) are back when you open the auction house again, so the tabs are not empty until the next full scan is allowed. They are checked when you click them.
+- At most 150 checks per round, the most promising first; the rest follow in the next round.
+- Sound and taskbar flash once per round (at most once a minute) instead of per find; the check counter counts up correctly.
+- Quieter chat: no line per find any more, one line per round with the new finds per tab (sound and taskbar flash stay).
+
 ## 0.6.0-beta
 
 - New tab **Crafting**: which of your learned recipes make a profit right now. Product value: auction house after the 5% cut or a merchant, whichever is more; reagents: auction house or merchant, whichever is cheaper. Recipes are read when a profession window is open (a "Craft profits" button there opens the tab), merchant prices of reagents when a merchant window is open, auction prices come from full scans. `/vfloor craft` lists the best ten in chat.

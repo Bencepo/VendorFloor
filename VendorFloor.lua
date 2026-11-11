@@ -22,6 +22,8 @@ ns.VERSION = VERSION
 local PREFIX = "|cff33ff99VendorFloor:|r "
 local ROWS, ROW_HEIGHT = 12, 22
 local SEND_TIMEOUT = 15
+local BUY_SILENT = 5       -- seconds a purchase check waits before it tries the other item key or gives up
+local keyStyle = {}        -- itemID -> "plain" when gear is only found with the plain item key
 local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
@@ -31,14 +33,14 @@ local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
 local QUICK_ITEMS = 40         -- items a quick round checks
-local TABS = { "vendor", "market", "de", "craft" }
+local MAX_CHECKS = 150         -- checks per round at most
+local TABS = { "vendor", "de", "craft" }
 
 local defaults = {
 	minPercent = 0,       -- minimum profit in percent of the price (0: off)
 	minSlot = 0,          -- minimum profit per auction, i.e. per bag slot, in copper (0: off)
-	marketDiscount = 30,  -- market tab: at least this many percent below the usual price
 	flash = true,         -- flash the taskbar icon on new finds while the game is in the background
-	tab = "vendor",       -- the tab shown: vendor, market or de (disenchant)
+	tab = "vendor",       -- the tab shown: vendor, de (disenchant) or craft
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
 	minProfitSilver = 1,  -- the same in silver, for the slider in the settings
 	sound = true,         -- sound on a new find
@@ -61,10 +63,9 @@ local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
 local ahOpen = false
 local offset = 0
 local statusText = ""
-local lastSound = 0
 local ui
 
-local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady
+local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady, StartCraftScan
 
 -- The finds of the tab shown, in list order.
 local function View()
@@ -133,25 +134,61 @@ end
 
 local SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
 
-local function BrowseQuery()
+-- The item list to read. The disenchant tab reads only green and blue weapons and armor.
+local function BrowseQuery(mode)
+	local qualities = { "PoorQuality", "CommonQuality", "UncommonQuality", "RareQuality",
+		"EpicQuality", "LegendaryQuality", "ArtifactQuality" }
+	local classes = {}
+	if mode == "de" then
+		qualities = { "UncommonQuality", "RareQuality" }
+		classes = { { classID = 2 }, { classID = 4 } } -- weapons, armor
+	end
 	local filters = {}
-	for _, name in ipairs({ "PoorQuality", "CommonQuality", "UncommonQuality", "RareQuality",
-		"EpicQuality", "LegendaryQuality", "ArtifactQuality" }) do
+	for _, name in ipairs(qualities) do
 		local value = Enum.AuctionHouseFilter and Enum.AuctionHouseFilter[name]
 		if value ~= nil then filters[#filters + 1] = value end
 	end
-	return { searchString = "", minLevel = 0, maxLevel = 0, filters = filters, itemClassFilters = {}, sorts = SORTS }
+	return { searchString = "", minLevel = 0, maxLevel = 0, filters = filters, itemClassFilters = classes, sorts = SORTS }
 end
 
 ---------------------------------------------------------------------------
 -- Finds
 ---------------------------------------------------------------------------
 
--- Finds of the market and disenchant tabs get their own keys, so one item can be in two tabs.
+-- Finds of the disenchant tab get their own keys, so one item can be in two tabs.
 local function DealKey(key, mode)
 	local k = (key.itemID or 0) .. ":" .. (key.itemLevel or 0) .. ":" .. (key.itemSuffix or 0) .. ":" .. (key.battlePetSpeciesID or 0)
 	if mode and mode ~= "vendor" then k = mode .. "|" .. k end
 	return k
+end
+
+-- Disenchant finds are grouped by item: every level and suffix of an item disenchants
+-- the same. The variants (their auction keys, cheapest first) are tried one by one.
+local function GroupKey(key, mode)
+	if mode == "de" then return "de|" .. (key.itemID or 0) end
+	return DealKey(key, mode)
+end
+
+local function AddVariant(d, key, price)
+	d.variants = d.variants or {}
+	local dk = DealKey(key)
+	for _, v in ipairs(d.variants) do
+		if v.dk == dk then
+			if price < v.price then v.price = price end
+			return
+		end
+	end
+	d.variants[#d.variants + 1] = { dk = dk, key = key, price = price }
+	table.sort(d.variants, function(a, b) return a.price < b.price end)
+	d.key, d.vi, d.triedPlain = d.variants[1].key, 1, nil
+end
+
+-- The next variant of a grouped find to search, after the current one had nothing.
+local function NextVariant(d)
+	if not (d.variants and (d.vi or 1) < #d.variants) then return false end
+	d.vi = (d.vi or 1) + 1
+	d.key, d.triedPlain = d.variants[d.vi].key, nil
+	return true
 end
 
 local function RemoveDeal(d)
@@ -220,7 +257,12 @@ local function Watch(itemID)
 	db.watch[itemID] = w
 end
 
-local function Flash()
+-- Sound and taskbar flash for new finds: once per round, at most once a minute.
+local lastAlert = 0
+local function Alert()
+	if GetTime() - lastAlert < 60 then return end
+	lastAlert = GetTime()
+	if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
 	if db.flash and FlashClientIcon then FlashClientIcon() end
 end
 
@@ -232,20 +274,24 @@ local function IsCommodity(key)
 	return info.isCommodity and true or false
 end
 
+-- Messages about a disenchant find name its disenchant value instead of the vendor price.
+local function DeText(d, text)
+	if d and d.mode == "de" then return (text:gsub("vendor pays %%s", "disenchanting brings about %%s")) end
+	return text
+end
+
 -- Take the find into the list and announce it.
+local newFinds = {} -- new finds per tab since the last round summary
+
 local function Confirm(d, quiet)
 	if d.dropped or deals[d.k] then return end
 	deals[d.k] = d
 	order[#order + 1] = d
 	if quiet then return end
-	if (d.mode or "vendor") == "vendor" then Watch(d.id) end
-	Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
-		d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
-	if db.sound and GetTime() - lastSound > 2 then
-		lastSound = GetTime()
-		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
-	end
-	Flash()
+	-- No chat line per find: the round ends with one line of counts (and the window lists them).
+	local mode = d.mode or "vendor"
+	if mode == "vendor" then Watch(d.id) end
+	newFinds[mode] = (newFinds[mode] or 0) + 1
 end
 
 -- Every candidate is checked against its real auctions before it is listed: an item
@@ -257,6 +303,56 @@ local function Enqueue(d)
 	queue[#queue + 1] = d
 end
 
+-- A browse result as a candidate of one tab (target: what one unit brings in that tab).
+local function AddCandidate(result, mode, target, id, name, link, icon)
+	local key, price = result.itemKey, result.minPrice
+	local k = GroupKey(key, mode)
+	local d = deals[k] or queued[k]
+	if not d then
+		d = { k = k }
+		queued[k] = d
+	end
+	if d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN then
+		d.stale = false -- seen and counted by the last full scan: no check needed
+		return
+	end
+	-- Checked before without a buyout below the target (bid-only auctions show their bid
+	-- as the browse price): skip it until a cheaper listing appears or the entry expires.
+	local skip = noOffer[k]
+	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
+		queued[k] = nil
+		return
+	end
+	if mode == "de" and d.queuedRound == scan.round then
+		-- another level or suffix of an item already in this round's group
+		AddVariant(d, key, price)
+		d.listed = (d.listed or 0) + (result.totalQuantity or 0)
+		if price < (d.browsePrice or price) then d.browsePrice = price end
+		return
+	end
+	d.browsePrice, d.mode = price, mode
+	d.key, d.id, d.vendor, d.listed = key, id, target, result.totalQuantity or 0
+	if mode == "de" then
+		d.variants = nil
+		AddVariant(d, key, price)
+	end
+	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
+	d.commodity = IsCommodity(key) == true
+	if d.commodity then
+		-- Stackable goods always sell at a fixed price: listed at once with the browse price,
+		-- the check later only counts the units below the target.
+		d.price = price
+		if not d.count then d.profit = target - price end
+		Confirm(d)
+	else
+		-- Single items can be bid-only auctions: listed only once the check finds a buyout.
+		d.price = d.price or price
+	end
+	Enqueue(d)
+end
+
+-- One browse result, for both auction tabs: below the vendor price and below its
+-- disenchant value.
 local function Evaluate(result)
 	local key = result.itemKey
 	local id, price = key.itemID, result.minPrice
@@ -268,39 +364,15 @@ local function Evaluate(result)
 		if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
 		return
 	end
-	if vendor <= 0 or not Worth(vendor, price) then return end
-	local k = DealKey(key)
-	local d = deals[k] or queued[k]
-	if not d then
-		d = { k = k }
-		queued[k] = d
-	end
-	if d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN then
-		d.stale = false -- seen and counted by the last full scan: no check needed
+	-- each tab scans for itself: the vendor tab only for vendor finds, the disenchant tab only for gear
+	if scan.mode ~= "de" then
+		if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
 		return
 	end
-	-- Checked before without a buyout below the vendor price (bid-only auctions show their
-	-- bid as the browse price): skip it until a cheaper listing appears or the entry expires.
-	local skip = noOffer[k]
-	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
-		queued[k] = nil
-		return
+	if ns.DisenchantValue then
+		local de = ns.DisenchantValue(link or id)
+		if de and Worth(de, price) then AddCandidate(result, "de", de, id, name, link, icon) end
 	end
-	d.browsePrice, d.mode = price, "vendor"
-	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
-	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
-	d.commodity = IsCommodity(key) == true
-	if d.commodity then
-		-- Stackable goods always sell at a fixed price: listed at once with the browse price,
-		-- the check later only counts the units below the vendor price.
-		d.price = price
-		if not d.count then d.profit = vendor - price end
-		Confirm(d)
-	else
-		-- Single items can be bid-only auctions: listed only once the check finds a buyout.
-		d.price = d.price or price
-	end
-	Enqueue(d)
 end
 
 local function Process(results)
@@ -358,6 +430,7 @@ StartScan = function()
 	end
 	if buy.state or full.active then return end
 	scan.active, scan.seen, scan.nextAt = true, 0, nil
+	scan.mode = db.tab == "de" and "de" or "vendor"
 	scan.round = scan.round + 1
 	tries = 0
 	wipe(queue)
@@ -365,8 +438,9 @@ StartScan = function()
 	for _, d in ipairs(order) do
 		if not (d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN) then d.stale = true end
 	end
-	Send(function() AH.SendBrowseQuery(BrowseQuery()) end)
-	SetStatus(L["Scanning …"])
+	local mode = scan.mode
+	Send(function() AH.SendBrowseQuery(BrowseQuery(mode)) end)
+	SetStatus(mode == "de" and L["Scanning green and blue weapons and armor …"] or L["Scanning …"])
 	Refresh()
 end
 
@@ -381,6 +455,7 @@ end
 -- reading the whole item list. Gear is left out (its auction key depends on level and suffix).
 local function StartQuick()
 	if not ahOpen or buy.state or full.active then return false end
+	scan.mode = "vendor"
 	local list = {}
 	for itemID, w in pairs(db.watch or {}) do
 		if not IsIgnored(itemID) then list[#list + 1] = { id = itemID, hits = w.hits or 0 } end
@@ -411,7 +486,7 @@ local function StartQuick()
 		end
 	end
 	if not queue[1] then return false end
-	scan.checkTotal, scan.seen = #queue, 0
+	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
 	SetStatus(L["Quick round: checking %d items that were often below vendor price …"]:format(#queue))
 	Refresh()
 	return true
@@ -419,10 +494,17 @@ end
 
 -- Continuous mode: a full scan whenever one is allowed, otherwise two quick rounds and
 -- then one reading the whole item list.
+-- Continuous mode follows the tab shown: a full scan whenever one is allowed (it fills
+-- every tab), otherwise the vendor tab alternates quick rounds and the whole item list,
+-- the disenchant tab reads gear only, the crafting tab checks the prices of its items.
 NextRound = function()
 	scan.rounds = (scan.rounds or 0) + 1
 	if FullReady() then
 		StartFull()
+	elseif db.tab == "craft" then
+		if not StartCraftScan() then scan.nextAt = GetTime() + db.interval end
+	elseif db.tab == "de" then
+		StartScan()
 	elseif scan.rounds % 3 ~= 0 and StartQuick() then
 		return
 	else
@@ -431,7 +513,13 @@ NextRound = function()
 end
 
 local function RoundDone()
-	SetStatus(L["Round done: %d items read, %d below vendor price."]:format(scan.seen, #order))
+	local v, e = newFinds.vendor or 0, newFinds.de or 0
+	wipe(newFinds)
+	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d."]:format(scan.seen, v, e))
+	if v + e > 0 then
+		Print(L["New finds: vendor %d, disenchant %d."]:format(v, e))
+		Alert()
+	end
 	if db.loop then scan.nextAt = GetTime() + db.interval end
 end
 
@@ -445,7 +533,13 @@ local function FinishScan()
 		if a.commodity ~= b.commodity then return not a.commodity end
 		return (a.vendor - a.price) > (b.vendor - b.price)
 	end)
-	scan.checkTotal = #queue
+	-- never more than MAX_CHECKS per round: the most promising first, the rest next round
+	for i = #queue, MAX_CHECKS + 1, -1 do
+		local d = table.remove(queue, i)
+		d.queuedRound = nil
+		if not deals[d.k] then queued[d.k] = nil end
+	end
+	scan.checkTotal, scan.checked = #queue, 0
 	if queue[1] then
 		SetStatus(L["%d items read. Checking %d candidates …"]:format(scan.seen, #queue))
 	else
@@ -487,6 +581,10 @@ Verify = function(d, purpose)
 	if scan.active then StopScan() end
 	purpose = purpose or "buy"
 	if purpose == "buy" then scan.nextAt = nil end
+	-- gear from full scans: use the key that worked for this item before
+	if d.plainKey and not d.triedPlain and keyStyle[d.id] == "plain" then
+		d.key, d.triedPlain = d.plainKey, true
+	end
 	wipe(buy)
 	buy.state, buy.deal, buy.t, buy.purpose = "verifying", d, GetTime(), purpose
 	tries = 0
@@ -602,6 +700,10 @@ local function ReadItem()
 		return
 	end
 	if not offer then
+		if NextVariant(d) then
+			Verify(d, "buy")
+			return
+		end
 		if d.plainKey and not d.triedPlain then
 			-- the full scan built this key from the item link; the plain item key may be the one in use
 			d.key, d.triedPlain = d.plainKey, true
@@ -613,10 +715,11 @@ local function ReadItem()
 		return
 	end
 	local best = offer.best
+	if d.triedPlain and d.plainKey then keyStyle[d.id] = "plain" end
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 	buy.state = "item_ready"
 	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = best.auctionID, best.buyout, best.quantity, best.vendor, best.link
-	SetStatus(L["%s ×%d for %s, vendor pays %s."]:format(best.link or d.link or d.name, best.quantity,
+	SetStatus(L[DeText(d, "%s ×%d for %s, vendor pays %s.")]:format(best.link or d.link or d.name, best.quantity,
 		Money(best.buyout), Money(best.vendor * best.quantity)))
 	Refresh()
 end
@@ -651,7 +754,7 @@ local function Action()
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
 			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
-		Print(L["Purchase sent: %s ×%d for %s (vendor pays %s)."]:format(buy.link or d.link or d.name, buy.qty,
+		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
 	elseif state == "commodity_ready" then
@@ -741,7 +844,7 @@ end
 
 -- One auction of the list, collected by item. Returns false when its item data has not
 -- loaded yet. Every auction with a buyout is kept: the vendor tab needs the cheap ones, the
--- market tab the usual price of all of them.
+-- disenchant and crafting tabs the usual price of all of them.
 local function FullRecord(index)
 	local _, _, count, _, _, _, _, _, _, buyout, _, _, _, owner, _, _, itemID, hasAll = AH.GetReplicateItemInfo(index)
 	if not itemID then return true end
@@ -759,6 +862,7 @@ local function FullRecord(index)
 	if not it then
 		it = { key = key, plainKey = plain, id = itemID, vendor = vendor, name = name, link = itemLink or link,
 			icon = icon, a = {} }
+		if link then it.link = link end
 		full.items[pk] = it
 	end
 	it.a[#it.a + 1] = { unit, count, owner and owner == full.player or nil }
@@ -799,6 +903,39 @@ end
 -- Day number (days since 1970) as the key of the price history: short in the saved file.
 local function Today() return floor(time() / 86400) end
 
+-- What the cheapest tenth of the listed units costs (weighted by count, own auctions left
+-- out): the price to buy at, and about the price a sale has to beat.
+local function ListingLow(a)
+	local list, total = {}, 0
+	for _, x in ipairs(a) do
+		if not x[3] then
+			list[#list + 1] = x
+			total = total + x[2]
+		end
+	end
+	if total == 0 then return nil end
+	table.sort(list, function(p, q) return p[1] < q[1] end)
+	local run = 0
+	for _, x in ipairs(list) do
+		run = run + x[2]
+		if run >= total * 0.1 then return x[1] end
+	end
+	return list[#list][1]
+end
+
+-- Latest low price of a price key (from the last full scan or price check), or nil.
+local function StoreLow(pk, value)
+	db.lows = db.lows or {}
+	db.lows[pk] = { floor(value + 0.5), time() }
+end
+
+local function LowValue(pk)
+	local l = db.lows and db.lows[pk]
+	if l and time() - l[2] < 3 * 86400 then return l[1] end
+	return nil
+end
+ns.LowValue = LowValue
+
 local function StorePrice(pk, value)
 	db.prices = db.prices or {}
 	local h = db.prices[pk] or {}
@@ -838,62 +975,69 @@ local ESS = { lmagic = 10938, gmagic = 10939, lastral = 10998, gastral = 11082, 
 local SHARD = { sglim = 10978, lglim = 11084, sglow = 11138, lglow = 11139, srad = 11177, lrad = 11178,
 	sbril = 14343, lbril = 14344 }
 
--- green (uncommon): up to item level, { dust, avg. count }, { essence, avg. count }, shard (5%)
-local DE_GREEN = {
-	{ 15, { DUST.strange, 1.5 }, { ESS.lmagic, 1.5 }, nil },
-	{ 20, { DUST.strange, 2.5 }, { ESS.gmagic, 1.5 }, SHARD.sglim },
-	{ 25, { DUST.strange, 5 }, { ESS.lastral, 1.5 }, SHARD.sglim },
-	{ 30, { DUST.soul, 1.5 }, { ESS.gastral, 1.5 }, SHARD.lglim },
-	{ 35, { DUST.soul, 3.5 }, { ESS.lmystic, 1.5 }, SHARD.sglow },
-	{ 40, { DUST.vision, 1.5 }, { ESS.gmystic, 1.5 }, SHARD.lglow },
-	{ 45, { DUST.vision, 3.5 }, { ESS.lnether, 1.5 }, SHARD.srad },
-	{ 50, { DUST.dream, 1.5 }, { ESS.gnether, 1.5 }, SHARD.lrad },
-	{ 55, { DUST.dream, 3.5 }, { ESS.leternal, 1.5 }, SHARD.sbril },
-	{ 65, { DUST.illusion, 2.5 }, { ESS.geternal, 1.5 }, SHARD.lbril },
+-- WoW Forever disenchant table (wow-professions.com, Forever guide): rows by the level
+-- required to equip the item (not its item level), the same row for green and blue.
+-- up to required level, { dust, avg. count }, { essence, avg. count }, shard
+local DE_ROWS = {
+	{ 10, { DUST.strange, 1.5 }, { ESS.lmagic, 1.5 }, nil },
+	{ 15, { DUST.strange, 2.5 }, { ESS.gmagic, 1.5 }, SHARD.sglim },
+	{ 20, { DUST.strange, 5 }, { ESS.lastral, 1.5 }, SHARD.sglim },
+	{ 25, { DUST.soul, 1.5 }, { ESS.gastral, 1.5 }, SHARD.lglim },
+	{ 30, { DUST.soul, 3.5 }, { ESS.lmystic, 1.5 }, SHARD.sglow },
+	{ 35, { DUST.vision, 1.5 }, { ESS.gmystic, 1.5 }, SHARD.lglow },
+	{ 40, { DUST.vision, 3.5 }, { ESS.lnether, 1.5 }, SHARD.srad },
+	{ 45, { DUST.dream, 1.5 }, { ESS.gnether, 1.5 }, SHARD.lrad },
+	{ 50, { DUST.dream, 3.5 }, { ESS.leternal, 1.5 }, SHARD.sbril },
+	{ 55, { DUST.illusion, 1.5 }, { ESS.geternal, 1.5 }, SHARD.lbril },
+	{ 60, { DUST.illusion, 3.5 }, { ESS.geternal, 2 }, SHARD.lbril },
 }
--- blue (rare): up to item level, shard
-local DE_BLUE = { { 25, SHARD.sglim }, { 30, SHARD.lglim }, { 35, SHARD.sglow }, { 40, SHARD.lglow },
-	{ 45, SHARD.srad }, { 50, SHARD.lrad }, { 55, SHARD.sbril }, { 65, SHARD.lbril } }
+local SHARD_CHANCE = 0.04 -- green items: a shard in about 3-5% of cases
 
 local matCache = {}
 
 local function MatValue(itemID, live)
 	if matCache[itemID] ~= nil then return matCache[itemID] or nil end
+	-- materials are sold again: value them at what a sale has to beat (the low price), not the median
 	local pk = PlainKey(itemID)
-	local value = MarketValue(pk)
-	if not value and live and live[pk] then value = ListingMedian(live[pk].a) end
+	local value = live and live[pk] and ListingLow(live[pk].a) or LowValue(pk)
+	if not value then
+		local med = MarketValue(pk)
+		value = med and med * 0.9
+	end
 	matCache[itemID] = value or false
 	return value
 end
 
 -- What disenchanting one of these items brings (after the auction house cut), or nil.
+-- Green armor: 75% dust, 20% essence; green weapons the other way round; plus a small
+-- chance of a shard. Blue items: the shard of their row.
 local function DisenchantValue(item, live)
-	local _, _, quality, level, _, _, _, _, _, _, _, classID = GetItemInfo(item)
-	if not (quality and level and (classID == 2 or classID == 4)) or level < 5 then return nil end
+	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
+	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
+	local level = max(minLevel or 1, 1)
+	local row
+	for _, r in ipairs(DE_ROWS) do
+		if level <= r[1] then
+			row = r
+			break
+		end
+	end
+	row = row or DE_ROWS[#DE_ROWS]
 	local value
 	if quality == 2 then
-		for _, row in ipairs(DE_GREEN) do
-			if level <= row[1] then
-				local dust, ess = MatValue(row[2][1], live), MatValue(row[3][1], live)
-				if not (dust and ess) then return nil end
-				local main, side = 0.75, 0.20 -- armor: mostly dust; weapons: mostly essence
-				if classID == 2 then main, side = 0.20, 0.75 end
-				value = main * row[2][2] * dust + side * row[3][2] * ess
-				local shard = row[4] and MatValue(row[4], live)
-				if shard then value = value + 0.05 * shard end
-				break
-			end
-		end
-	elseif quality == 3 then
-		for _, row in ipairs(DE_BLUE) do
-			if level <= row[1] then
-				value = MatValue(row[2], live)
-				break
-			end
-		end
+		local dust, ess = MatValue(row[2][1], live), MatValue(row[3][1], live)
+		if not (dust and ess) then return nil end
+		local pDust, pEss = 0.75, 0.20
+		if classID == 2 then pDust, pEss = 0.20, 0.75 end
+		value = pDust * row[2][2] * dust + pEss * row[3][2] * ess
+		local shard = row[4] and MatValue(row[4], live)
+		if shard then value = value + SHARD_CHANCE * shard end
+	else
+		value = row[4] and MatValue(row[4], live)
 	end
 	return value and value * AH_CUT or nil
 end
+ns.DisenchantValue = DisenchantValue
 
 local function FinishFull(failed)
 	full.active = false
@@ -902,21 +1046,19 @@ local function FinishFull(failed)
 		Refresh()
 		return
 	end
-	-- 1. today's usual price of every item
+	-- 1. today's usual price of every item (for disenchant materials and crafting)
 	wipe(matCache)
-	local medians = {}
 	for pk, it in pairs(full.items) do
-		local med, n = ListingMedian(it.a)
+		local med = ListingMedian(it.a)
 		if med then
 			StorePrice(pk, med)
-			medians[pk] = n
+			StoreLow(pk, ListingLow(it.a))
 		end
 	end
 	-- 2. finds per tab
-	local found, counts = {}, { vendor = 0, market = 0, de = 0 }
-	local discount = 1 - (db.marketDiscount or 30) / 100
+	local found, counts = {}, { vendor = 0, de = 0 }
 	local function add(mode, pk, it, target, unit, count)
-		local k = DealKey(it.key, mode)
+		local k = GroupKey(it.key, mode)
 		local g = found[k]
 		if not g then
 			g = { k = k, key = it.key, plainKey = it.plainKey, id = it.id, vendor = target, price = unit, count = 0,
@@ -926,18 +1068,18 @@ local function FinishFull(failed)
 		end
 		g.count, g.profit, g.listed = g.count + count, g.profit + (target - unit) * count, g.listed + 1
 		if unit < g.price then g.price = unit end
+		if mode == "de" then
+			AddVariant(g, it.key, unit)
+			-- the group shows the base item, not one of its variants
+			g.name, g.link = GetItemInfo(it.id), select(2, GetItemInfo(it.id)) or g.link
+		end
 	end
 	for pk, it in pairs(full.items) do
-		local usual, days = MarketValue(pk)
-		local marketOK = usual and (days >= 2 or (medians[pk] or 0) >= 4)
 		local de = DisenchantValue(it.link or it.id, full.items)
 		for _, x in ipairs(it.a) do
 			local unit, count, own = x[1], x[2], x[3]
 			if not own then
 				if it.vendor > 0 and Worth(it.vendor, unit, count) then add("vendor", pk, it, it.vendor, unit, count) end
-				if marketOK and unit <= usual * discount and Worth(usual * AH_CUT, unit, count) then
-					add("market", pk, it, usual * AH_CUT, unit, count)
-				end
 				if de and Worth(de, unit, count) then add("de", pk, it, de, unit, count) end
 			end
 		end
@@ -952,6 +1094,7 @@ local function FinishFull(failed)
 		if d then
 			d.price, d.count, d.profit, d.listed, d.fullAt, d.stale = g.price, g.count, g.profit, g.listed, now, false
 			d.vendor, d.mode = g.vendor, g.mode
+			if g.variants then d.variants, d.key, d.vi, d.triedPlain = g.variants, g.key, 1, nil end
 			d.plainKey = d.plainKey or g.plainKey
 		else
 			Confirm(g, true)
@@ -965,15 +1108,129 @@ local function FinishFull(failed)
 	end
 	full.items = nil
 	ns.craftDirty = true
+	-- kept for the next visit: until the next full scan is allowed the finds come from here
+	local keep = {}
+	for _, g in pairs(found) do
+		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
+			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
+			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
+	end
+	db.lastFinds = { at = time(), list = keep }
 	SortDeals()
-	SetStatus(L["Full scan done: %d auctions. Vendor %d, market %d, disenchant %d finds."]:format(full.count or 0,
-		counts.vendor, counts.market, counts.de))
+	SetStatus(L["Full scan done: %d auctions. Vendor %d, disenchant %d finds."]:format(full.count or 0,
+		counts.vendor, counts.de))
 	if new > 0 then
-		Print(L["%d new finds (vendor %d, market %d, disenchant %d)."]:format(new, counts.vendor, counts.market, counts.de))
-		if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
-		Flash()
+		Print(L["%d new finds (vendor %d, disenchant %d)."]:format(new, counts.vendor, counts.de))
+		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + 5 end
+	Refresh()
+end
+
+---------------------------------------------------------------------------
+-- Price check for the crafting tab: one search per reagent and product of your
+-- recipes, their current median price goes into the price history.
+---------------------------------------------------------------------------
+
+local craft = {}
+local CRAFT_WAIT, CRAFT_TIMEOUT = 0.6, 3
+
+local function CraftItems()
+	local char = (UnitName("player") or "?") .. "-" .. (GetRealmName and GetRealmName() or "")
+	local mine = db.recipes and db.recipes[char]
+	local seen, list = {}, {}
+	local function add(id)
+		if id and not seen[id] then
+			seen[id] = true
+			list[#list + 1] = id
+		end
+	end
+	for _, p in pairs(mine or {}) do
+		for _, rec in ipairs(p.list or {}) do
+			add(rec.out)
+			for _, r in ipairs(rec.r) do
+				-- reagents a merchant sells are not looked up on the auction house
+				if not (db.vendorBuy and db.vendorBuy[r[1]]) then add(r[1]) end
+			end
+		end
+	end
+	return list
+end
+
+StartCraftScan = function()
+	if not ahOpen or buy.state or full.active or scan.active then return false end
+	local list = CraftItems()
+	if not list[1] then
+		SetStatus(L["Open each profession window once so VendorFloor can read your recipes."])
+		return false
+	end
+	wipe(craft)
+	craft.active, craft.list, craft.i, craft.found = true, list, 0, 0
+	scan.nextAt = nil
+	SetStatus(L["Price check: %d reagents and products …"]:format(#list))
+	Refresh()
+	return true
+end
+
+local function StopCraftScan(msg)
+	wipe(craft)
+	if msg then SetStatus(msg) end
+end
+
+local function ReadCraftPrice(id)
+	local key = AH.MakeItemKey and AH.MakeItemKey(id)
+	local a = {}
+	local n = AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(id) or 0
+	for i = 1, n do
+		local info = AH.GetCommoditySearchResultInfo(id, i)
+		if info and info.unitPrice and info.quantity and not info.containsOwnerItem then
+			a[#a + 1] = { info.unitPrice, info.quantity }
+		end
+	end
+	if not a[1] and key then
+		for i = 1, (AH.GetNumItemSearchResults(key) or 0) do
+			local info = AH.GetItemSearchResultInfo(key, i)
+			if info and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem then
+				local q = max(info.quantity or 1, 1)
+				a[#a + 1] = { info.buyoutAmount / q, q }
+			end
+		end
+	end
+	local med = ListingMedian(a)
+	if med then
+		StorePrice(PlainKey(id), med)
+		StoreLow(PlainKey(id), ListingLow(a))
+		craft.found = craft.found + 1
+	end
+end
+
+local function CraftTick(now)
+	if craft.cur then
+		local id, key = craft.cur, craft.key
+		local ready = AH.HasFullCommoditySearchResults(id) or (AH.GetCommoditySearchResultsQuantity(id) or 0) > 0
+			or (key and AH.HasSearchResults(key) and (AH.HasFullItemSearchResults(key) or (AH.GetItemSearchResultsQuantity(key) or 0) > 0))
+		if ready and now - craft.t > CRAFT_WAIT then
+			ReadCraftPrice(id)
+			craft.cur = nil
+		elseif now - craft.t > CRAFT_TIMEOUT then
+			craft.cur = nil -- no auctions of it right now
+		end
+		return
+	end
+	craft.i = craft.i + 1
+	local id = craft.list[craft.i]
+	if not id then
+		local found = craft.found
+		local total = #craft.list
+		StopCraftScan(L["Price check done: %d of %d items on the auction house."]:format(found, total))
+		ns.craftDirty = true
+		if db.loop then scan.nextAt = GetTime() + db.interval end
+		Refresh()
+		return
+	end
+	local key = AH.MakeItemKey and AH.MakeItemKey(id)
+	craft.cur, craft.key, craft.t = id, key, now
+	Send(function() AH.SendSearchQuery(key, SORTS, true) end)
 	Refresh()
 end
 
@@ -1026,6 +1283,10 @@ local function Tick()
 		FullTick(now)
 		return
 	end
+	if craft.active and not pendingSend then
+		CraftTick(now)
+		return
+	end
 	if pendingSend then
 		-- The throttle can stay "not ready" after a purchase; send anyway after a while.
 		-- A dropped query comes back through AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED.
@@ -1048,7 +1309,10 @@ local function Tick()
 	local state = buy.state
 	if not state and not scan.active and queue[1] then
 		local d = table.remove(queue, 1)
-		if not d.dropped then Verify(d, "check") end
+		if not d.dropped then
+			scan.checked = (scan.checked or 0) + 1
+			Verify(d, "check")
+		end
 		return
 	end
 	-- A check reads held results quickly. A purchase waits longer for fresh ones, so an
@@ -1060,6 +1324,19 @@ local function Tick()
 	end
 	if state == "verifying" and buy.purpose == "check" and now - buy.t > CHECK_TIMEOUT then
 		FinishCheck(buy.deal, false)
+	elseif state == "verifying" and not pendingSend and now - buy.t > BUY_SILENT then
+		-- No answer to a purchase check: the auction house sends none for a search without
+		-- results. Gear from a full scan gets a second try with the plain item key, then it is gone.
+		local d = buy.deal
+		if d and NextVariant(d) then
+			Verify(d, "buy")
+		elseif d and d.plainKey and not d.triedPlain then
+			d.key, d.triedPlain = d.plainKey, true
+			Verify(d, "buy")
+		else
+			if d then RemoveDeal(d) end
+			ResetBuy(L["Nothing below vendor price any more."])
+		end
 	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
 		ResetBuy(L["No answer while checking."])
 	elseif state == "bought" and now - buy.t > 1.5 then
@@ -1078,114 +1355,13 @@ local function Tick()
 end
 
 ---------------------------------------------------------------------------
--- Posting (market tab): what was bought for the market goes back on the auction house
--- at about its usual price, one auction per click. Never below cost plus the minimum profit.
----------------------------------------------------------------------------
-
-local post = {}
-local POST_DURATION = 2 -- 24 hours
-
-local function NextPostable()
-	local mb = db.mbought
-	if not (mb and C_Container) then return nil end
-	for bag = 0, 4 do
-		for slot = 1, C_Container.GetContainerNumSlots(bag) do
-			local info = C_Container.GetContainerItemInfo(bag, slot)
-			local b = info and info.itemID and mb[info.itemID]
-			if b and b.units > 0 and not info.isLocked and not info.isBound then return bag, slot, info end
-		end
-	end
-	return nil
-end
-
--- Price per unit to post at: just under the usual price, rounded up to whole silver.
-local function PostPrice(itemID, link)
-	local key = KeyFor(itemID, link)
-	local usual = MarketValue(DealKey(key))
-	if not usual and link then usual = MarketValue(PlainKey(itemID)) end
-	if not usual then return nil end
-	local b = db.mbought[itemID]
-	local costUnit = b and b.units > 0 and b.cost / b.units or 0
-	local price = max(usual * 0.98, (costUnit + db.minProfit) / AH_CUT)
-	return math.ceil(price / 100) * 100, usual
-end
-
-function ns.UpdatePostButton()
-	if not ui then return end
-	local show = db.tab == "market"
-	ui.post:SetShown(show)
-	ui.action:ClearAllPoints()
-	ui.action:SetPoint("BOTTOMLEFT", 10, 8)
-	if show then
-		ui.action:SetPoint("BOTTOMRIGHT", ui.post, "BOTTOMLEFT", -6, 0)
-	else
-		ui.action:SetPoint("BOTTOMRIGHT", -10, 8)
-		return
-	end
-	if post.warning then
-		ui.post:SetText(L["Confirm post"])
-		ui.post:SetEnabled(true)
-		return
-	end
-	local bag, _, info = NextPostable()
-	local price = bag and PostPrice(info.itemID, info.hyperlink)
-	if price then
-		ui.post:SetText(L["Post %d× at %s"]:format(info.stackCount or 1, Money(price)))
-		ui.post:SetEnabled(ahOpen and not buy.state)
-	else
-		ui.post:SetText(L["Post (nothing to post)"])
-		ui.post:SetEnabled(false)
-	end
-end
-
-function ns.PostNext()
-	if not ahOpen then return end
-	if post.warning then
-		local w = post.warning
-		post.warning = nil
-		if w.commodity then
-			AH.ConfirmPostCommodity(w.loc, POST_DURATION, w.qty, w.price)
-		else
-			AH.ConfirmPostItem(w.loc, POST_DURATION, w.qty, nil, w.price)
-		end
-		SetStatus(L["Posted: %s ×%d."]:format(w.name or "?", w.qty))
-		Refresh()
-		return
-	end
-	local bag, slot, info = NextPostable()
-	if not bag then
-		SetStatus(L["Nothing bought for the market is in your bags."])
-		return
-	end
-	local price = PostPrice(info.itemID, info.hyperlink)
-	if not price then
-		SetStatus(L["No usual price known for this item yet. Run a full scan."])
-		return
-	end
-	local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
-	local qty = info.stackCount or 1
-	local commodity = AH.GetItemCommodityStatus and Enum.ItemCommodityStatus
-		and AH.GetItemCommodityStatus(loc) == Enum.ItemCommodityStatus.Commodity
-	if commodity then
-		AH.PostCommodity(loc, POST_DURATION, qty, price)
-	else
-		AH.PostItem(loc, POST_DURATION, qty, nil, price * qty)
-	end
-	post.last = { loc = loc, qty = qty, price = commodity and price or price * qty, commodity = commodity,
-		name = info.hyperlink, at = GetTime() }
-	SetStatus(L["Posted: %s ×%d at %s each."]:format(info.hyperlink or "?", qty, Money(price)))
-	Refresh()
-end
-
----------------------------------------------------------------------------
 -- Window
 ---------------------------------------------------------------------------
 
 local TAB_HINT = {
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
-	market = "Auctions far below their usual price, to sell again on the auction house. Filled by full scans; the usual price gets better with every day of full scans.",
-	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). Filled by full scans. Needs Enchanting.",
-	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes; prices come from full scans and merchants you visit.",
+	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
+	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
 
 -- Crafting tab: rows show recipes instead of auctions.
@@ -1213,11 +1389,10 @@ local function RefreshCraft()
 	local profs = ns.CraftProfessions and ns.CraftProfessions() or {}
 	ui.summary:SetText(#list > 0 and L["%d crafts with profit · %s"]:format(#list, table.concat(profs, ", ")) or "")
 	ui.count:SetText(#list > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #list), #list) or "")
-	if miss > 0 then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
+	if miss > 0 and not craft.active then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
 	ui.action:SetText(L["Read recipes: open a profession window"])
 	ui.action:SetEnabled(false)
 	ui.loop:SetChecked(db.loop)
-	if ns.UpdatePostButton then ns.UpdatePostButton() end
 end
 
 Refresh = function()
@@ -1244,8 +1419,8 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price), Money(d.vendor),
-				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
+			row.info:SetText(("%s > %s%s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price),
+				d.mode == "de" and L["DE ~"] or "", Money(d.vendor), Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
 		else
@@ -1260,8 +1435,10 @@ Refresh = function()
 	if full.active then
 		fraction = full.phase == "reading" and full.count and full.count > 0 and full.index / full.count
 			or full.phase == "loading" and 1 or 0
-	elseif checking and (scan.checkTotal or 0) > 0 then
-		fraction = 1 - #queue / scan.checkTotal
+	elseif craft.active then
+		fraction = craft.i / max(#craft.list, 1)
+	elseif checking and ((scan.checked or 0) + #queue) > 0 then
+		fraction = (scan.checked or 0) / ((scan.checked or 0) + #queue)
 	elseif scan.active then
 		fraction = 0
 	end
@@ -1272,8 +1449,10 @@ Refresh = function()
 		local label
 		if full.active then
 			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
-		elseif checking and (scan.checkTotal or 0) > 0 then
-			label = L["Checking %d of %d (%d%%)"]:format(scan.checkTotal - #queue, scan.checkTotal, floor(fraction * 100))
+		elseif craft.active then
+			label = L["Prices %d of %d (%d%%)"]:format(craft.i, #craft.list, floor(fraction * 100))
+		elseif checking and ((scan.checked or 0) + #queue) > 0 then
+			label = L["Checking %d of %d (%d%%)"]:format(scan.checked or 0, (scan.checked or 0) + #queue, floor(fraction * 100))
 		else
 			label = L["Reading auctions: %d"]:format(scan.seen or 0)
 		end
@@ -1294,7 +1473,6 @@ Refresh = function()
 	ui.summary:SetText(#view > 0 and L["%d finds · cost %s · profit %s"]:format(#view, Money(cost), Money(profit)) or "")
 	ui.loop:SetChecked(db.loop)
 	ui.count:SetText(#view > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #view), #view) or "")
-	if ns.UpdatePostButton then ns.UpdatePostButton() end
 
 	local state, text, enabled = buy.state, L["Click a find"], false
 	if not state or buy.purpose == "check" then
@@ -1321,14 +1499,17 @@ end
 -- mode waits for the next round (with the seconds left), otherwise "Scan".
 local function UpdateScanButton()
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
-	local waiting = scan.nextAt and not scan.active and not checking
-	local running = scan.active or checking or waiting
+	local waiting = scan.nextAt and not scan.active and not checking and not craft.active
+	local running = scan.active or checking or waiting or craft.active
 	if waiting then
 		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
 	else
 		ui.scan:SetText(running and L["Stop"] or L["Scan"])
 	end
 	ui.scan:SetEnabled(not full.active and (running or not buy.state))
+	if not running then
+		ui.scan:SetText(db.tab == "craft" and L["Prices"] or L["Scan"])
+	end
 	-- while something runs the button is shown switched on
 	ui.scan:SetOn(running)
 end
@@ -1504,8 +1685,14 @@ local function BuildUI()
 	f.scan = FlatButton(f, 90, 24)
 	f.scan:SetPoint("TOPLEFT", 10, -38)
 	f.scan:SetScript("OnClick", function()
-		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
+		if craft.active then
+			StopCraftScan(L["Scan stopped."])
+			scan.nextAt = nil
+			Refresh()
+		elseif scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
 			StopAll(L["Scan stopped."])
+		elseif db.tab == "craft" then
+			StartCraftScan()
 		else
 			StartScan()
 		end
@@ -1584,7 +1771,7 @@ local function BuildUI()
 
 	-- tabs: one list per kind of find, never mixed
 	f.tabs = {}
-	local labels = { vendor = L["Vendor"], market = L["Market"], de = L["Disenchant"], craft = L["Crafting"] }
+	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"] }
 	local prev
 	for _, mode in ipairs(TABS) do
 		local tab = FlatButton(f, 136, 24)
@@ -1672,9 +1859,7 @@ local function BuildUI()
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetHyperlink(d.link or ("item:" .. d.id))
 			GameTooltip:AddLine(" ")
-			if d.mode == "market" then
-				GameTooltip:AddLine(L["Usual price %s, after the auction house cut %s"]:format(Money((d.vendor or 0) / AH_CUT), Money(d.vendor or 0)), 0.88, 0.66, 0.23)
-			elseif d.mode == "de" then
+			if d.mode == "de" then
 				GameTooltip:AddLine(L["Disenchanting brings about %s (estimate)"]:format(Money(d.vendor or 0)), 0.88, 0.66, 0.23)
 			end
 			if d.count and (d.mode or "vendor") ~= "vendor" then
@@ -1731,19 +1916,6 @@ local function BuildUI()
 	f.action:SetPoint("BOTTOMRIGHT", -10, 8)
 	f.action:SetScript("OnClick", VendorFloor_BuyNext)
 
-	f.post = FlatButton(f, 210, 30)
-	f.post:SetPoint("BOTTOMRIGHT", -10, 8)
-	f.post:SetScript("OnClick", function() ns.PostNext() end)
-	f.post:HookScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_TOP")
-		GameTooltip:AddLine(L["Post"])
-		GameTooltip:AddLine(L["Puts the next item bought from the market tab on the auction house for 24 hours, just under its usual price and never below cost plus the minimum profit. One auction per click."], 1, 1, 1, true)
-		GameTooltip:Show()
-	end)
-	f.post:HookScript("OnLeave", function(self)
-		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
-	end)
-	f.post:Hide()
 
 	local elapsed, second = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
@@ -1839,15 +2011,6 @@ local function RegisterSettings()
 		L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."])
 	slotSetting:SetValueChangedCallback(function(_, value) db.minSlot = (tonumber(value) or 0) * 100 end)
 
-	local discount = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_DISCOUNT", "marketDiscount", db,
-		Settings.VarType.Number, L["Market tab: percent below the usual price"], defaults.marketDiscount)
-	local discountOptions = Settings.CreateSliderOptions(10, 80, 5)
-	if discountOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
-		discountOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
-	end
-	Settings.CreateSlider(category, discount, discountOptions,
-		L["How far below its usual price an auction must be for the market tab."])
-
 	local flash = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_FLASH", "flash", db,
 		Settings.VarType.Boolean, L["Flash the taskbar"], defaults.flash)
 	Settings.CreateCheckbox(category, flash, L["Flash the game's taskbar icon on new finds while the game is in the background."])
@@ -1874,18 +2037,43 @@ function handlers.ADDON_LOADED(name)
 	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
 	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
+	if db.tab ~= "vendor" and db.tab ~= "de" and db.tab ~= "craft" then db.tab = "vendor" end
 	ns.db = db
 	local ok, err = pcall(RegisterSettings)
 	if not ok then Print(tostring(err)) end
 end
 
+-- The finds of the last full scan (up to an hour old), so the tabs are not empty until the
+-- next full scan is allowed. Each is checked against the live auctions when clicked.
+local function RestoreFinds()
+	local last = db.lastFinds
+	if not (last and last.list and time() - (last.at or 0) < 3600) then return end
+	local age = time() - last.at
+	local n = 0
+	for _, g in ipairs(last.list) do
+		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or (g.mode == "de" and g.variants)) then
+			local d = {}
+			for field, value in pairs(g) do d[field] = value end
+			d.fullAt, d.stale = GetTime() - age, false
+			Confirm(d, true)
+			n = n + 1
+		end
+	end
+	if n > 0 then
+		SortDeals()
+		SetStatus(L["%d finds from the full scan %d min ago. They are checked when you click them."]:format(n, floor(age / 60)))
+	end
+end
+
 function handlers.AUCTION_HOUSE_SHOW()
 	ahOpen = true
+	pcall(RestoreFinds)
 	if not db.hidden then ShowWindow() end
 end
 
 function handlers.AUCTION_HOUSE_CLOSED()
 	ahOpen = false
+	StopCraftScan()
 	full.active = false
 	if ui then ui:Hide() end
 	-- prices change while the auction house is closed: start the next visit empty
@@ -1974,19 +2162,11 @@ function handlers.COMMODITY_PRICE_UPDATED(_, total)
 	local d = buy.deal
 	if total and total <= buy.qty * (d.vendor - db.minProfit) then
 		buy.state, buy.total, buy.t = "quote_ok", total, GetTime()
-		SetStatus(L["Quote: %d× for %s, vendor pays %s."]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
+		SetStatus(L[DeText(d, "Quote: %d× for %s, vendor pays %s.")]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
 		Refresh()
 	else
 		CancelQuote()
 		ResetBuy(L["The price has risen meanwhile. Not bought."])
-	end
-end
-
-function handlers.AUCTION_HOUSE_POST_WARNING()
-	if post.last and GetTime() - post.last.at < 10 then
-		post.warning = post.last
-		SetStatus(L["The auction house warns about this price. Click \"Confirm post\" to post anyway."])
-		Refresh()
 	end
 end
 
@@ -1997,7 +2177,7 @@ end
 function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	if buy.state ~= "confirming" then return end
 	local d = buy.deal
-	Print(L["Bought: %s ×%d for %s (vendor pays %s)."]:format(d.link or d.name, buy.qty, Money(buy.total),
+	Print(L[DeText(d, "Bought: %s ×%d for %s (vendor pays %s).")]:format(d.link or d.name, buy.qty, Money(buy.total),
 		Money(buy.qty * d.vendor)))
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	RemoveDeal(d)
@@ -2037,7 +2217,6 @@ local function Help()
 		L["/vfloor stats – totals since install"],
 		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
 		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
-		L["/vfloor discount <n> – market tab: percent below the usual price"],
 		L["/vfloor quick – quick round over the watch list"],
 		L["/vfloor craft – crafts with profit in chat"],
 		L["/vfloor flash – taskbar flash on or off"],
@@ -2085,9 +2264,6 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		db.minSlot = ParseMoney(arg)
 		db.minSlotSilver = floor(db.minSlot / 100)
 		Print(L["Minimum profit per bag slot: %s"]:format(Money(db.minSlot)))
-	elseif cmd == "discount" and tonumber(arg) then
-		db.marketDiscount = min(max(floor(tonumber(arg)), 5), 95)
-		Print(L["Market tab: at least %d%% below the usual price."]:format(db.marketDiscount))
 	elseif cmd == "flash" then
 		db.flash = not db.flash
 		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))

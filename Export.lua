@@ -131,7 +131,7 @@ local function buildExport()
 		char = { name = name, realm = realm }, minProfit = db.minProfit,
 		total = { buys = ledger.buys, spent = ledger.spent, sold = ledger.sold, soldCost = ledger.soldCost,
 			profit = ledger.profit, unsoldUnits = ledger.unsoldUnits, unsoldValue = ledger.unsoldValue },
-		days = days, items = top, market = db.mtotal, disenchant = db.detotal }
+		days = days, items = top, disenchant = db.detotal }
 end
 
 function ns.ShowExport()

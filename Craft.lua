@@ -91,7 +91,9 @@ end
 -- Cheapest way to get one unit: auction house (usual price) or merchant.
 local function ReagentCost(itemID)
 	local db = DB()
-	local market = ns.MarketValue and ns.PlainKey and ns.MarketValue(ns.PlainKey(itemID))
+	-- buying: the cheapest listings (low price), else the usual price
+	local pk = ns.PlainKey and ns.PlainKey(itemID)
+	local market = pk and ((ns.LowValue and ns.LowValue(pk)) or (ns.MarketValue and ns.MarketValue(pk)))
 	local vendor = db.vendorBuy and db.vendorBuy[itemID]
 	if market and vendor then
 		if vendor <= market then return vendor, "vendor" end
@@ -104,7 +106,13 @@ end
 
 -- What one unit of the product brings: auction house after the cut, or a merchant.
 local function ProductValue(itemID)
-	local market = ns.MarketValue and ns.PlainKey and ns.MarketValue(ns.PlainKey(itemID))
+	-- selling: what a sale has to beat (low price), else 90% of the usual price
+	local pk = ns.PlainKey and ns.PlainKey(itemID)
+	local market = pk and ns.LowValue and ns.LowValue(pk)
+	if not market and pk and ns.MarketValue then
+		local med = ns.MarketValue(pk)
+		market = med and med * 0.9
+	end
 	local sell = select(11, GetItemInfo(itemID)) or 0
 	local ah = market and market * AH_CUT or nil
 	if ah and ah >= sell then return ah, "ah" end
