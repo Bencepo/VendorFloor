@@ -32,7 +32,7 @@ The minimum profit can also be set in the window's input field, top right.
 ## Notes
 
 - Stop the scan before running an Auctionator search. Both addons share the auction house's query channel.
-- Status: early version (0.1.0). Tested on WoW Forever 1.60.1 only, and not yet in the game client.
+- Status: early version (0.1.0), built for WoW Forever 1.60.1.
 
 ## License
 
