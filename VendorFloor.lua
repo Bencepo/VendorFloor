@@ -23,6 +23,9 @@ local ROWS, ROW_HEIGHT = 12, 20
 local SEND_TIMEOUT = 15
 local CHECK_TIMEOUT = 6    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
+local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
+local FULL_WAIT = 10 * 60      -- seconds a full scan waits for the auction house to answer
+local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 
 local defaults = {
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
@@ -38,8 +41,8 @@ local queue, queued = {}, {}  -- finds still to be checked (list and by key)
 local pendingInfo = {}        -- itemID -> browse results whose item data is still loading
 local pendingBuys = {}        -- auctionID -> item purchase waiting for confirmation
 local scan = { active = false, seen = 0, round = 0 }
+local full = { active = false } -- the full scan (every auction at once)
 local buy = {}                -- state of the find being checked or bought
-local session = { buys = 0, spent = 0, value = 0 }
 local selected
 local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
 local ahOpen = false
@@ -48,7 +51,7 @@ local statusText = ""
 local lastSound = 0
 local ui
 
-local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults
+local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull
 
 local function Print(msg)
 	DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
@@ -56,13 +59,15 @@ end
 
 local function Money(copper)
 	copper = floor(copper or 0)
-	if copper < 0 then copper = 0 end
+	local sign = ""
+	if copper < 0 then sign, copper = "-", -copper end
 	local g, s, c = floor(copper / 10000), floor(copper % 10000 / 100), copper % 100
-	local text = ""
-	if g > 0 then text = ("|cffffd700%dg|r "):format(g) end
+	local text = sign
+	if g > 0 then text = text .. ("|cffffd700%dg|r "):format(g) end
 	if g > 0 or s > 0 then text = text .. ("|cffc7c7cf%ds|r "):format(s) end
 	return text .. ("|cffeda55f%d%s|r"):format(c, ns.COPPER)
 end
+ns.Money = Money
 
 -- Amount without colours, for the input field: "1g 20s 5c"
 local function PlainMoney(copper)
@@ -159,10 +164,11 @@ local function IsCommodity(key)
 end
 
 -- Take the find into the list and announce it.
-local function Confirm(d)
+local function Confirm(d, quiet)
 	if d.dropped or deals[d.k] then return end
 	deals[d.k] = d
 	order[#order + 1] = d
+	if quiet then return end
 	Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
 		d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
 	if db.sound and GetTime() - lastSound > 2 then
@@ -197,6 +203,10 @@ local function Evaluate(result)
 	if not d then
 		d = { k = k }
 		queued[k] = d
+	end
+	if d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN then
+		d.stale = false -- seen and counted by the last full scan: no check needed
+		return
 	end
 	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
 	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
@@ -251,18 +261,11 @@ local function Ignore(d)
 end
 
 ---------------------------------------------------------------------------
--- Ledger: what was bought, for how much, and what a vendor pays for it
+-- Ledger (Trade.lua keeps it): the window's line follows every change
 ---------------------------------------------------------------------------
 
-local function LedgerText(t)
-	return t.buys, Money(t.spent), Money(t.value), Money(t.value - t.spent)
-end
-
-local function Record(cost, value)
-	session.buys, session.spent, session.value = session.buys + 1, session.spent + cost, session.value + value
-	local total = db.total
-	total.buys, total.spent, total.value = total.buys + 1, total.spent + cost, total.value + value
-	if ui then ui.ledger:SetText(L["Session: %d buys, spent %s, vendor value %s, profit %s"]:format(LedgerText(session))) end
+ns.OnLedgerChanged = function()
+	if ui and ns.LedgerLine then ui.ledger:SetText(ns.LedgerLine()) end
 end
 
 ---------------------------------------------------------------------------
@@ -274,13 +277,15 @@ StartScan = function()
 		Print(L["The auction house must be open."])
 		return
 	end
-	if buy.state then return end
+	if buy.state or full.active then return end
 	scan.active, scan.seen, scan.nextAt = true, 0, nil
 	scan.round = scan.round + 1
 	tries = 0
 	wipe(queue)
 	wipe(queued)
-	for _, d in ipairs(order) do d.stale = true end
+	for _, d in ipairs(order) do
+		if not (d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN) then d.stale = true end
+	end
 	Send(function() AH.SendBrowseQuery(BrowseQuery()) end)
 	SetStatus(L["Scanning …"])
 	Refresh()
@@ -308,6 +313,7 @@ local function FinishScan()
 		if a.commodity ~= b.commodity then return not a.commodity end
 		return (a.vendor - a.price) > (b.vendor - b.price)
 	end)
+	scan.checkTotal = #queue
 	if queue[1] then
 		SetStatus(L["%d items read. Checking %d candidates …"]:format(scan.seen, #queue))
 	else
@@ -455,6 +461,12 @@ local function ReadItem()
 		return
 	end
 	if not offer then
+		if d.plainKey and not d.triedPlain then
+			-- the full scan built this key from the item link; the plain item key may be the one in use
+			d.key, d.triedPlain = d.plainKey, true
+			Verify(d, "buy")
+			return
+		end
 		RemoveDeal(d)
 		ResetBuy(L["Nothing below vendor price any more."])
 		return
@@ -496,7 +508,8 @@ local function Action()
 			return
 		end
 		AH.PlaceBid(buy.auctionID, buy.buyout)
-		pendingBuys[buy.auctionID] = { cost = buy.buyout, value = buy.vendor * buy.qty }
+		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
+			name = d.name, at = GetTime() }
 		Print(L["Purchase sent: %s ×%d for %s (vendor pays %s)."]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
@@ -541,11 +554,160 @@ function VendorFloor_BuyNext()
 end
 
 ---------------------------------------------------------------------------
+-- Full scan: every auction of the auction house at once (allowed every 15 minutes).
+-- Each auction comes with its buyout, so the finds need no check: bid-only auctions,
+-- own auctions and auctions above the vendor price are simply left out.
+---------------------------------------------------------------------------
+
+local function FullReady()
+	return time() - (db.lastFull or 0) >= FULL_COOLDOWN
+end
+
+local function FullWait()
+	return max(FULL_COOLDOWN - (time() - (db.lastFull or 0)), 0)
+end
+
+-- The item key the auction house uses for this item: gear by item level and suffix,
+-- everything else by item ID alone.
+local function KeyFor(itemID, link)
+	local make = AH.MakeItemKey
+	local plain = make and make(itemID) or { itemID = itemID, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }
+	local equipLoc = select(9, GetItemInfo(link or itemID))
+	if not (link and equipLoc and equipLoc ~= "" and equipLoc ~= "INVTYPE_NON_EQUIP_IGNORE" and make) then
+		return plain, nil
+	end
+	local level = GetDetailedItemLevelInfo and GetDetailedItemLevelInfo(link)
+	local suffix = tonumber(link:match("item:%d+:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:(%-?%d+)")) or 0
+	return make(itemID, level or 0, suffix), plain
+end
+
+StartFull = function()
+	if not ahOpen then
+		Print(L["The auction house must be open."])
+		return
+	end
+	if full.active or scan.active or (buy.state and buy.purpose ~= "check") or not FullReady() then return end
+	if buy.purpose == "check" then wipe(buy) end
+	pendingSend, sentAt = nil, nil
+	wipe(full)
+	full.active, full.phase, full.t0 = true, "waiting", GetTime()
+	full.found, full.pending, full.player = {}, {}, UnitName("player")
+	db.lastFull = time()
+	AH.ReplicateItems()
+	SetStatus(L["Full scan: waiting for the auction house …"])
+	Refresh()
+end
+
+-- One auction of the list. Returns false when its item data has not loaded yet.
+local function FullRecord(index)
+	local _, _, count, _, _, _, _, _, _, buyout, _, _, _, owner, _, _, itemID, hasAll = AH.GetReplicateItemInfo(index)
+	if not itemID then return true end
+	if not hasAll then return false end
+	if not buyout or buyout <= 0 or (owner and owner == full.player) or IsIgnored(itemID) then return true end
+	count = max(count or 1, 1)
+	local link = AH.GetReplicateItemLink and AH.GetReplicateItemLink(index)
+	local vendor, name, itemLink, icon = VendorPrice(link or itemID)
+	if vendor == nil then return false end
+	local unit = buyout / count
+	if vendor <= 0 or vendor - unit < db.minProfit then return true end
+	local key, plain = KeyFor(itemID, link)
+	local k = DealKey(key)
+	local g = full.found[k]
+	if not g then
+		g = { k = k, key = key, plainKey = plain, id = itemID, vendor = vendor, price = unit, count = 0, profit = 0,
+			listed = 0, name = name, link = itemLink or link, icon = icon }
+		full.found[k] = g
+	end
+	g.count, g.profit, g.listed = g.count + count, g.profit + (vendor - unit) * count, g.listed + 1
+	if unit < g.price then g.price = unit end
+	return true
+end
+
+local function FinishFull(failed)
+	full.active = false
+	if failed then
+		SetStatus(L["Full scan: the auction house did not answer. Try again in 15 minutes."])
+		Refresh()
+		return
+	end
+	local now, found, new = GetTime(), 0, 0
+	for k, g in pairs(full.found) do
+		found = found + 1
+		g.commodity = IsCommodity(g.key) == true
+		g.fullAt, g.stale = now, false
+		local d = deals[k]
+		if d then
+			d.price, d.count, d.profit, d.listed, d.fullAt, d.stale = g.price, g.count, g.profit, g.listed, now, false
+			d.plainKey = d.plainKey or g.plainKey
+		else
+			Confirm(g, true)
+			new = new + 1
+		end
+	end
+	-- the full list is complete: what it did not show is gone
+	for i = #order, 1, -1 do
+		local d = order[i]
+		if not full.found[d.k] and d ~= buy.deal then RemoveDeal(d) end
+	end
+	SortDeals()
+	SetStatus(L["Full scan done: %d auctions read, %d finds below vendor price."]:format(full.count or 0, found))
+	if new > 0 then
+		Print(L["%d new finds below vendor price."]:format(new))
+		if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
+	end
+	if db.loop then scan.nextAt = GetTime() + 5 end
+	Refresh()
+end
+
+local function FullTick(now)
+	if full.phase == "waiting" then
+		if now - full.t0 > FULL_WAIT then FinishFull(true) end
+	elseif full.phase == "arriving" then
+		-- the list can arrive in parts: read it once it has stopped growing for two seconds
+		local n = AH.GetNumReplicateItems()
+		if n ~= full.count then
+			full.count, full.stableAt = n, now
+		elseif now - full.stableAt > 2 then
+			full.phase, full.index = "reading", 0
+		end
+	elseif full.phase == "reading" then
+		local last = min(full.index + FULL_PER_TICK, full.count) - 1
+		for i = full.index, last do
+			if not FullRecord(i) then
+				full.pending[#full.pending + 1] = i
+				local itemID = select(17, AH.GetReplicateItemInfo(i))
+				if itemID and C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
+			end
+		end
+		full.index = last + 1
+		SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
+		if full.index >= full.count then full.phase, full.loadT = "loading", now end
+	elseif full.phase == "loading" then
+		-- items the client had not loaded yet: up to 30 seconds more
+		local still = {}
+		for n, i in ipairs(full.pending) do
+			if n > FULL_PER_TICK or not FullRecord(i) then still[#still + 1] = i end
+		end
+		full.pending = still
+		if still[1] and now - full.loadT < 30 then
+			SetStatus(L["Full scan: loading item data (%d left) …"]:format(#still))
+		else
+			FinishFull()
+		end
+	end
+	Refresh()
+end
+
+---------------------------------------------------------------------------
 -- Clock: send queries, time-outs, the check queue, continuous mode
 ---------------------------------------------------------------------------
 
 local function Tick()
 	local now = GetTime()
+	if full.active then
+		FullTick(now)
+		return
+	end
 	if pendingSend then
 		if AH.IsThrottledMessageSystemReady() then
 			local fn = pendingSend
@@ -619,7 +781,29 @@ Refresh = function()
 	end
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
 	ui.scan:SetText((scan.active or checking) and L["Stop"] or L["Scan"])
-	ui.scan:SetEnabled(scan.active or checking or not buy.state)
+	ui.scan:SetEnabled(not full.active and (scan.active or checking or not buy.state))
+	ns.UpdateFullButton()
+
+	-- progress: full scan (auctions read), check phase (candidates checked), browsing (no total known)
+	local fraction
+	if full.active then
+		fraction = full.phase == "reading" and full.count and full.count > 0 and full.index / full.count
+			or full.phase == "loading" and 1 or 0
+	elseif checking and (scan.checkTotal or 0) > 0 then
+		fraction = 1 - #queue / scan.checkTotal
+	elseif scan.active then
+		fraction = 0
+	end
+	ui.bar:SetShown(fraction ~= nil)
+	if fraction then ui.bar:SetValue(max(0, min(1, fraction))) end
+
+	-- summary: what the whole list would cost and bring
+	local cost, profit = 0, 0
+	for _, d in ipairs(order) do
+		local n = d.count or 1
+		cost, profit = cost + (d.price or 0) * n, profit + (d.profit or 0)
+	end
+	ui.summary:SetText(#order > 0 and L["%d finds · cost %s · profit %s"]:format(#order, Money(cost), Money(profit)) or "")
 	ui.loop:SetChecked(db.loop)
 	ui.count:SetText(#order > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #order), #order) or "")
 
@@ -644,6 +828,22 @@ Refresh = function()
 	ui.action:SetEnabled(enabled)
 end
 
+-- The full scan button: its countdown runs once a second.
+function ns.UpdateFullButton()
+	if not ui then return end
+	if full.active then
+		ui.full:SetText(L["Full scan"])
+		ui.full:SetEnabled(false)
+	elseif FullReady() then
+		ui.full:SetText(L["Full scan"])
+		ui.full:SetEnabled(not scan.active and not (buy.state and buy.purpose ~= "check"))
+	else
+		local wait = FullWait()
+		ui.full:SetText(L["Full scan (%s)"]:format(("%d:%02d"):format(floor(wait / 60), wait % 60)))
+		ui.full:SetEnabled(false)
+	end
+end
+
 local function StopAll(msg)
 	if buy.purpose == "check" then wipe(buy) end
 	wipe(queue)
@@ -665,7 +865,7 @@ end
 local function BuildUI()
 	if ui then return end
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
-	f:SetSize(500, 124 + ROWS * ROW_HEIGHT)
+	f:SetSize(520, 152 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
 	f:SetBackdrop({
 		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -713,9 +913,25 @@ local function BuildUI()
 		end
 	end)
 
+	-- full scan: every auction at once, allowed every 15 minutes
+	f.full = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	f.full:SetSize(116, 22)
+	f.full:SetPoint("LEFT", f.scan, "RIGHT", 4, 0)
+	f.full:SetScript("OnClick", function() StartFull() end)
+	f.full:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:AddLine(L["Full scan"])
+		GameTooltip:AddLine(L["Reads every auction at once: complete, without checking each item."], 1, 1, 1, true)
+		GameTooltip:AddLine(L["The full scan is available every 15 minutes."], 0.7, 0.7, 0.7, true)
+		GameTooltip:Show()
+	end)
+	f.full:SetScript("OnLeave", function(self)
+		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+	end)
+
 	local loop = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
 	loop:SetSize(24, 24)
-	loop:SetPoint("LEFT", f.scan, "RIGHT", 8, 0)
+	loop:SetPoint("LEFT", f.full, "RIGHT", 6, 0)
 	loop:SetChecked(db.loop)
 	loop:SetScript("OnClick", function(self)
 		db.loop = self:GetChecked() and true or false
@@ -768,11 +984,24 @@ local function BuildUI()
 	profitText:SetPoint("RIGHT", profit, "LEFT", -8, 0)
 	profitText:SetText(L["Min. profit/unit"])
 
+	-- progress bar under the buttons
+	f.bar = CreateFrame("StatusBar", nil, f)
+	f.bar:SetPoint("TOPLEFT", 10, -56)
+	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+	f.bar:SetHeight(5)
+	f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+	f.bar:SetStatusBarColor(0.95, 0.71, 0.2)
+	f.bar:SetMinMaxValues(0, 1)
+	f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
+	f.bar.bg:SetAllPoints()
+	f.bar.bg:SetColorTexture(1, 1, 1, 0.08)
+	f.bar:Hide()
+
 	f.rows = {}
 	for i = 1, ROWS do
 		local row = CreateFrame("Button", nil, f)
 		row:SetHeight(ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 8, -54 - (i - 1) * ROW_HEIGHT)
+		row:SetPoint("TOPLEFT", 8, -66 - (i - 1) * ROW_HEIGHT)
 		row:SetPoint("RIGHT", f, "RIGHT", -8, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
@@ -820,7 +1049,13 @@ local function BuildUI()
 	f.ledger:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.ledger:SetJustifyH("LEFT")
 	f.ledger:SetWordWrap(false)
-	f.ledger:SetText(L["Session: %d buys, spent %s, vendor value %s, profit %s"]:format(LedgerText(session)))
+	f.ledger:SetText(ns.LedgerLine and ns.LedgerLine() or "")
+
+	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	f.summary:SetPoint("BOTTOMLEFT", 10, 70)
+	f.summary:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+	f.summary:SetJustifyH("LEFT")
+	f.summary:SetWordWrap(false)
 
 	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.status:SetPoint("BOTTOMLEFT", 10, 36)
@@ -835,9 +1070,13 @@ local function BuildUI()
 	f.action:SetPoint("BOTTOMRIGHT", -8, 8)
 	f.action:SetScript("OnClick", VendorFloor_BuyNext)
 
-	local elapsed = 0
+	local elapsed, second = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
-		elapsed = elapsed + dt
+		elapsed, second = elapsed + dt, second + dt
+		if second >= 1 then
+			second = 0
+			ns.UpdateFullButton()
+		end
 		if elapsed < 0.1 then return end
 		elapsed = 0
 		Tick()
@@ -915,6 +1154,9 @@ function handlers.ADDON_LOADED(name)
 	end
 	db.ignore = db.ignore or {}
 	db.total = db.total or { buys = 0, spent = 0, value = 0 }
+	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
+	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
+	ns.db = db
 	local ok, err = pcall(RegisterSettings)
 	if not ok then Print(tostring(err)) end
 end
@@ -926,6 +1168,7 @@ end
 
 function handlers.AUCTION_HOUSE_CLOSED()
 	ahOpen = false
+	full.active = false
 	if ui then ui:Hide() end
 	-- prices change while the auction house is closed: start the next visit empty
 	for i = #order, 1, -1 do RemoveDeal(order[i]) end
@@ -944,6 +1187,12 @@ function handlers.AUCTION_HOUSE_BROWSE_RESULTS_ADDED(added)
 	if not scan.active then return end
 	Process(added)
 	ContinueScan()
+end
+
+function handlers.REPLICATE_ITEM_LIST_UPDATE()
+	if full.active and full.phase == "waiting" then
+		full.phase, full.count, full.stableAt = "arriving", AH.GetNumReplicateItems(), GetTime()
+	end
 end
 
 function handlers.AUCTION_HOUSE_BROWSE_FAILURE()
@@ -984,7 +1233,22 @@ function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
-	Record(p.cost, p.value)
+	ns.RecordBuy(p.id, p.qty, p.cost, p.value)
+end
+
+-- In case the client has no purchase event: the "You won an auction for ..." line.
+local WON_PATTERN = ERR_AUCTION_WON_S and ("^" .. ERR_AUCTION_WON_S:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%s", "(.+)") .. "$")
+function handlers.CHAT_MSG_SYSTEM(msg)
+	if not (WON_PATTERN and msg) then return end
+	local name = msg:match(WON_PATTERN)
+	if not name then return end
+	for auctionID, p in pairs(pendingBuys) do
+		if p.name == name and GetTime() - p.at < 60 then
+			pendingBuys[auctionID] = nil
+			ns.RecordBuy(p.id, p.qty, p.cost, p.value)
+			return
+		end
+	end
 end
 
 function handlers.COMMODITY_PRICE_UPDATED(_, total)
@@ -1009,7 +1273,7 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	local d = buy.deal
 	Print(L["Bought: %s ×%d for %s (vendor pays %s)."]:format(d.link or d.name, buy.qty, Money(buy.total),
 		Money(buy.qty * d.vendor)))
-	Record(buy.total or 0, buy.qty * d.vendor)
+	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor)
 	RemoveDeal(d)
 	ResetBuy(L["Bought."])
 end
@@ -1043,7 +1307,9 @@ local function Help()
 		L["/vfloor interval <seconds> – pause between rounds"],
 		L["/vfloor sound – alert sound on or off"],
 		L["/vfloor ignore list | clear – show or clear the ignore list"],
+		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
+		L["/vfloor forget – forget the purchases still to sell"],
 		L["/vfloor reset – reset the window position"],
 		L["/vfloor options – open the settings"],
 	}) do
@@ -1075,7 +1341,12 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		table.sort(names)
 		Print(#names > 0 and L["Ignore list: %s"]:format(table.concat(names, ", ")) or L["The ignore list is empty."])
 	elseif cmd == "stats" then
-		Print(L["Total: %d buys, spent %s, vendor value %s, profit %s"]:format(LedgerText(db.total)))
+		Print(ns.TotalLine())
+	elseif cmd == "full" then
+		StartFull()
+	elseif cmd == "forget" then
+		ns.ForgetPurchases()
+		Print(L["Tracked purchases cleared."])
 	elseif cmd == "reset" then
 		db.point = nil
 		if ui and ui:IsShown() then PlaceWindow() end
