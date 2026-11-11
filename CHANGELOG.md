@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0
+## 0.2.0-beta
 
 - English interface; German when the game client is German.
 - Key binding "Buy next find" (Options > Keybindings > AddOns) and `/vfloor buy`: each press checks or buys the best find.
@@ -12,7 +12,7 @@
 - The version is shown in the window title and in `/vfloor help`.
 - The list is cleared when the auction house closes, since prices change in the meantime.
 
-## 0.1.0
+## 0.1.0-beta
 
 - First release. Finds auction house listings priced below vendor value and buys them on click.
 - Only auctions with a buyout price are listed; bid-only auctions are ignored.
