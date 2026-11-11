@@ -105,8 +105,11 @@ end
 -- Queries: only one at a time, and only once the auction house is ready
 ---------------------------------------------------------------------------
 
+local pendingAt = 0
+local SEND_FORCE = 10 -- seconds a query waits for the throttle before it is sent anyway
+
 local function Send(fn)
-	pendingSend, lastSend = fn, fn
+	pendingSend, lastSend, pendingAt = fn, fn, GetTime()
 end
 
 local SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
@@ -732,7 +735,9 @@ local function Tick()
 		return
 	end
 	if pendingSend then
-		if AH.IsThrottledMessageSystemReady() then
+		-- The throttle can stay "not ready" after a purchase; send anyway after a while.
+		-- A dropped query comes back through AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED.
+		if AH.IsThrottledMessageSystemReady() or now - pendingAt > SEND_FORCE then
 			local fn = pendingSend
 			pendingSend, sentAt = nil, now
 			fn()
@@ -818,7 +823,19 @@ Refresh = function()
 		fraction = 0
 	end
 	ui.bar:SetShown(fraction ~= nil)
-	if fraction then ui.bar:SetValue(max(0, min(1, fraction))) end
+	if fraction then
+		fraction = max(0, min(1, fraction))
+		ui.bar:SetValue(fraction)
+		local label
+		if full.active then
+			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
+		elseif checking and (scan.checkTotal or 0) > 0 then
+			label = L["Checking %d of %d (%d%%)"]:format(scan.checkTotal - #queue, scan.checkTotal, floor(fraction * 100))
+		else
+			label = L["Reading auctions: %d"]:format(scan.seen or 0)
+		end
+		ui.bar.text:SetText(label)
+	end
 
 	-- summary: what the whole list would cost and bring
 	local cost, profit = 0, 0
@@ -1011,13 +1028,17 @@ local function BuildUI()
 	f.bar = CreateFrame("StatusBar", nil, f)
 	f.bar:SetPoint("TOPLEFT", 10, -56)
 	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
-	f.bar:SetHeight(5)
+	f.bar:SetHeight(10)
 	f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
 	f.bar:SetStatusBarColor(0.95, 0.71, 0.2)
 	f.bar:SetMinMaxValues(0, 1)
 	f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
 	f.bar.bg:SetAllPoints()
 	f.bar.bg:SetColorTexture(1, 1, 1, 0.08)
+	f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.bar.text:SetPoint("CENTER", 0, 0)
+	local font = f.bar.text:GetFont()
+	if font then f.bar.text:SetFont(font, 9, "OUTLINE") end
 	f.bar:Hide()
 
 	f.rows = {}
@@ -1369,6 +1390,11 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(ns.TotalLine())
 	elseif cmd == "export" then
 		ns.ShowExport()
+	elseif cmd == "debug" then
+		Print(("scan.active=%s round=%d seen=%d queue=%d checkTotal=%s buy.state=%s purpose=%s pending=%s throttleReady=%s full.active=%s phase=%s nextAt=%s ah=%s"):format(
+			tostring(scan.active), scan.round or 0, scan.seen or 0, #queue, tostring(scan.checkTotal), tostring(buy.state),
+			tostring(buy.purpose), tostring(pendingSend ~= nil), tostring(AH.IsThrottledMessageSystemReady()),
+			tostring(full.active), tostring(full.phase), tostring(scan.nextAt and floor(scan.nextAt - GetTime())), tostring(ahOpen)))
 	elseif cmd == "minimap" then
 		Print(ns.ToggleMinimap() and L["Minimap button shown."] or L["Minimap button hidden."])
 	elseif cmd == "full" then
