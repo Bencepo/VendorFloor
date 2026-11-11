@@ -8,19 +8,21 @@ on:
 
 jobs:
   luacheck:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
+      # luacheck kommt als Docker-Image statt per apt (die apt-Installation hing bzw. brach mit Exit 100 ab).
       - name: Install luacheck
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua-check
+        timeout-minutes: 5
+        run: docker pull -q ghcr.io/lunarmodules/luacheck:v1.2.0
 
       # Syntaxfehler (Exit-Code 2 und höher) stoppen den Lauf, Warnungen (1) nur anzeigen.
       # Jede Meldung wird als Annotation ausgegeben (Datei, Zeile, Code).
-      # Syntaxfehler (Exit-Code 2 und höher) stoppen den Lauf, Warnungen (1) nur anzeigen.
       - name: Run luacheck
         run: |
           set +e
+          luacheck() { docker run --rm -v "$PWD:/data" -w /data --entrypoint luacheck ghcr.io/lunarmodules/luacheck:v1.2.0 "$@"; }
           luacheck *.lua --formatter plain --codes > luacheck.txt
           code=$?
           cat luacheck.txt
