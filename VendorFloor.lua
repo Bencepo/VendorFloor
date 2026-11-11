@@ -1333,6 +1333,7 @@ local function Help()
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
 		L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"],
+		L["/vfloor minimap – minimap button on or off"],
 		L["/vfloor forget – forget the purchases still to sell"],
 		L["/vfloor reset – reset the window position"],
 		L["/vfloor options – open the settings"],
@@ -1368,6 +1369,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(ns.TotalLine())
 	elseif cmd == "export" then
 		ns.ShowExport()
+	elseif cmd == "minimap" then
+		Print(ns.ToggleMinimap() and L["Minimap button shown."] or L["Minimap button hidden."])
 	elseif cmd == "full" then
 		StartFull()
 	elseif cmd == "forget" then

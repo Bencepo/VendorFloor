@@ -12,6 +12,7 @@ globals = {
 	"VendorFloorDB",
 	"VendorFloor_BuyNext",
 	"VendorFloor_Ledger",
+	"VendorFloor_OnCompartmentClick",
 	"SLASH_VENDORFLOOR1",
 	"SLASH_VENDORFLOOR2",
 	"SlashCmdList",
