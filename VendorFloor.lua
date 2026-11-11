@@ -805,7 +805,7 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s → %s  |cff40ff40+%s|r |cffaaaaaa(%s×)|r"):format(Money(d.price), Money(d.vendor),
+			row.info:SetText(("%s > %s  |cff40ff40+%s|r |cffaaaaaa(%s×)|r"):format(Money(d.price), Money(d.vendor),
 				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
@@ -877,12 +877,19 @@ end
 local function UpdateScanButton()
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
 	local waiting = scan.nextAt and not scan.active and not checking
+	local running = scan.active or checking or waiting
 	if waiting then
 		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
 	else
-		ui.scan:SetText((scan.active or checking) and L["Stop"] or L["Scan"])
+		ui.scan:SetText(running and L["Stop"] or L["Scan"])
 	end
-	ui.scan:SetEnabled(not full.active and (scan.active or checking or waiting or not buy.state))
+	ui.scan:SetEnabled(not full.active and (running or not buy.state))
+	-- while something runs the button stays pressed in, like a switch that is on
+	if running then
+		ui.scan:SetButtonState("PUSHED", true)
+	else
+		ui.scan:SetButtonState("NORMAL")
+	end
 end
 
 -- The full scan button: its countdown runs once a second (the scan button's as well).
