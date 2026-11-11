@@ -16,10 +16,21 @@ jobs:
         run: sudo apt-get update -qq && sudo apt-get install -y -qq lua-check
 
       # Syntaxfehler (Exit-Code 2 und höher) stoppen den Lauf, Warnungen (1) nur anzeigen.
+      # Jede Meldung wird als Annotation ausgegeben (Datei, Zeile, Code).
+      # Syntaxfehler (Exit-Code 2 und höher) stoppen den Lauf, Warnungen (1) nur anzeigen.
       - name: Run luacheck
         run: |
           set +e
-          luacheck *.lua
+          luacheck *.lua --formatter plain --codes > luacheck.txt
           code=$?
+          cat luacheck.txt
+          while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1); ln=$(echo "$line" | cut -d: -f2); col=$(echo "$line" | cut -d: -f3)
+            msg=$(echo "$line" | cut -d: -f4- | sed 's/^ *//')
+            case "$msg" in
+              \(E*) echo "::error file=$file,line=$ln,col=$col::$msg" ;;
+              *) echo "::warning file=$file,line=$ln,col=$col::$msg" ;;
+            esac
+          done < luacheck.txt
           if [ $code -ge 2 ]; then exit $code; fi
           exit 0
