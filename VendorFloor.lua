@@ -7,7 +7,9 @@
 -- own window. Every purchase needs a click or key press of its own.
 
 local ADDON, ns = ...
-local L = ns.L
+-- Texts come from Locales.lua. Should it not have loaded (an outdated .toc), English is used.
+local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
+ns.COPPER = ns.COPPER or "c"
 local AH = C_AuctionHouse
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata

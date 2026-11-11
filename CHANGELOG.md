@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1-beta
+
+- Fixed: the window failed to open with "attempt to index upvalue 'L'" when the texts file had not been loaded. VendorFloor now falls back to English texts.
+
 ## 0.2.0-beta.2
 
 - English interface; German when the game client is German.
