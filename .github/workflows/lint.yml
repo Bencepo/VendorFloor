@@ -1,0 +1,25 @@
+name: Lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  luacheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install luacheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq lua-check
+
+      # Syntaxfehler (Exit-Code 2 und höher) stoppen den Lauf, Warnungen (1) nur anzeigen.
+      - name: Run luacheck
+        run: |
+          set +e
+          luacheck *.lua
+          code=$?
+          if [ $code -ge 2 ]; then exit $code; fi
+          exit 0

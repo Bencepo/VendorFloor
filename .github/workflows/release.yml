@@ -1,13 +1,17 @@
 name: Release
 
-# Ein Tag wie v0.1.1 baut die Zip und lädt sie zu CurseForge hoch.
+# Ein Tag wie v0.2.0 prüft den Code, baut die Zip und lädt sie zu CurseForge hoch.
 on:
   push:
     tags:
       - "v*"
 
 jobs:
+  lint:
+    uses: ./.github/workflows/lint.yml
+
   release:
+    needs: lint
     runs-on: ubuntu-latest
     env:
       CF_API_KEY: ${{ secrets.CF_API_KEY }}
