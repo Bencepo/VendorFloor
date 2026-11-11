@@ -5,6 +5,7 @@ ignore:
   - .pkgmeta
   - "*.md"
   - .luacheckrc
+  - web
 
 manual-changelog:
   filename: CHANGELOG.md
