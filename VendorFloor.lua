@@ -22,6 +22,8 @@ ns.VERSION = VERSION
 local PREFIX = "|cff33ff99VendorFloor:|r "
 local ROWS, ROW_HEIGHT = 12, 22
 local SEND_TIMEOUT = 15
+local BUY_SILENT = 5       -- seconds a purchase check waits before it tries the other item key or gives up
+local keyStyle = {}        -- itemID -> "plain" when gear is only found with the plain item key
 local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
@@ -487,6 +489,10 @@ Verify = function(d, purpose)
 	if scan.active then StopScan() end
 	purpose = purpose or "buy"
 	if purpose == "buy" then scan.nextAt = nil end
+	-- gear from full scans: use the key that worked for this item before
+	if d.plainKey and not d.triedPlain and keyStyle[d.id] == "plain" then
+		d.key, d.triedPlain = d.plainKey, true
+	end
 	wipe(buy)
 	buy.state, buy.deal, buy.t, buy.purpose = "verifying", d, GetTime(), purpose
 	tries = 0
@@ -613,6 +619,7 @@ local function ReadItem()
 		return
 	end
 	local best = offer.best
+	if d.triedPlain and d.plainKey then keyStyle[d.id] = "plain" end
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 	buy.state = "item_ready"
 	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = best.auctionID, best.buyout, best.quantity, best.vendor, best.link
@@ -1060,6 +1067,17 @@ local function Tick()
 	end
 	if state == "verifying" and buy.purpose == "check" and now - buy.t > CHECK_TIMEOUT then
 		FinishCheck(buy.deal, false)
+	elseif state == "verifying" and not pendingSend and now - buy.t > BUY_SILENT then
+		-- No answer to a purchase check: the auction house sends none for a search without
+		-- results. Gear from a full scan gets a second try with the plain item key, then it is gone.
+		local d = buy.deal
+		if d and d.plainKey and not d.triedPlain then
+			d.key, d.triedPlain = d.plainKey, true
+			Verify(d, "buy")
+		else
+			if d then RemoveDeal(d) end
+			ResetBuy(L["Nothing below vendor price any more."])
+		end
 	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
 		ResetBuy(L["No answer while checking."])
 	elseif state == "bought" and now - buy.t > 1.5 then

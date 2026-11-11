@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1-beta
+
+- Much faster buying of gear finds (disenchant and market tabs, gear in the vendor tab): a purchase check that gets no answer gives up after 5 instead of 15 seconds, tries the plain item key right away, and remembers per item which key works.
+
 ## 0.6.0-beta
 
 - New tab **Crafting**: which of your learned recipes make a profit right now. Product value: auction house after the 5% cut or a merchant, whichever is more; reagents: auction house or merchant, whichever is cheaper. Recipes are read when a profession window is open (a "Craft profits" button there opens the tab), merchant prices of reagents when a merchant window is open, auction prices come from full scans. `/vfloor craft` lists the best ten in chat.
