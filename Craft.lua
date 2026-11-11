@@ -11,7 +11,7 @@
 local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-local floor, max = math.floor, math.max
+local max = math.max
 local AH_CUT = 0.95
 
 local function DB() return ns.db end

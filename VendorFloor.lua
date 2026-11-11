@@ -31,7 +31,6 @@ local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
 local QUICK_ITEMS = 40         -- items a quick round checks
-local MODES = { "vendor", "market", "de" }
 local TABS = { "vendor", "market", "de", "craft" }
 
 local defaults = {
