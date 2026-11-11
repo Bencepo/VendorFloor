@@ -99,7 +99,7 @@ jobs:
           log=$(tail -n 60 "$RUNNER_TEMP/pkg.log" | sed 's/%/%25/g' | sed 's/\r//g' | awk '{printf "%s%%0A", $0}')
           echo "::notice title=packager (exit $code)::$log"
           if [ $code -ne 0 ]; then exit $code; fi
-          if ! grep -qiE "Uploading .* to CurseForge|curseforge.*(success|uploaded)" "$RUNNER_TEMP/pkg.log"; then
+          if ! grep -A1 -iE "^Uploading .* to https://[a-z.]*curseforge\.com" "$RUNNER_TEMP/pkg.log" | grep -q "Success!"; then
             echo "::error title=packager::No CurseForge upload in the log"
             exit 1
           fi
