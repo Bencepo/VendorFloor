@@ -23,9 +23,10 @@ local defaults = {
 }
 local db
 
-local deals, order = {}, {}   -- Funde: nach Schlüssel und als sortierte Liste
+local deals, order = {}, {}   -- bestätigte Funde: nach Schlüssel und als sortierte Liste
+local queue, queued = {}, {}  -- Funde, deren Sofortkauf noch zu prüfen ist (Liste und nach Schlüssel)
 local pendingInfo = {}        -- itemID -> Browse-Ergebnis, dessen Itemdaten noch laden
-local scan = { active = false, seen = 0 }
+local scan = { active = false, seen = 0, round = 0 }
 local buy = {}                -- Zustand des gerade bearbeiteten Funds
 local selected
 local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
@@ -109,6 +110,7 @@ local function DealKey(key)
 end
 
 local function RemoveDeal(d)
+	d.dropped = true
 	deals[d.k] = nil
 	for i = #order, 1, -1 do
 		if order[i] == d then table.remove(order, i) end
@@ -131,6 +133,34 @@ local function VendorPrice(item)
 	return sell or 0, name, link, icon
 end
 
+-- Handelsware wird immer zum Festpreis verkauft, Einzelgegenstände können reine
+-- Gebotsauktionen ohne Sofortkauf sein. nil, wenn es sich nicht feststellen lässt.
+local function IsCommodity(key)
+	local info = AH.GetItemKeyInfo and AH.GetItemKeyInfo(key)
+	if info == nil then return nil end
+	return info.isCommodity and true or false
+end
+
+-- Den Fund in die Liste aufnehmen und melden.
+local function Confirm(d)
+	if d.dropped or deals[d.k] then return end
+	deals[d.k] = d
+	order[#order + 1] = d
+	Print(("%s unter Händlerpreis: AH %s, Händler %s"):format(d.link or d.name, Money(d.price), Money(d.vendor)))
+	if db.sound and GetTime() - lastSound > 2 then
+		lastSound = GetTime()
+		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
+	end
+end
+
+-- Zum Prüfen vormerken: erst wenn eine Auktion mit Sofortkauf gefunden ist,
+-- kommt der Fund in die Liste. Einmal je Runde.
+local function Enqueue(d)
+	if d.queuedRound == scan.round then return end
+	d.queuedRound = scan.round
+	queue[#queue + 1] = d
+end
+
 local function Evaluate(result)
 	local key = result.itemKey
 	local id, price = key.itemID, result.minPrice
@@ -142,19 +172,22 @@ local function Evaluate(result)
 	end
 	if vendor <= 0 or vendor - price < db.minProfit then return end
 	local k = DealKey(key)
-	local d = deals[k]
+	local d = deals[k] or queued[k]
 	if not d then
 		d = { k = k }
-		deals[k] = d
-		order[#order + 1] = d
-		Print(("%s unter Händlerpreis: AH %s, Händler %s"):format(link or name, Money(price), Money(vendor)))
-		if db.sound and GetTime() - lastSound > 2 then
-			lastSound = GetTime()
-			PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
-		end
+		queued[k] = d
 	end
-	d.key, d.id, d.price, d.vendor, d.qty = key, id, price, vendor, result.totalQuantity or 0
-	d.name, d.link, d.icon, d.stale = name, link, icon, false
+	d.key, d.id, d.vendor, d.qty = key, id, vendor, result.totalQuantity or 0
+	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
+	if IsCommodity(key) == true then
+		-- Festpreis: der Preis aus der Artikelliste ist der Sofortkaufpreis.
+		d.price = price
+		Confirm(d)
+	else
+		-- Der Preis kann ein Gebot ohne Sofortkauf sein: erst prüfen.
+		d.price = price
+		Enqueue(d)
+	end
 end
 
 local function Process(results)
@@ -192,7 +225,10 @@ StartScan = function()
 	end
 	if buy.state then return end
 	scan.active, scan.seen, scan.nextAt = true, 0, nil
+	scan.round, scan.checked = scan.round + 1, 0
 	tries = 0
+	wipe(queue)
+	wipe(queued)
 	for _, d in ipairs(order) do d.stale = true end
 	Send(function() AH.SendBrowseQuery(BrowseQuery()) end)
 	SetStatus("Scanne …")
@@ -212,8 +248,13 @@ local function FinishScan()
 		local d = order[i]
 		if d.stale and d ~= buy.deal then RemoveDeal(d) end
 	end
-	SetStatus(("Runde fertig: %d Artikel geprüft, %d unter Händlerpreis."):format(scan.seen, #order))
-	if db.loop then scan.nextAt = GetTime() + db.interval end
+	if queue[1] then
+		SetStatus(("%d Artikel gelesen. Prüfe %d Kandidaten auf Sofortkauf …"):format(scan.seen, #queue))
+		scan.checkingSince = GetTime()
+	else
+		SetStatus(("Runde fertig: %d Artikel gelesen, %d unter Händlerpreis."):format(scan.seen, #order))
+		if db.loop then scan.nextAt = GetTime() + db.interval end
+	end
 	Refresh()
 end
 
@@ -223,7 +264,7 @@ local function ContinueScan()
 		FinishScan()
 	else
 		Send(function() AH.RequestMoreBrowseResults() end)
-		SetStatus(("Scanne … %d Artikel geprüft, %d Funde"):format(scan.seen, #order))
+		SetStatus(("Scanne … %d Artikel gelesen, %d Funde"):format(scan.seen, #order + #queue))
 		Refresh()
 	end
 end
@@ -243,21 +284,54 @@ ResetBuy = function(msg)
 	Refresh()
 end
 
-Verify = function(d)
+-- purpose "buy": der Fund wurde angeklickt und soll gekauft werden.
+-- purpose "check": die Runde prüft, ob es überhaupt einen Sofortkauf gibt.
+Verify = function(d, purpose)
 	if not ahOpen then return end
 	if scan.active then StopScan() end
-	scan.nextAt = nil
+	purpose = purpose or "buy"
+	if purpose == "buy" then scan.nextAt = nil end
 	wipe(buy)
-	buy.state, buy.deal, buy.t = "verifying", d, GetTime()
+	buy.state, buy.deal, buy.t, buy.purpose = "verifying", d, GetTime(), purpose
 	tries = 0
 	Send(function() AH.SendSearchQuery(d.key, SORTS, true) end)
-	SetStatus("Prüfe " .. (d.link or d.name or "Artikel") .. " …")
+	if purpose == "check" then
+		SetStatus(("Prüfe Sofortkauf: %s (noch %d)"):format(d.link or d.name or "Artikel", #queue))
+	else
+		SetStatus("Prüfe " .. (d.link or d.name or "Artikel") .. " …")
+	end
+	Refresh()
+end
+
+-- Ergebnis einer Prüfung: mit Sofortkauf in die Liste, ohne wieder heraus.
+local function FinishCheck(d, best)
+	if best then
+		d.price, d.vendor = best.unit, best.vendor or d.vendor
+		Confirm(d)
+		SortDeals()
+	elseif deals[d.k] then
+		RemoveDeal(d)
+	end
+	queued[d.k] = nil
+	scan.checked = (scan.checked or 0) + 1
+	wipe(buy)
+	if not queue[1] then
+		SetStatus(("Runde fertig: %d Artikel gelesen, %d mit Sofortkauf unter Händlerpreis."):format(scan.seen, #order))
+		if db.loop and not scan.active then scan.nextAt = GetTime() + db.interval end
+	end
 	Refresh()
 end
 
 -- Handelsware (stapelbar, ein Preis je Stück): wie viele Stück liegen unter Händlerpreis?
 local function ReadCommodity()
 	local d = buy.deal
+	if buy.purpose == "check" then
+		local info = AH.GetCommoditySearchResultInfo(d.id, 1)
+		local unit = info and info.unitPrice
+		local ok = unit and unit > 0 and d.vendor - unit >= db.minProfit
+		FinishCheck(d, ok and { unit = unit } or nil)
+		return
+	end
 	local qty, cost, money = 0, 0, GetMoney()
 	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
 		local info = AH.GetCommoditySearchResultInfo(d.id, i)
@@ -277,8 +351,8 @@ local function ReadCommodity()
 end
 
 -- Einzelgegenstand: die günstigste Auktion mit Sofortkauf unter Händlerpreis.
-local function ReadItem()
-	local d = buy.deal
+-- Reine Gebotsauktionen (ohne Sofortkauf) bleiben außen vor: buyoutAmount ist dort 0.
+local function BestItemOffer(d)
 	local best
 	for i = 1, AH.GetNumItemSearchResults(d.key) do
 		local info = AH.GetItemSearchResultInfo(d.key, i)
@@ -291,6 +365,16 @@ local function ReadItem()
 					unit = unit, vendor = vendor, link = info.itemLink }
 			end
 		end
+	end
+	return best
+end
+
+local function ReadItem()
+	local d = buy.deal
+	local best = BestItemOffer(d)
+	if buy.purpose == "check" then
+		FinishCheck(d, best)
+		return
 	end
 	if not best then
 		RemoveDeal(d)
@@ -363,8 +447,17 @@ local function Tick()
 		return
 	end
 	local state = buy.state
+	if not state and not scan.active and queue[1] then
+		local d = table.remove(queue, 1)
+		if not d.dropped then Verify(d, "check") end
+		return
+	end
 	if state == "verifying" and now - buy.t > SEND_TIMEOUT then
-		ResetBuy("Keine Antwort beim Prüfen.")
+		if buy.purpose == "check" then
+			FinishCheck(buy.deal, nil)
+		else
+			ResetBuy("Keine Antwort beim Prüfen.")
+		end
 	elseif state == "bought" and now - buy.t > 1.5 then
 		Verify(buy.deal) -- gibt es noch mehr davon unter Händlerpreis?
 	elseif (state == "quoting" or state == "confirming") and now - buy.t > 12 then
@@ -374,7 +467,7 @@ local function Tick()
 		CancelQuote()
 		ResetBuy("Angebot abgelaufen.")
 	end
-	if scan.nextAt and not scan.active and not buy.state and now >= scan.nextAt then
+	if scan.nextAt and not scan.active and not buy.state and not queue[1] and now >= scan.nextAt then
 		scan.nextAt = nil
 		StartScan()
 	end
