@@ -1287,7 +1287,7 @@ local function RefreshCraft()
 	local profs = ns.CraftProfessions and ns.CraftProfessions() or {}
 	ui.summary:SetText(#list > 0 and L["%d crafts with profit · %s"]:format(#list, table.concat(profs, ", ")) or "")
 	ui.count:SetText(#list > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #list), #list) or "")
-	if miss > 0 then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
+	if miss > 0 and not craft.active then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
 	ui.action:SetText(L["Read recipes: open a profession window"])
 	ui.action:SetEnabled(false)
 	ui.loop:SetChecked(db.loop)
