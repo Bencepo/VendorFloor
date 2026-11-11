@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.0-beta
+## 0.2.0-beta.2
 
 - English interface; German when the game client is German.
 - Key binding "Buy next find" (Options > Keybindings > AddOns) and `/vfloor buy`: each press checks or buys the best find.

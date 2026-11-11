@@ -72,5 +72,20 @@ jobs:
           git tag -a "${{ needs.version.outputs.tag }}" -m "VendorFloor ${{ needs.version.outputs.tag }}"
           git push origin "${{ needs.version.outputs.tag }}"
 
+      # The packager's output is passed back as an annotation, and the run fails when
+      # nothing was uploaded to CurseForge, so a silent skip cannot go unnoticed.
       - name: Package and upload
-        uses: BigWigsMods/packager@v2
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/BigWigsMods/packager/v2/release.sh -o "$RUNNER_TEMP/release.sh"
+          if [ -z "$CF_API_KEY" ]; then echo "::warning title=packager::CF_API_KEY is empty: the secret is missing or misnamed"; fi
+          set +e
+          bash "$RUNNER_TEMP/release.sh" 2>&1 | tee "$RUNNER_TEMP/pkg.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          log=$(tail -n 60 "$RUNNER_TEMP/pkg.log" | sed 's/%/%25/g' | sed 's/\r//g' | awk '{printf "%s%%0A", $0}')
+          echo "::notice title=packager (exit $code)::$log"
+          if [ $code -ne 0 ]; then exit $code; fi
+          if ! grep -qiE "Uploading .* to CurseForge|curseforge.*(success|uploaded)" "$RUNNER_TEMP/pkg.log"; then
+            echo "::error title=packager::No CurseForge upload in the log"
+            exit 1
+          fi
