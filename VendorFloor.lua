@@ -235,21 +235,17 @@ local function IsCommodity(key)
 end
 
 -- Take the find into the list and announce it.
+local newFinds = {} -- new finds per tab since the last round summary
+
 local function Confirm(d, quiet)
 	if d.dropped or deals[d.k] then return end
 	deals[d.k] = d
 	order[#order + 1] = d
 	if quiet then return end
+	-- No chat line per find: the round ends with one line of counts (and the window lists them).
 	local mode = d.mode or "vendor"
-	if mode == "vendor" then
-		Watch(d.id)
-		Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
-			d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
-	elseif mode == "market" then
-		Print(L["Market: %s for %s, usually worth %s"]:format(d.link or d.name, Money(d.price), Money(d.vendor / AH_CUT)))
-	else
-		Print(L["Disenchant: %s for %s, disenchanting brings about %s"]:format(d.link or d.name, Money(d.price), Money(d.vendor)))
-	end
+	if mode == "vendor" then Watch(d.id) end
+	newFinds[mode] = (newFinds[mode] or 0) + 1
 	if db.sound and GetTime() - lastSound > 2 then
 		lastSound = GetTime()
 		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
@@ -458,7 +454,12 @@ NextRound = function()
 end
 
 local function RoundDone()
-	SetStatus(L["Round done: %d items read, %d below vendor price."]:format(scan.seen, #order))
+	local v, m, e = newFinds.vendor or 0, newFinds.market or 0, newFinds.de or 0
+	wipe(newFinds)
+	SetStatus(L["Round done: %d items read. New: vendor %d, market %d, disenchant %d."]:format(scan.seen, v, m, e))
+	if v + m + e > 0 then
+		Print(L["New finds: vendor %d, market %d, disenchant %d."]:format(v, m, e))
+	end
 	if db.loop then scan.nextAt = GetTime() + db.interval end
 end
 

@@ -216,3 +216,5 @@ L["Shows which of your learned recipes make a profit, with prices from VendorFlo
 L["Market: %s for %s, usually worth %s"] = "Markt: %s für %s, üblicher Preis %s"
 L["Disenchant: %s for %s, disenchanting brings about %s"] = "Entzaubern: %s für %s, Entzaubern bringt etwa %s"
 L["%d finds from the full scan %d min ago. They are checked when you click them."] = "%d Funde aus dem Komplett-Scan vor %d Min. Sie werden beim Anklicken geprüft."
+L["Round done: %d items read. New: vendor %d, market %d, disenchant %d."] = "Runde fertig: %d Gegenstände gelesen. Neu: Händler %d, Markt %d, Entzaubern %d."
+L["New finds: vendor %d, market %d, disenchant %d."] = "Neue Funde: Händler %d, Markt %d, Entzaubern %d."
