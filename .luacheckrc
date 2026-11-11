@@ -12,6 +12,7 @@ globals = {
 	"VendorFloorDB",
 	"VendorFloor_BuyNext",
 	"VendorFloor_Ledger",
+	"VendorFloor_OnCompartmentClick",
 	"SLASH_VENDORFLOOR1",
 	"SLASH_VENDORFLOOR2",
 	"SlashCmdList",
@@ -19,4 +20,4 @@ globals = {
 	"BINDING_NAME_VENDORFLOOR_BUYNEXT",
 }
 
-exclude_files = { ".release/**" }
+exclude_files = { ".release/**", "Libs/**" }

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.5.0-beta
+
+- Three tabs, never mixed: **Vendor** (below what a merchant pays), **Market** (far below the usual price, to sell again on the auction house) and **Disenchant** (green and blue weapons and armor below what disenchanting them brings).
+- Price history: every full scan stores the usual price of each item (median, last 14 days). The market tab uses it; it gets better with every day of full scans.
+- Disenchant values after the Classic disenchant tables, with the materials at their usual price (an estimate: WoW Forever may differ).
+- Posting: in the market tab a "Post" button puts the next item bought there on the auction house for 24 hours, just under its usual price and never below cost plus the minimum profit. One auction per click. Sales come from the seller mails and go into the ledger.
+- Minimum profit in percent and per bag slot (whole auction), for all tabs: `/vfloor percent 20`, `/vfloor slot 10s`, also in the settings.
+- Quick rounds: items found below vendor price before are kept on a watch list; continuous mode checks the most frequent of them one by one (two quick rounds, then one full item list), and runs a full scan whenever one is allowed. `/vfloor quick` starts one by hand.
+- Taskbar flash on new finds while the game is in the background (`/vfloor flash`, settings).
+- New look: flat dark window in the colours of the web page, gold accents, flat buttons (also at the mailbox and merchant), a "Continuous" switch, zebra rows and a clearer progress bar. Larger text throughout; the buy button shows its amounts in dark text so they stay readable on gold.
+- Fix: single items (e.g. bags) could show hundreds of units for one auction, with a unit price below 1 copper and a huge fake profit. Units per auction are now capped at the stack size, and prices below 1 copper per unit are ignored.
+- Fixed: the "Sell purchases" button at a merchant (and "Collect purchases" at the mailbox) could appear as an empty red bar without its text until the bags changed.
+- Minimap button (LibDBIcon, so minimap button collectors can take it): left-click opens the ledger export (at the auction house: the window), right-click prints the totals, the tooltip shows today's and the total profit. Drag to move, `/vfloor minimap` hides or shows it. VendorFloor also appears in the game's addon menu next to the minimap.
+- Continuous mode: between two rounds the scan button shows "Stop (12)" with the seconds to the next round, so it is clear the loop is running. While a round, the checks or the loop run, the button stays pressed in. A click stops it.
+- Fixed: the arrow between auction and vendor price showed as an empty box.
+- Progress bar shows its text: percent of the full scan, "checking 12 of 40 (30 %)", or the auctions read so far.
+- Fixed: after a purchase the round could stop with "Bought." and a half-full bar, because the auction house kept reporting that it was not ready for the next query. Such a query is now sent anyway after 10 seconds. `/vfloor debug` prints the internal state if it still happens.
+- Sales by other addons count: bought items sold at a merchant in any way (for example by an addon that sells grey items automatically) now go into the ledger. VendorFloor counts them from the bags.
+- Faster checks: a check waits 3 instead of 6 seconds for an answer, and a find that stays silent twice (sold out meanwhile) is skipped for 30 minutes instead of being checked every round.
+- Fewer useless checks: an item checked without a buyout below the vendor price (for example one with bid-only auctions) is skipped for 30 minutes, unless a cheaper listing appears.
+
 ## 0.4.0-beta
 
 - Ledger per day and per item: spending, sales and real profit per calendar day (last 120 days), and per item how many were bought and sold and how long they waited until the sale.

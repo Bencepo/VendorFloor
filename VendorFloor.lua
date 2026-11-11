@@ -20,15 +20,25 @@ if VERSION == "" or VERSION:find("^@") then VERSION = "dev" end
 ns.VERSION = VERSION
 
 local PREFIX = "|cff33ff99VendorFloor:|r "
-local ROWS, ROW_HEIGHT = 12, 20
+local ROWS, ROW_HEIGHT = 12, 22
 local SEND_TIMEOUT = 15
-local CHECK_TIMEOUT = 6    -- seconds a check waits for the auction house before it tries again later
+local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
 local FULL_WAIT = 10 * 60      -- seconds a full scan waits for the auction house to answer
 local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 
+local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
+local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
+local QUICK_ITEMS = 40         -- items a quick round checks
+local MODES = { "vendor", "market", "de" }
+
 local defaults = {
+	minPercent = 0,       -- minimum profit in percent of the price (0: off)
+	minSlot = 0,          -- minimum profit per auction, i.e. per bag slot, in copper (0: off)
+	marketDiscount = 30,  -- market tab: at least this many percent below the usual price
+	flash = true,         -- flash the taskbar icon on new finds while the game is in the background
+	tab = "vendor",       -- the tab shown: vendor, market or de (disenchant)
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
 	minProfitSilver = 1,  -- the same in silver, for the slider in the settings
 	sound = true,         -- sound on a new find
@@ -40,6 +50,8 @@ local db
 local deals, order = {}, {}   -- confirmed finds: by key and as a sorted list
 local queue, queued = {}, {}  -- finds still to be checked (list and by key)
 local pendingInfo = {}        -- itemID -> browse results whose item data is still loading
+local noOffer = {}            -- deal key -> { price, at }: checked, no buyout below vendor price (e.g. bid-only)
+local NO_OFFER_KEEP = 30 * 60  -- seconds such a key is skipped while its browse price stays the same
 local pendingBuys = {}        -- auctionID -> item purchase waiting for confirmation
 local scan = { active = false, seen = 0, round = 0 }
 local full = { active = false } -- the full scan (every auction at once)
@@ -52,7 +64,16 @@ local statusText = ""
 local lastSound = 0
 local ui
 
-local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull
+local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady
+
+-- The finds of the tab shown, in list order.
+local function View()
+	local tab, list = db and db.tab or "vendor", {}
+	for _, d in ipairs(order) do
+		if (d.mode or "vendor") == tab then list[#list + 1] = d end
+	end
+	return list
+end
 
 local function Print(msg)
 	DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
@@ -103,8 +124,11 @@ end
 -- Queries: only one at a time, and only once the auction house is ready
 ---------------------------------------------------------------------------
 
+local pendingAt = 0
+local SEND_FORCE = 10 -- seconds a query waits for the throttle before it is sent anyway
+
 local function Send(fn)
-	pendingSend, lastSend = fn, fn
+	pendingSend, lastSend, pendingAt = fn, fn, GetTime()
 end
 
 local SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
@@ -123,8 +147,11 @@ end
 -- Finds
 ---------------------------------------------------------------------------
 
-local function DealKey(key)
-	return (key.itemID or 0) .. ":" .. (key.itemLevel or 0) .. ":" .. (key.itemSuffix or 0) .. ":" .. (key.battlePetSpeciesID or 0)
+-- Finds of the market and disenchant tabs get their own keys, so one item can be in two tabs.
+local function DealKey(key, mode)
+	local k = (key.itemID or 0) .. ":" .. (key.itemLevel or 0) .. ":" .. (key.itemSuffix or 0) .. ":" .. (key.battlePetSpeciesID or 0)
+	if mode and mode ~= "vendor" then k = mode .. "|" .. k end
+	return k
 end
 
 local function RemoveDeal(d)
@@ -152,8 +179,49 @@ local function VendorPrice(item)
 	return sell or 0, name, link, icon
 end
 
+-- Units per auction, capped at the item's stack size. Some auction house versions report
+-- grouped or listed counts for single items (a bag "830×" for one buyout), which turned
+-- one auction above the vendor price into hundreds of fake units below it.
+local function Units(item, quantity)
+	quantity = max(floor(quantity or 1), 1)
+	local stack = select(8, GetItemInfo(item))
+	if stack and stack > 0 and quantity > stack then quantity = stack end
+	return quantity
+end
+
 local function IsIgnored(itemID)
 	return db.ignore and db.ignore[itemID] and true or false
+end
+
+-- Is buying at unit worth it against target (what one unit brings)? The minimum per unit,
+-- the minimum in percent of the price and, with count, the minimum for the whole auction
+-- (one auction takes one bag slot).
+local function Worth(target, unit, count)
+	local gain = target - unit
+	if unit < 1 or gain < db.minProfit then return false end
+	if (db.minPercent or 0) > 0 and gain / unit * 100 < db.minPercent then return false end
+	if count and (db.minSlot or 0) > 0 and gain * count < db.minSlot then return false end
+	return true
+end
+ns.Worth = Worth
+
+local function IsGear(item)
+	local equipLoc = select(9, GetItemInfo(item))
+	return equipLoc ~= nil and equipLoc ~= "" and equipLoc ~= "INVTYPE_NON_EQUIP_IGNORE"
+end
+
+-- Watch list: items that were found below the vendor price, with how often. Quick rounds
+-- check the most frequent of them one by one instead of reading the whole item list.
+local function Watch(itemID)
+	if not itemID or IsGear(itemID) then return end
+	db.watch = db.watch or {}
+	local w = db.watch[itemID] or { hits = 0 }
+	w.hits, w.last = w.hits + 1, time()
+	db.watch[itemID] = w
+end
+
+local function Flash()
+	if db.flash and FlashClientIcon then FlashClientIcon() end
 end
 
 -- Stackable goods sell at a fixed price per unit; single items can be bid-only.
@@ -170,12 +238,14 @@ local function Confirm(d, quiet)
 	deals[d.k] = d
 	order[#order + 1] = d
 	if quiet then return end
+	if (d.mode or "vendor") == "vendor" then Watch(d.id) end
 	Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
 		d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
 	if db.sound and GetTime() - lastSound > 2 then
 		lastSound = GetTime()
 		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
 	end
+	Flash()
 end
 
 -- Every candidate is checked against its real auctions before it is listed: an item
@@ -198,7 +268,7 @@ local function Evaluate(result)
 		if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
 		return
 	end
-	if vendor <= 0 or vendor - price < db.minProfit then return end
+	if vendor <= 0 or not Worth(vendor, price) then return end
 	local k = DealKey(key)
 	local d = deals[k] or queued[k]
 	if not d then
@@ -209,6 +279,14 @@ local function Evaluate(result)
 		d.stale = false -- seen and counted by the last full scan: no check needed
 		return
 	end
+	-- Checked before without a buyout below the vendor price (bid-only auctions show their
+	-- bid as the browse price): skip it until a cheaper listing appears or the entry expires.
+	local skip = noOffer[k]
+	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
+		queued[k] = nil
+		return
+	end
+	d.browsePrice, d.mode = price, "vendor"
 	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
 	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
 	d.commodity = IsCommodity(key) == true
@@ -242,7 +320,7 @@ local function SetMinProfit(copper)
 	db.minProfitSilver = floor(db.minProfit / 100)
 	for i = #order, 1, -1 do
 		local d = order[i]
-		if d.vendor - d.price < db.minProfit and d ~= buy.deal then RemoveDeal(d) end
+		if not Worth(d.vendor, d.price) and d ~= buy.deal then RemoveDeal(d) end
 	end
 	if ui then ui.profit:SetText(PlainMoney(db.minProfit)) end
 	SetStatus(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
@@ -297,6 +375,59 @@ StopScan = function(msg)
 	pendingSend, sentAt = nil, nil
 	if msg then SetStatus(msg) end
 	Refresh()
+end
+
+-- Quick round: the items found below vendor price most often, one search each, instead of
+-- reading the whole item list. Gear is left out (its auction key depends on level and suffix).
+local function StartQuick()
+	if not ahOpen or buy.state or full.active then return false end
+	local list = {}
+	for itemID, w in pairs(db.watch or {}) do
+		if not IsIgnored(itemID) then list[#list + 1] = { id = itemID, hits = w.hits or 0 } end
+	end
+	if #list < 5 then return false end
+	table.sort(list, function(a, b) return a.hits > b.hits end)
+	scan.round = scan.round + 1
+	wipe(queue)
+	wipe(queued)
+	local now = GetTime()
+	for i = 1, min(#list, QUICK_ITEMS) do
+		local id = list[i].id
+		local vendor, name, link, icon = VendorPrice(id)
+		local key = AH.MakeItemKey and AH.MakeItemKey(id)
+		if vendor and vendor > 0 and key then
+			local k = DealKey(key)
+			local skip = noOffer[k]
+			if not (skip and now - skip.at < NO_OFFER_KEEP / 3) then
+				local d = deals[k] or { k = k }
+				d.key, d.id, d.vendor, d.mode = key, id, vendor, "vendor"
+				d.name, d.link, d.icon, d.dropped = name, link, icon, nil
+				d.price = d.price or vendor
+				d.browsePrice = d.browsePrice or vendor
+				d.commodity = IsCommodity(key) == true
+				queued[k] = d
+				Enqueue(d)
+			end
+		end
+	end
+	if not queue[1] then return false end
+	scan.checkTotal, scan.seen = #queue, 0
+	SetStatus(L["Quick round: checking %d items that were often below vendor price …"]:format(#queue))
+	Refresh()
+	return true
+end
+
+-- Continuous mode: a full scan whenever one is allowed, otherwise two quick rounds and
+-- then one reading the whole item list.
+NextRound = function()
+	scan.rounds = (scan.rounds or 0) + 1
+	if FullReady() then
+		StartFull()
+	elseif scan.rounds % 3 ~= 0 and StartQuick() then
+		return
+	else
+		StartScan()
+	end
 end
 
 local function RoundDone()
@@ -373,9 +504,15 @@ end
 local function FinishCheck(d, offer)
 	if offer == false then
 		-- no answer: try once more at the end of the queue, keep what is already listed
+		-- An item search without any auctions left sends no answer at all; after the second
+		-- silent check the find counts as gone and is skipped like one without a buyout.
 		d.retries = (d.retries or 0) + 1
 		if d.retries <= 1 then
 			queue[#queue + 1] = d
+		else
+			d.retries = nil
+			if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
+			queued[d.k] = nil
 		end
 		wipe(buy)
 		if not queue[1] and not scan.active then RoundDone() end
@@ -384,11 +521,13 @@ local function FinishCheck(d, offer)
 	end
 	d.retries = nil
 	if offer then
+		noOffer[d.k] = nil
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
-	elseif deals[d.k] then
-		RemoveDeal(d)
+	else
+		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
+		if deals[d.k] then RemoveDeal(d) end
 	end
 	queued[d.k] = nil
 	wipe(buy)
@@ -402,7 +541,7 @@ local function CommodityOffer(d, limit)
 	local count, cost, first = 0, 0, nil
 	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
 		local info = AH.GetCommoditySearchResultInfo(d.id, i)
-		if not info or not info.unitPrice or d.vendor - info.unitPrice < db.minProfit then break end
+		if not info or not info.unitPrice or not Worth(d.vendor, info.unitPrice) then break end
 		local n = (info.quantity or 0) - (info.numOwnerItems or 0)
 		if limit then n = min(n, floor((limit - cost) / info.unitPrice)) end
 		if n > 0 then
@@ -410,7 +549,7 @@ local function CommodityOffer(d, limit)
 			count, cost = count + n, cost + n * info.unitPrice
 		end
 	end
-	if count <= 0 then return nil end
+	if count <= 0 or ((db.minSlot or 0) > 0 and count * d.vendor - cost < db.minSlot) then return nil end
 	return { unit = first, count = count, cost = cost, profit = count * d.vendor - cost }
 end
 
@@ -421,10 +560,11 @@ local function ItemOffer(d)
 	for i = 1, AH.GetNumItemSearchResults(d.key) do
 		local info = AH.GetItemSearchResultInfo(d.key, i)
 		if info and info.auctionID and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem then
-			local quantity = max(info.quantity or 1, 1)
-			local vendor = info.itemLink and VendorPrice(info.itemLink) or d.vendor
+			local quantity = Units(info.itemLink or d.id, info.quantity)
+			-- vendor finds compare each auction with its own vendor price, the other tabs with the find's value
+			local vendor = (d.mode or "vendor") == "vendor" and info.itemLink and VendorPrice(info.itemLink) or d.vendor
 			local unit = info.buyoutAmount / quantity
-			if vendor and vendor - unit >= db.minProfit then
+			if vendor and Worth(vendor, unit, quantity) then
 				count, profit = count + quantity, profit + (vendor - unit) * quantity
 				if not best or unit < best.unit then
 					best = { auctionID = info.auctionID, buyout = info.buyoutAmount, quantity = quantity,
@@ -510,7 +650,7 @@ local function Action()
 		end
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
-			name = d.name, at = GetTime() }
+			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
 		Print(L["Purchase sent: %s ×%d for %s (vendor pays %s)."]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
@@ -550,7 +690,7 @@ function VendorFloor_BuyNext()
 		return
 	end
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
-	local d = (selected and deals[selected.k] and selected) or order[1]
+	local d = (selected and deals[selected.k] and selected) or View()[1]
 	if d then Select(d) end
 end
 
@@ -560,7 +700,7 @@ end
 -- own auctions and auctions above the vendor price are simply left out.
 ---------------------------------------------------------------------------
 
-local function FullReady()
+FullReady = function()
 	return time() - (db.lastFull or 0) >= FULL_COOLDOWN
 end
 
@@ -592,36 +732,166 @@ StartFull = function()
 	pendingSend, sentAt = nil, nil
 	wipe(full)
 	full.active, full.phase, full.t0 = true, "waiting", GetTime()
-	full.found, full.pending, full.player = {}, {}, UnitName("player")
+	full.items, full.pending, full.player = {}, {}, UnitName("player")
 	db.lastFull = time()
 	AH.ReplicateItems()
 	SetStatus(L["Full scan: waiting for the auction house …"])
 	Refresh()
 end
 
--- One auction of the list. Returns false when its item data has not loaded yet.
+-- One auction of the list, collected by item. Returns false when its item data has not
+-- loaded yet. Every auction with a buyout is kept: the vendor tab needs the cheap ones, the
+-- market tab the usual price of all of them.
 local function FullRecord(index)
 	local _, _, count, _, _, _, _, _, _, buyout, _, _, _, owner, _, _, itemID, hasAll = AH.GetReplicateItemInfo(index)
 	if not itemID then return true end
 	if not hasAll then return false end
-	if not buyout or buyout <= 0 or (owner and owner == full.player) or IsIgnored(itemID) then return true end
-	count = max(count or 1, 1)
+	if not buyout or buyout <= 0 or IsIgnored(itemID) then return true end
 	local link = AH.GetReplicateItemLink and AH.GetReplicateItemLink(index)
 	local vendor, name, itemLink, icon = VendorPrice(link or itemID)
 	if vendor == nil then return false end
+	count = Units(link or itemID, count)
 	local unit = buyout / count
-	if vendor <= 0 or vendor - unit < db.minProfit then return true end
+	if unit < 1 then return true end
 	local key, plain = KeyFor(itemID, link)
-	local k = DealKey(key)
-	local g = full.found[k]
-	if not g then
-		g = { k = k, key = key, plainKey = plain, id = itemID, vendor = vendor, price = unit, count = 0, profit = 0,
-			listed = 0, name = name, link = itemLink or link, icon = icon }
-		full.found[k] = g
+	local pk = DealKey(key)
+	local it = full.items[pk]
+	if not it then
+		it = { key = key, plainKey = plain, id = itemID, vendor = vendor, name = name, link = itemLink or link,
+			icon = icon, a = {} }
+		full.items[pk] = it
 	end
-	g.count, g.profit, g.listed = g.count + count, g.profit + (vendor - unit) * count, g.listed + 1
-	if unit < g.price then g.price = unit end
+	it.a[#it.a + 1] = { unit, count, owner and owner == full.player or nil }
 	return true
+end
+
+---------------------------------------------------------------------------
+-- Prices: the usual price of an item is the median of its daily median prices
+-- (last 14 days), each daily value the median unit price of all its auctions.
+---------------------------------------------------------------------------
+
+local function MedianOf(list)
+	if not list[1] then return nil end
+	table.sort(list)
+	local n = #list
+	if n % 2 == 1 then return list[(n + 1) / 2] end
+	return (list[n / 2] + list[n / 2 + 1]) / 2
+end
+
+-- Median unit price of auctions { unit, count, own }, weighted by count, own auctions left out.
+local function ListingMedian(a)
+	local list, total = {}, 0
+	for _, x in ipairs(a) do
+		if not x[3] then
+			list[#list + 1] = x
+			total = total + x[2]
+		end
+	end
+	if total == 0 then return nil, 0 end
+	table.sort(list, function(p, q) return p[1] < q[1] end)
+	local run = 0
+	for _, x in ipairs(list) do
+		run = run + x[2]
+		if run >= total / 2 then return x[1], #list end
+	end
+end
+
+-- Day number (days since 1970) as the key of the price history: short in the saved file.
+local function Today() return floor(time() / 86400) end
+
+local function StorePrice(pk, value)
+	db.prices = db.prices or {}
+	local h = db.prices[pk] or {}
+	h[Today()] = floor(value + 0.5)
+	local keys = {}
+	for d in pairs(h) do keys[#keys + 1] = d end
+	if #keys > MARKET_DAYS then
+		table.sort(keys)
+		for i = 1, #keys - MARKET_DAYS do h[keys[i]] = nil end
+	end
+	db.prices[pk] = h
+end
+
+-- Usual price of a price key and on how many days it rests (nil without data).
+local function MarketValue(pk)
+	local h = db.prices and db.prices[pk]
+	if not h then return nil, 0 end
+	local list = {}
+	for _, v in pairs(h) do list[#list + 1] = v end
+	return MedianOf(list), #list
+end
+ns.MarketValue = MarketValue
+
+local function PlainKey(itemID)
+	return DealKey(AH.MakeItemKey and AH.MakeItemKey(itemID) or { itemID = itemID })
+end
+
+---------------------------------------------------------------------------
+-- Disenchanting: expected materials of green and blue weapons and armor by item level,
+-- after the Classic tables (Forever may differ), valued at the materials' usual price.
+---------------------------------------------------------------------------
+
+local DUST = { strange = 10940, soul = 11083, vision = 11137, dream = 11176, illusion = 16204 }
+local ESS = { lmagic = 10938, gmagic = 10939, lastral = 10998, gastral = 11082, lmystic = 11134, gmystic = 11135,
+	lnether = 11174, gnether = 11175, leternal = 16202, geternal = 16203 }
+local SHARD = { sglim = 10978, lglim = 11084, sglow = 11138, lglow = 11139, srad = 11177, lrad = 11178,
+	sbril = 14343, lbril = 14344 }
+
+-- green (uncommon): up to item level, { dust, avg. count }, { essence, avg. count }, shard (5%)
+local DE_GREEN = {
+	{ 15, { DUST.strange, 1.5 }, { ESS.lmagic, 1.5 }, nil },
+	{ 20, { DUST.strange, 2.5 }, { ESS.gmagic, 1.5 }, SHARD.sglim },
+	{ 25, { DUST.strange, 5 }, { ESS.lastral, 1.5 }, SHARD.sglim },
+	{ 30, { DUST.soul, 1.5 }, { ESS.gastral, 1.5 }, SHARD.lglim },
+	{ 35, { DUST.soul, 3.5 }, { ESS.lmystic, 1.5 }, SHARD.sglow },
+	{ 40, { DUST.vision, 1.5 }, { ESS.gmystic, 1.5 }, SHARD.lglow },
+	{ 45, { DUST.vision, 3.5 }, { ESS.lnether, 1.5 }, SHARD.srad },
+	{ 50, { DUST.dream, 1.5 }, { ESS.gnether, 1.5 }, SHARD.lrad },
+	{ 55, { DUST.dream, 3.5 }, { ESS.leternal, 1.5 }, SHARD.sbril },
+	{ 65, { DUST.illusion, 2.5 }, { ESS.geternal, 1.5 }, SHARD.lbril },
+}
+-- blue (rare): up to item level, shard
+local DE_BLUE = { { 25, SHARD.sglim }, { 30, SHARD.lglim }, { 35, SHARD.sglow }, { 40, SHARD.lglow },
+	{ 45, SHARD.srad }, { 50, SHARD.lrad }, { 55, SHARD.sbril }, { 65, SHARD.lbril } }
+
+local matCache = {}
+
+local function MatValue(itemID, live)
+	if matCache[itemID] ~= nil then return matCache[itemID] or nil end
+	local pk = PlainKey(itemID)
+	local value = MarketValue(pk)
+	if not value and live and live[pk] then value = ListingMedian(live[pk].a) end
+	matCache[itemID] = value or false
+	return value
+end
+
+-- What disenchanting one of these items brings (after the auction house cut), or nil.
+local function DisenchantValue(item, live)
+	local _, _, quality, level, _, _, _, _, _, _, _, classID = GetItemInfo(item)
+	if not (quality and level and (classID == 2 or classID == 4)) or level < 5 then return nil end
+	local value
+	if quality == 2 then
+		for _, row in ipairs(DE_GREEN) do
+			if level <= row[1] then
+				local dust, ess = MatValue(row[2][1], live), MatValue(row[3][1], live)
+				if not (dust and ess) then return nil end
+				local main, side = 0.75, 0.20 -- armor: mostly dust; weapons: mostly essence
+				if classID == 2 then main, side = 0.20, 0.75 end
+				value = main * row[2][2] * dust + side * row[3][2] * ess
+				local shard = row[4] and MatValue(row[4], live)
+				if shard then value = value + 0.05 * shard end
+				break
+			end
+		end
+	elseif quality == 3 then
+		for _, row in ipairs(DE_BLUE) do
+			if level <= row[1] then
+				value = MatValue(row[2], live)
+				break
+			end
+		end
+	end
+	return value and value * AH_CUT or nil
 end
 
 local function FinishFull(failed)
@@ -631,14 +901,56 @@ local function FinishFull(failed)
 		Refresh()
 		return
 	end
-	local now, found, new = GetTime(), 0, 0
-	for k, g in pairs(full.found) do
-		found = found + 1
+	-- 1. today's usual price of every item
+	wipe(matCache)
+	local medians = {}
+	for pk, it in pairs(full.items) do
+		local med, n = ListingMedian(it.a)
+		if med then
+			StorePrice(pk, med)
+			medians[pk] = n
+		end
+	end
+	-- 2. finds per tab
+	local found, counts = {}, { vendor = 0, market = 0, de = 0 }
+	local discount = 1 - (db.marketDiscount or 30) / 100
+	local function add(mode, pk, it, target, unit, count)
+		local k = DealKey(it.key, mode)
+		local g = found[k]
+		if not g then
+			g = { k = k, key = it.key, plainKey = it.plainKey, id = it.id, vendor = target, price = unit, count = 0,
+				profit = 0, listed = 0, name = it.name, link = it.link, icon = it.icon, mode = mode, pk = pk }
+			found[k] = g
+			counts[mode] = counts[mode] + 1
+		end
+		g.count, g.profit, g.listed = g.count + count, g.profit + (target - unit) * count, g.listed + 1
+		if unit < g.price then g.price = unit end
+	end
+	for pk, it in pairs(full.items) do
+		local usual, days = MarketValue(pk)
+		local marketOK = usual and (days >= 2 or (medians[pk] or 0) >= 4)
+		local de = DisenchantValue(it.link or it.id, full.items)
+		for _, x in ipairs(it.a) do
+			local unit, count, own = x[1], x[2], x[3]
+			if not own then
+				if it.vendor > 0 and Worth(it.vendor, unit, count) then add("vendor", pk, it, it.vendor, unit, count) end
+				if marketOK and unit <= usual * discount and Worth(usual * AH_CUT, unit, count) then
+					add("market", pk, it, usual * AH_CUT, unit, count)
+				end
+				if de and Worth(de, unit, count) then add("de", pk, it, de, unit, count) end
+			end
+		end
+	end
+	-- 3. into the lists
+	local now, new = GetTime(), 0
+	for k, g in pairs(found) do
 		g.commodity = IsCommodity(g.key) == true
 		g.fullAt, g.stale = now, false
+		if g.mode == "vendor" then Watch(g.id) end
 		local d = deals[k]
 		if d then
 			d.price, d.count, d.profit, d.listed, d.fullAt, d.stale = g.price, g.count, g.profit, g.listed, now, false
+			d.vendor, d.mode = g.vendor, g.mode
 			d.plainKey = d.plainKey or g.plainKey
 		else
 			Confirm(g, true)
@@ -648,13 +960,16 @@ local function FinishFull(failed)
 	-- the full list is complete: what it did not show is gone
 	for i = #order, 1, -1 do
 		local d = order[i]
-		if not full.found[d.k] and d ~= buy.deal then RemoveDeal(d) end
+		if not found[d.k] and d ~= buy.deal then RemoveDeal(d) end
 	end
+	full.items = nil
 	SortDeals()
-	SetStatus(L["Full scan done: %d auctions read, %d finds below vendor price."]:format(full.count or 0, found))
+	SetStatus(L["Full scan done: %d auctions. Vendor %d, market %d, disenchant %d finds."]:format(full.count or 0,
+		counts.vendor, counts.market, counts.de))
 	if new > 0 then
-		Print(L["%d new finds below vendor price."]:format(new))
+		Print(L["%d new finds (vendor %d, market %d, disenchant %d)."]:format(new, counts.vendor, counts.market, counts.de))
 		if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
+		Flash()
 	end
 	if db.loop then scan.nextAt = GetTime() + 5 end
 	Refresh()
@@ -710,7 +1025,9 @@ local function Tick()
 		return
 	end
 	if pendingSend then
-		if AH.IsThrottledMessageSystemReady() then
+		-- The throttle can stay "not ready" after a purchase; send anyway after a while.
+		-- A dropped query comes back through AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED.
+		if AH.IsThrottledMessageSystemReady() or now - pendingAt > SEND_FORCE then
 			local fn = pendingSend
 			pendingSend, sentAt = nil, now
 			fn()
@@ -754,25 +1071,141 @@ local function Tick()
 	end
 	if scan.nextAt and not scan.active and not buy.state and not queue[1] and now >= scan.nextAt then
 		scan.nextAt = nil
-		StartScan()
+		NextRound()
 	end
+end
+
+---------------------------------------------------------------------------
+-- Posting (market tab): what was bought for the market goes back on the auction house
+-- at about its usual price, one auction per click. Never below cost plus the minimum profit.
+---------------------------------------------------------------------------
+
+local post = {}
+local POST_DURATION = 2 -- 24 hours
+
+local function NextPostable()
+	local mb = db.mbought
+	if not (mb and C_Container) then return nil end
+	for bag = 0, 4 do
+		for slot = 1, C_Container.GetContainerNumSlots(bag) do
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			local b = info and info.itemID and mb[info.itemID]
+			if b and b.units > 0 and not info.isLocked and not info.isBound then return bag, slot, info end
+		end
+	end
+	return nil
+end
+
+-- Price per unit to post at: just under the usual price, rounded up to whole silver.
+local function PostPrice(itemID, link)
+	local key = KeyFor(itemID, link)
+	local usual = MarketValue(DealKey(key))
+	if not usual and link then usual = MarketValue(PlainKey(itemID)) end
+	if not usual then return nil end
+	local b = db.mbought[itemID]
+	local costUnit = b and b.units > 0 and b.cost / b.units or 0
+	local price = max(usual * 0.98, (costUnit + db.minProfit) / AH_CUT)
+	return math.ceil(price / 100) * 100, usual
+end
+
+function ns.UpdatePostButton()
+	if not ui then return end
+	local show = db.tab == "market"
+	ui.post:SetShown(show)
+	ui.action:ClearAllPoints()
+	ui.action:SetPoint("BOTTOMLEFT", 10, 8)
+	if show then
+		ui.action:SetPoint("BOTTOMRIGHT", ui.post, "BOTTOMLEFT", -6, 0)
+	else
+		ui.action:SetPoint("BOTTOMRIGHT", -10, 8)
+		return
+	end
+	if post.warning then
+		ui.post:SetText(L["Confirm post"])
+		ui.post:SetEnabled(true)
+		return
+	end
+	local bag, _, info = NextPostable()
+	local price = bag and PostPrice(info.itemID, info.hyperlink)
+	if price then
+		ui.post:SetText(L["Post %d× at %s"]:format(info.stackCount or 1, Money(price)))
+		ui.post:SetEnabled(ahOpen and not buy.state)
+	else
+		ui.post:SetText(L["Post (nothing to post)"])
+		ui.post:SetEnabled(false)
+	end
+end
+
+function ns.PostNext()
+	if not ahOpen then return end
+	if post.warning then
+		local w = post.warning
+		post.warning = nil
+		if w.commodity then
+			AH.ConfirmPostCommodity(w.loc, POST_DURATION, w.qty, w.price)
+		else
+			AH.ConfirmPostItem(w.loc, POST_DURATION, w.qty, nil, w.price)
+		end
+		SetStatus(L["Posted: %s ×%d."]:format(w.name or "?", w.qty))
+		Refresh()
+		return
+	end
+	local bag, slot, info = NextPostable()
+	if not bag then
+		SetStatus(L["Nothing bought for the market is in your bags."])
+		return
+	end
+	local price = PostPrice(info.itemID, info.hyperlink)
+	if not price then
+		SetStatus(L["No usual price known for this item yet. Run a full scan."])
+		return
+	end
+	local loc = ItemLocation:CreateFromBagAndSlot(bag, slot)
+	local qty = info.stackCount or 1
+	local commodity = AH.GetItemCommodityStatus and Enum.ItemCommodityStatus
+		and AH.GetItemCommodityStatus(loc) == Enum.ItemCommodityStatus.Commodity
+	if commodity then
+		AH.PostCommodity(loc, POST_DURATION, qty, price)
+	else
+		AH.PostItem(loc, POST_DURATION, qty, nil, price * qty)
+	end
+	post.last = { loc = loc, qty = qty, price = commodity and price or price * qty, commodity = commodity,
+		name = info.hyperlink, at = GetTime() }
+	SetStatus(L["Posted: %s ×%d at %s each."]:format(info.hyperlink or "?", qty, Money(price)))
+	Refresh()
 end
 
 ---------------------------------------------------------------------------
 -- Window
 ---------------------------------------------------------------------------
 
+local TAB_HINT = {
+	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
+	market = "Auctions far below their usual price, to sell again on the auction house. Filled by full scans; the usual price gets better with every day of full scans.",
+	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). Filled by full scans. Needs Enchanting.",
+}
+
 Refresh = function()
 	if not ui then return end
-	local maxOffset = max(#order - ROWS, 0)
+	local view = View()
+	local maxOffset = max(#view - ROWS, 0)
 	offset = max(min(offset, maxOffset), 0)
+	for _, mode in ipairs(MODES) do
+		local n = 0
+		for _, d in ipairs(order) do if (d.mode or "vendor") == mode then n = n + 1 end end
+		local tab = ui.tabs[mode]
+		tab:SetText(n > 0 and ("%s (%d)"):format(tab.label, n) or tab.label)
+		tab:SetOn(db.tab == mode)
+	end
+	ui.empty:SetShown(#view == 0)
+	ui.empty:SetText(L[TAB_HINT[db.tab] or TAB_HINT.vendor])
 	for i = 1, ROWS do
-		local row, d = ui.rows[i], order[i + offset]
+		local row, d = ui.rows[i], view[i + offset]
 		row.deal = d
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s → %s  |cff40ff40+%s|r |cffaaaaaa(%s×)|r"):format(Money(d.price), Money(d.vendor),
+			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price), Money(d.vendor),
 				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
@@ -781,8 +1214,6 @@ Refresh = function()
 		end
 	end
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
-	ui.scan:SetText((scan.active or checking) and L["Stop"] or L["Scan"])
-	ui.scan:SetEnabled(not full.active and (scan.active or checking or not buy.state))
 	ns.UpdateFullButton()
 
 	-- progress: full scan (auctions read), check phase (candidates checked), browsing (no total known)
@@ -796,22 +1227,35 @@ Refresh = function()
 		fraction = 0
 	end
 	ui.bar:SetShown(fraction ~= nil)
-	if fraction then ui.bar:SetValue(max(0, min(1, fraction))) end
+	if fraction then
+		fraction = max(0, min(1, fraction))
+		ui.bar:SetValue(fraction)
+		local label
+		if full.active then
+			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
+		elseif checking and (scan.checkTotal or 0) > 0 then
+			label = L["Checking %d of %d (%d%%)"]:format(scan.checkTotal - #queue, scan.checkTotal, floor(fraction * 100))
+		else
+			label = L["Reading auctions: %d"]:format(scan.seen or 0)
+		end
+		ui.bar.text:SetText(label)
+	end
 
-	-- summary: what the whole list would cost and bring
+	-- summary: what the whole list of this tab would cost and bring
 	local cost, profit = 0, 0
-	for _, d in ipairs(order) do
+	for _, d in ipairs(view) do
 		local n = d.count or 1
 		cost, profit = cost + (d.price or 0) * n, profit + (d.profit or 0)
 	end
-	ui.summary:SetText(#order > 0 and L["%d finds · cost %s · profit %s"]:format(#order, Money(cost), Money(profit)) or "")
+	ui.summary:SetText(#view > 0 and L["%d finds · cost %s · profit %s"]:format(#view, Money(cost), Money(profit)) or "")
 	ui.loop:SetChecked(db.loop)
-	ui.count:SetText(#order > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #order), #order) or "")
+	ui.count:SetText(#view > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #view), #view) or "")
+	if ns.UpdatePostButton then ns.UpdatePostButton() end
 
 	local state, text, enabled = buy.state, L["Click a find"], false
 	if not state or buy.purpose == "check" then
 		if selected and deals[selected.k] then text, enabled = L["Check"], true
-		elseif order[1] then text, enabled = L["Check"], true end
+		elseif view[1] then text, enabled = L["Check"], true end
 	elseif state == "verifying" then
 		text = L["Checking …"]
 	elseif state == "item_ready" then
@@ -829,9 +1273,26 @@ Refresh = function()
 	ui.action:SetEnabled(enabled)
 end
 
--- The full scan button: its countdown runs once a second.
+-- Scan button: "Stop" while a round runs, while finds are checked and while continuous
+-- mode waits for the next round (with the seconds left), otherwise "Scan".
+local function UpdateScanButton()
+	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
+	local waiting = scan.nextAt and not scan.active and not checking
+	local running = scan.active or checking or waiting
+	if waiting then
+		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
+	else
+		ui.scan:SetText(running and L["Stop"] or L["Scan"])
+	end
+	ui.scan:SetEnabled(not full.active and (running or not buy.state))
+	-- while something runs the button is shown switched on
+	ui.scan:SetOn(running)
+end
+
+-- The full scan button: its countdown runs once a second (the scan button's as well).
 function ns.UpdateFullButton()
 	if not ui then return end
+	UpdateScanButton()
 	if full.active then
 		ui.full:SetText(L["Full scan"])
 		ui.full:SetEnabled(false)
@@ -863,17 +1324,99 @@ local function PlaceWindow()
 	end
 end
 
+---------------------------------------------------------------------------
+-- Look: flat dark panels in the colours of bencepo.github.io
+---------------------------------------------------------------------------
+
+local WHITE = "Interface\\Buttons\\WHITE8X8"
+local C = {
+	bg = { 0.059, 0.075, 0.094, 0.97 },    -- #0f1318
+	panel = { 0.110, 0.137, 0.173, 1 },    -- #1c232c
+	line = { 0.157, 0.192, 0.235, 1 },     -- #28313c
+	well = { 0.043, 0.055, 0.071, 1 },     -- #0b0e12
+	gold = { 0.878, 0.659, 0.227, 1 },     -- #e0a83a
+	goldDim = { 0.165, 0.141, 0.086, 1 },  -- #2a2416
+	text = { 0.902, 0.914, 0.933, 1 },     -- #e6e9ee
+	muted = { 0.553, 0.592, 0.647, 1 },    -- #8d97a5
+	dark = { 0.102, 0.071, 0.020, 1 },     -- #1a1205
+}
+ns.C = C
+
+local function Flat(frame, bg, border)
+	if not frame.SetBackdrop then Mixin(frame, BackdropTemplateMixin) end
+	frame:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
+	frame:SetBackdropColor(unpack(bg or C.panel))
+	frame:SetBackdropBorderColor(unpack(border or C.line))
+end
+ns.Flat = Flat
+
+-- A flat button. kind "primary": gold with dark text (the main action).
+-- :SetOn(true) shows it switched on (gold border and text), e.g. while a scan runs.
+local function FlatButton(parent, width, height, kind)
+	local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+	b:SetSize(width or 80, height or 22)
+	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	fs:SetPoint("CENTER", 0, 0)
+	b:SetFontString(fs)
+	b.kind, b.on, b.hover = kind, false, false
+	if kind == "primary" then
+		fs:SetShadowOffset(0, 0)
+		local font, size = fs:GetFont()
+		if font then fs:SetFont(font, (size or 12) + 1, "") end
+		-- dark text on gold: drop the colour codes of money amounts, they would vanish on gold
+		local setText = b.SetText
+		function b:SetText(text)
+			if text then
+				-- drop the money colours and force dark text: colour codes win over font colours
+				text = "|cff1a1205" .. tostring(text):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "") .. "|r"
+			end
+			setText(self, text)
+		end
+	end
+	function b:Restyle()
+		local enabled = self:IsEnabled()
+		local bg, border, text
+		if self.kind == "primary" then
+			bg, border, text = C.gold, C.gold, C.dark
+		elseif self.on then
+			bg, border, text = C.goldDim, C.gold, C.gold
+		else
+			bg, border, text = C.panel, self.hover and C.gold or C.line, C.text
+		end
+		Flat(self, bg, border)
+		fs:SetTextColor(unpack(text))
+		self:SetAlpha(enabled and 1 or 0.45)
+		if self.kind == "primary" and self.hover and enabled then self:SetBackdropColor(0.95, 0.75, 0.32, 1) end
+	end
+	function b:SetOn(on) self.on = on and true or false self:Restyle() end
+	b:HookScript("OnEnter", function(self) self.hover = true self:Restyle() end)
+	b:HookScript("OnLeave", function(self) self.hover = false self:Restyle() end)
+	b:HookScript("OnEnable", function(self) self:Restyle() end)
+	b:HookScript("OnDisable", function(self) self:Restyle() end)
+	b:SetScript("OnMouseDown", function(self) if self:IsEnabled() then fs:SetPoint("CENTER", 0, -1) end end)
+	b:SetScript("OnMouseUp", function() fs:SetPoint("CENTER", 0, 0) end)
+	b:Restyle()
+	return b
+end
+ns.FlatButton = FlatButton
+
+-- A switch with a label (checked = on), with SetChecked/GetChecked like a check button.
+local function FlatToggle(parent, label, width)
+	local b = FlatButton(parent, width or 96, 24)
+	b.checked = false
+	function b:SetChecked(v) self.checked = v and true or false self:SetText((self.checked and "|TInterface\\RaidFrame\\ReadyCheck-Ready:12|t " or "") .. label) self:SetOn(self.checked) end
+	function b:GetChecked() return self.checked end
+	b:SetScript("PreClick", function(self) self:SetChecked(not self.checked) end)
+	b:SetChecked(false)
+	return b
+end
+
 local function BuildUI()
 	if ui then return end
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
-	f:SetSize(520, 152 + ROWS * ROW_HEIGHT)
+	f:SetSize(580, 222 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
-	f:SetBackdrop({
-		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 },
-	})
-	f:SetBackdropColor(0, 0, 0, 0.92)
+	Flat(f, C.bg, C.line)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -896,18 +1439,28 @@ local function BuildUI()
 		scan.nextAt = nil
 	end)
 
-	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	title:SetPoint("TOPLEFT", 10, -9)
-	title:SetText(L["VendorFloor %s"]:format(VERSION))
+	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", 12, -9)
+	title:SetText("VendorFloor")
+	title:SetTextColor(unpack(C.gold))
+	local version = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	version:SetPoint("LEFT", title, "RIGHT", 6, -1)
+	version:SetText(VERSION)
+	local head = f:CreateTexture(nil, "ARTWORK")
+	head:SetColorTexture(unpack(C.line))
+	head:SetHeight(1)
+	head:SetPoint("TOPLEFT", 1, -30)
+	head:SetPoint("TOPRIGHT", -1, -30)
 
-	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", 2, 2)
+	local close = FlatButton(f, 22, 20)
+	close:SetPoint("TOPRIGHT", -6, -5)
+	close:SetText("x")
+	close:SetScript("OnClick", function() f:Hide() end)
 
-	f.scan = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.scan:SetSize(70, 22)
-	f.scan:SetPoint("TOPLEFT", 8, -28)
+	f.scan = FlatButton(f, 90, 24)
+	f.scan:SetPoint("TOPLEFT", 10, -38)
 	f.scan:SetScript("OnClick", function()
-		if scan.active or buy.purpose == "check" or (queue[1] and not buy.state) then
+		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
 			StopAll(L["Scan stopped."])
 		else
 			StartScan()
@@ -915,23 +1468,21 @@ local function BuildUI()
 	end)
 
 	-- full scan: every auction at once, allowed every 15 minutes
-	f.full = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.full:SetSize(116, 22)
-	f.full:SetPoint("LEFT", f.scan, "RIGHT", 4, 0)
+	f.full = FlatButton(f, 130, 24)
+	f.full:SetPoint("LEFT", f.scan, "RIGHT", 6, 0)
 	f.full:SetScript("OnClick", function() StartFull() end)
-	f.full:SetScript("OnEnter", function(self)
+	f.full:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:AddLine(L["Full scan"])
 		GameTooltip:AddLine(L["Reads every auction at once: complete, without checking each item."], 1, 1, 1, true)
 		GameTooltip:AddLine(L["The full scan is available every 15 minutes."], 0.7, 0.7, 0.7, true)
 		GameTooltip:Show()
 	end)
-	f.full:SetScript("OnLeave", function(self)
+	f.full:HookScript("OnLeave", function(self)
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 
-	local loop = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
-	loop:SetSize(24, 24)
+	local loop = FlatToggle(f, L["Continuous"], 120)
 	loop:SetPoint("LEFT", f.full, "RIGHT", 6, 0)
 	loop:SetChecked(db.loop)
 	loop:SetScript("OnClick", function(self)
@@ -939,17 +1490,19 @@ local function BuildUI()
 		if not db.loop then scan.nextAt = nil end
 	end)
 	f.loop = loop
-	local loopText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	loopText:SetPoint("LEFT", loop, "RIGHT", 2, 0)
-	loopText:SetText(L["Continuous"])
 
 	f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	f.count:SetPoint("TOPRIGHT", -30, -10)
 
 	-- Minimum profit per unit: how far below the vendor price an auction must be
-	local profit = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-	profit:SetSize(78, 20)
-	profit:SetPoint("TOPRIGHT", -12, -29)
+	local profit = CreateFrame("EditBox", nil, f, "BackdropTemplate")
+	Flat(profit, C.well, C.line)
+	profit:SetFontObject("GameFontHighlight")
+	profit:SetTextInsets(6, 6, 0, 0)
+	profit:SetSize(84, 24)
+	profit:SetPoint("TOPRIGHT", -10, -38)
+	profit:HookScript("OnEditFocusGained", function(self) self:SetBackdropBorderColor(unpack(C.gold)) end)
+	profit:HookScript("OnEditFocusLost", function(self) self:SetBackdropBorderColor(unpack(C.line)) end)
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
@@ -981,41 +1534,69 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 	f.profit = profit
-	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
 	profitText:SetPoint("RIGHT", profit, "LEFT", -8, 0)
 	profitText:SetText(L["Min. profit/unit"])
 
+	-- tabs: one list per kind of find, never mixed
+	f.tabs = {}
+	local labels = { vendor = L["Vendor"], market = L["Market"], de = L["Disenchant"] }
+	local prev
+	for _, mode in ipairs(MODES) do
+		local tab = FlatButton(f, 150, 24)
+		tab.label = labels[mode]
+		if prev then tab:SetPoint("LEFT", prev, "RIGHT", 6, 0) else tab:SetPoint("TOPLEFT", 10, -68) end
+		tab:SetScript("OnClick", function()
+			db.tab, offset = mode, 0
+			if selected and (selected.mode or "vendor") ~= mode then selected = nil end
+			Refresh()
+		end)
+		f.tabs[mode], prev = tab, tab
+	end
+
 	-- progress bar under the buttons
 	f.bar = CreateFrame("StatusBar", nil, f)
-	f.bar:SetPoint("TOPLEFT", 10, -56)
+	f.bar:SetPoint("TOPLEFT", 10, -98)
 	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
-	f.bar:SetHeight(5)
-	f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-	f.bar:SetStatusBarColor(0.95, 0.71, 0.2)
+	f.bar:SetHeight(14)
+	f.bar:SetStatusBarTexture(WHITE)
+	f.bar:SetStatusBarColor(unpack(C.gold))
 	f.bar:SetMinMaxValues(0, 1)
 	f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
 	f.bar.bg:SetAllPoints()
-	f.bar.bg:SetColorTexture(1, 1, 1, 0.08)
+	f.bar.bg:SetColorTexture(unpack(C.well))
+	f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.bar.text:SetPoint("CENTER", 0, 0)
+	local font = f.bar.text:GetFont()
+	if font then f.bar.text:SetFont(font, 11, "OUTLINE") end
 	f.bar:Hide()
 
 	f.rows = {}
 	for i = 1, ROWS do
 		local row = CreateFrame("Button", nil, f)
 		row:SetHeight(ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 8, -66 - (i - 1) * ROW_HEIGHT)
-		row:SetPoint("RIGHT", f, "RIGHT", -8, 0)
+		row:SetPoint("TOPLEFT", 10, -118 - (i - 1) * ROW_HEIGHT)
+		row:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+		if i % 2 == 0 then
+			local zebra = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+			zebra:SetAllPoints()
+			zebra:SetColorTexture(1, 1, 1, 0.025)
+		end
+		local hl = row:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints()
+		hl:SetColorTexture(1, 1, 1, 0.06)
 		row.mark = row:CreateTexture(nil, "BACKGROUND")
 		row.mark:SetAllPoints()
-		row.mark:SetColorTexture(1, 0.82, 0, 0.18)
+		row.mark:SetColorTexture(C.gold[1], C.gold[2], C.gold[3], 0.16)
 		row.icon = row:CreateTexture(nil, "ARTWORK")
 		row.icon:SetSize(ROW_HEIGHT - 2, ROW_HEIGHT - 2)
-		row.icon:SetPoint("LEFT", 0, 0)
-		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		row.icon:SetPoint("LEFT", 2, 0)
+		row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 		row.info:SetPoint("RIGHT", -2, 0)
 		row.info:SetJustifyH("RIGHT")
-		row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 		row.name:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
 		row.name:SetPoint("RIGHT", row.info, "LEFT", -6, 0)
 		row.name:SetJustifyH("LEFT")
@@ -1030,7 +1611,14 @@ local function BuildUI()
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetHyperlink(d.link or ("item:" .. d.id))
 			GameTooltip:AddLine(" ")
-			if d.count then
+			if d.mode == "market" then
+				GameTooltip:AddLine(L["Usual price %s, after the auction house cut %s"]:format(Money((d.vendor or 0) / AH_CUT), Money(d.vendor or 0)), 0.88, 0.66, 0.23)
+			elseif d.mode == "de" then
+				GameTooltip:AddLine(L["Disenchanting brings about %s (estimate)"]:format(Money(d.vendor or 0)), 0.88, 0.66, 0.23)
+			end
+			if d.count and (d.mode or "vendor") ~= "vendor" then
+				GameTooltip:AddLine(L["Below that: %d×, total profit %s"]:format(d.count, Money(d.profit or 0)), 0.25, 1, 0.25)
+			elseif d.count then
 				GameTooltip:AddLine(L["Below vendor price: %d×, total profit %s"]:format(d.count, Money(d.profit or 0)), 0.25, 1, 0.25)
 			else
 				GameTooltip:AddLine(L["Profit per unit %s, units not counted yet"]:format(Money(d.profit or 0)), 0.25, 1, 0.25)
@@ -1045,31 +1633,56 @@ local function BuildUI()
 		f.rows[i] = row
 	end
 
-	f.ledger = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	f.ledger:SetPoint("BOTTOMLEFT", 10, 52)
+	f.empty = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+	f.empty:SetPoint("TOPLEFT", 20, -130)
+	f.empty:SetPoint("RIGHT", f, "RIGHT", -20, 0)
+	f.empty:SetJustifyH("LEFT")
+	f.empty:SetSpacing(3)
+
+	f.ledger = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+	f.ledger:SetPoint("BOTTOMLEFT", 10, 60)
 	f.ledger:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.ledger:SetJustifyH("LEFT")
 	f.ledger:SetWordWrap(false)
 	f.ledger:SetText(ns.LedgerLine and ns.LedgerLine() or "")
 
-	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.summary:SetPoint("BOTTOMLEFT", 10, 70)
+	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.summary:SetPoint("BOTTOMLEFT", 10, 79)
 	f.summary:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.summary:SetJustifyH("LEFT")
 	f.summary:SetWordWrap(false)
 
-	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	f.status:SetPoint("BOTTOMLEFT", 10, 36)
+	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+	f.status:SetPoint("BOTTOMLEFT", 10, 43)
 	f.status:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 	f.status:SetJustifyH("LEFT")
 	f.status:SetWordWrap(false)
 	f.status:SetText(statusText)
 
-	f.action = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.action:SetHeight(24)
-	f.action:SetPoint("BOTTOMLEFT", 8, 8)
-	f.action:SetPoint("BOTTOMRIGHT", -8, 8)
+	local foot = f:CreateTexture(nil, "ARTWORK")
+	foot:SetColorTexture(unpack(C.line))
+	foot:SetHeight(1)
+	foot:SetPoint("BOTTOMLEFT", 1, 98)
+	foot:SetPoint("BOTTOMRIGHT", -1, 98)
+
+	f.action = FlatButton(f, 100, 30, "primary")
+	f.action:SetPoint("BOTTOMLEFT", 10, 8)
+	f.action:SetPoint("BOTTOMRIGHT", -10, 8)
 	f.action:SetScript("OnClick", VendorFloor_BuyNext)
+
+	f.post = FlatButton(f, 210, 30)
+	f.post:SetPoint("BOTTOMRIGHT", -10, 8)
+	f.post:SetScript("OnClick", function() ns.PostNext() end)
+	f.post:HookScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:AddLine(L["Post"])
+		GameTooltip:AddLine(L["Puts the next item bought from the market tab on the auction house for 24 hours, just under its usual price and never below cost plus the minimum profit. One auction per click."], 1, 1, 1, true)
+		GameTooltip:Show()
+	end)
+	f.post:HookScript("OnLeave", function(self)
+		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+	end)
+	f.post:Hide()
 
 	local elapsed, second = 0, 0
 	f:SetScript("OnUpdate", function(_, dt)
@@ -1136,6 +1749,38 @@ local function RegisterSettings()
 		SetMinProfit((tonumber(value) or 0) * 100)
 	end)
 
+	local percent = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_MINPERCENT", "minPercent", db,
+		Settings.VarType.Number, L["Minimum profit in percent"], defaults.minPercent)
+	local percentOptions = Settings.CreateSliderOptions(0, 100, 5)
+	if percentOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
+		percentOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+	end
+	Settings.CreateSlider(category, percent, percentOptions,
+		L["Profit in percent of the price, for every tab. 0 turns it off."])
+
+	local slotSetting = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_MINSLOT", "minSlotSilver", db,
+		Settings.VarType.Number, L["Minimum profit per bag slot (silver)"], 0)
+	local slotOptions = Settings.CreateSliderOptions(0, 500, 5)
+	if slotOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
+		slotOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+	end
+	Settings.CreateSlider(category, slotSetting, slotOptions,
+		L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."])
+	slotSetting:SetValueChangedCallback(function(_, value) db.minSlot = (tonumber(value) or 0) * 100 end)
+
+	local discount = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_DISCOUNT", "marketDiscount", db,
+		Settings.VarType.Number, L["Market tab: percent below the usual price"], defaults.marketDiscount)
+	local discountOptions = Settings.CreateSliderOptions(10, 80, 5)
+	if discountOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
+		discountOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+	end
+	Settings.CreateSlider(category, discount, discountOptions,
+		L["How far below its usual price an auction must be for the market tab."])
+
+	local flash = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_FLASH", "flash", db,
+		Settings.VarType.Boolean, L["Flash the taskbar"], defaults.flash)
+	Settings.CreateCheckbox(category, flash, L["Flash the game's taskbar icon on new finds while the game is in the background."])
+
 	Settings.RegisterAddOnCategory(category)
 	ns.category = category
 end
@@ -1157,6 +1802,7 @@ function handlers.ADDON_LOADED(name)
 	db.total = db.total or { buys = 0, spent = 0, value = 0 }
 	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
 	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
+	db.minSlotSilver = floor((db.minSlot or 0) / 100)
 	ns.db = db
 	local ok, err = pcall(RegisterSettings)
 	if not ok then Print(tostring(err)) end
@@ -1234,7 +1880,7 @@ function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
-	ns.RecordBuy(p.id, p.qty, p.cost, p.value)
+	ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
 end
 
 -- In case the client has no purchase event: the "You won an auction for ..." line.
@@ -1246,7 +1892,7 @@ function handlers.CHAT_MSG_SYSTEM(msg)
 	for auctionID, p in pairs(pendingBuys) do
 		if p.name == name and GetTime() - p.at < 60 then
 			pendingBuys[auctionID] = nil
-			ns.RecordBuy(p.id, p.qty, p.cost, p.value)
+			ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
 			return
 		end
 	end
@@ -1265,6 +1911,14 @@ function handlers.COMMODITY_PRICE_UPDATED(_, total)
 	end
 end
 
+function handlers.AUCTION_HOUSE_POST_WARNING()
+	if post.last and GetTime() - post.last.at < 10 then
+		post.warning = post.last
+		SetStatus(L["The auction house warns about this price. Click \"Confirm post\" to post anyway."])
+		Refresh()
+	end
+end
+
 function handlers.COMMODITY_PRICE_UNAVAILABLE()
 	if buy.state == "quoting" then ResetBuy(L["No quote received."]) end
 end
@@ -1274,7 +1928,7 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	local d = buy.deal
 	Print(L["Bought: %s ×%d for %s (vendor pays %s)."]:format(d.link or d.name, buy.qty, Money(buy.total),
 		Money(buy.qty * d.vendor)))
-	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor)
+	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	RemoveDeal(d)
 	ResetBuy(L["Bought."])
 end
@@ -1310,7 +1964,13 @@ local function Help()
 		L["/vfloor ignore list | clear – show or clear the ignore list"],
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
+		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
+		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
+		L["/vfloor discount <n> – market tab: percent below the usual price"],
+		L["/vfloor quick – quick round over the watch list"],
+		L["/vfloor flash – taskbar flash on or off"],
 		L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"],
+		L["/vfloor minimap – minimap button on or off"],
 		L["/vfloor forget – forget the purchases still to sell"],
 		L["/vfloor reset – reset the window position"],
 		L["/vfloor options – open the settings"],
@@ -1346,6 +2006,28 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(ns.TotalLine())
 	elseif cmd == "export" then
 		ns.ShowExport()
+	elseif cmd == "percent" and tonumber(arg) then
+		db.minPercent = max(floor(tonumber(arg)), 0)
+		Print(L["Minimum profit in percent: %d%%"]:format(db.minPercent))
+	elseif cmd == "slot" and ParseMoney(arg) then
+		db.minSlot = ParseMoney(arg)
+		db.minSlotSilver = floor(db.minSlot / 100)
+		Print(L["Minimum profit per bag slot: %s"]:format(Money(db.minSlot)))
+	elseif cmd == "discount" and tonumber(arg) then
+		db.marketDiscount = min(max(floor(tonumber(arg)), 5), 95)
+		Print(L["Market tab: at least %d%% below the usual price."]:format(db.marketDiscount))
+	elseif cmd == "flash" then
+		db.flash = not db.flash
+		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))
+	elseif cmd == "quick" then
+		if not StartQuick() then Print(L["The watch list needs at least 5 items. They come from finds below vendor price."]) end
+	elseif cmd == "debug" then
+		Print(("scan.active=%s round=%d seen=%d queue=%d checkTotal=%s buy.state=%s purpose=%s pending=%s throttleReady=%s full.active=%s phase=%s nextAt=%s ah=%s"):format(
+			tostring(scan.active), scan.round or 0, scan.seen or 0, #queue, tostring(scan.checkTotal), tostring(buy.state),
+			tostring(buy.purpose), tostring(pendingSend ~= nil), tostring(AH.IsThrottledMessageSystemReady()),
+			tostring(full.active), tostring(full.phase), tostring(scan.nextAt and floor(scan.nextAt - GetTime())), tostring(ahOpen)))
+	elseif cmd == "minimap" then
+		Print(ns.ToggleMinimap() and L["Minimap button shown."] or L["Minimap button hidden."])
 	elseif cmd == "full" then
 		StartFull()
 	elseif cmd == "forget" then

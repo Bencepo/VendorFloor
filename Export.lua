@@ -131,7 +131,7 @@ local function buildExport()
 		char = { name = name, realm = realm }, minProfit = db.minProfit,
 		total = { buys = ledger.buys, spent = ledger.spent, sold = ledger.sold, soldCost = ledger.soldCost,
 			profit = ledger.profit, unsoldUnits = ledger.unsoldUnits, unsoldValue = ledger.unsoldValue },
-		days = days, items = top }
+		days = days, items = top, market = db.mtotal, disenchant = db.detotal }
 end
 
 function ns.ShowExport()
@@ -145,4 +145,134 @@ function ns.ShowExport()
 	local summary = L["%d buys, profit %s, still to sell %s"]:format(data.total.buys,
 		ns.Money(data.total.profit), ns.Money(data.total.unsoldValue))
 	showExport(table.concat(out), summary)
+end
+
+---------------------------------------------------------------------------
+-- Minimap button and addon menu entry
+---------------------------------------------------------------------------
+
+-- A round button at the edge of the minimap. Drag it to move it; the angle is kept in
+-- the saved table db (db.angle, db.hide). No libraries needed.
+local function MinimapButton(name, icon, db, onClick, onTooltip)
+	if not Minimap then return nil end
+	local b = CreateFrame("Button", name, Minimap)
+	b:SetSize(31, 31)
+	b:SetFrameStrata("MEDIUM")
+	b:SetFrameLevel(8)
+	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	b:RegisterForDrag("LeftButton")
+	b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
+	local bg = b:CreateTexture(nil, "BACKGROUND")
+	bg:SetSize(20, 20)
+	bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
+	bg:SetPoint("TOPLEFT", 7, -5)
+	local art = b:CreateTexture(nil, "ARTWORK")
+	art:SetSize(17, 17)
+	art:SetTexture(icon)
+	art:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+	art:SetPoint("TOPLEFT", 7, -6)
+	local border = b:CreateTexture(nil, "OVERLAY")
+	border:SetSize(53, 53)
+	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
+	border:SetPoint("TOPLEFT")
+	local function place()
+		local a = math.rad(db.angle or 225)
+		local r = (Minimap:GetWidth() / 2) + 10
+		b:ClearAllPoints()
+		b:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
+	end
+	b:SetScript("OnDragStart", function(self)
+		self:SetScript("OnUpdate", function()
+			local mx, my = Minimap:GetCenter()
+			local cx, cy = GetCursorPosition()
+			local scale = Minimap:GetEffectiveScale()
+			db.angle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
+			place()
+		end)
+	end)
+	b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
+	b:SetScript("OnClick", function(_, button) onClick(button) end)
+	b:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+		onTooltip(GameTooltip)
+		GameTooltip:Show()
+	end)
+	b:SetScript("OnLeave", function(self)
+		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+	end)
+	place()
+	b:SetShown(not db.hide)
+	return b
+end
+
+-- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
+-- managers can collect it. The own button above is only used if the libraries are missing.
+local function MinimapIcon(name, icon, db, onClick, onTooltip)
+	local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
+	local dbi = LibStub and LibStub("LibDBIcon-1.0", true)
+	if not (ldb and dbi) then return MinimapButton(name .. "MinimapButton", icon, db, onClick, onTooltip) end
+	if db.minimapPos == nil and db.angle then db.minimapPos = db.angle % 360 end
+	local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
+		type = "launcher", label = name, icon = icon,
+		OnClick = function(_, button) onClick(button) end,
+		OnTooltipShow = function(tip) onTooltip(tip) end,
+	})
+	if not dbi:IsRegistered(name) then dbi:Register(name, obj, db) end
+	return { SetShown = function(_, show) if show then dbi:Show(name) else dbi:Hide(name) end end }
+end
+
+local minimapButton
+
+local function MinimapClick(button)
+	if button == "RightButton" then
+		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. ns.TotalLine())
+	elseif AuctionHouseFrame and AuctionHouseFrame:IsShown() then
+		SlashCmdList.VENDORFLOOR("")
+	else
+		ns.ShowExport()
+	end
+end
+
+local function MinimapTooltip(tip)
+	tip:AddLine("VendorFloor " .. (ns.VERSION or ""))
+	local l = VendorFloor_Ledger()
+	if l then
+		local today = l.days[date("%Y-%m-%d")]
+		tip:AddDoubleLine(L["Profit today"], ns.Money(today and floor((today.sold or 0) - (today.soldCost or 0)) or 0), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Profit total"], ns.Money(l.profit), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Still to sell"], ns.Money(l.unsoldValue), 1, 1, 1, 1, 1, 1)
+	end
+	tip:AddLine(" ")
+	tip:AddLine(L["Left-click: ledger for bencepo.github.io/vendorfloor (at the auction house: window)"], 0.6, 0.8, 1, true)
+	tip:AddLine(L["Right-click: totals in chat"], 0.6, 0.8, 1)
+	tip:AddLine(L["Drag: move. /vfloor minimap: hide or show"], 0.6, 0.8, 1)
+end
+
+local function MinimapSettings()
+	ns.db.minimap = ns.db.minimap or {}
+	return ns.db.minimap
+end
+
+function ns.ToggleMinimap()
+	local st = MinimapSettings()
+	st.hide = not st.hide
+	if minimapButton then minimapButton:SetShown(not st.hide) end
+	return not st.hide
+end
+
+local minimapEvents = CreateFrame("Frame")
+minimapEvents:RegisterEvent("PLAYER_LOGIN")
+minimapEvents:SetScript("OnEvent", function()
+	if not ns.db then return end
+	local ok, b = pcall(MinimapIcon, "VendorFloor", "Interface\\Icons\\INV_Misc_Coin_02",
+		MinimapSettings(), MinimapClick, MinimapTooltip)
+	if ok then
+		minimapButton = b
+	else
+		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r minimap button failed: " .. tostring(b))
+	end
+end)
+
+function VendorFloor_OnCompartmentClick(_, button)
+	MinimapClick(button)
 end

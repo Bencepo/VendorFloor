@@ -7,8 +7,14 @@
 ## X-License: All Rights Reserved
 ## X-Curse-Project-ID: 1797826
 ## SavedVariables: VendorFloorDB
+## IconTexture: Interface\Icons\INV_Misc_Coin_02
+## AddonCompartmentFunc: VendorFloor_OnCompartmentClick
 ## OptionalDeps: Auctionator
 
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Locales.lua
 VendorFloor.lua
 Trade.lua
