@@ -4,14 +4,17 @@ Finds World of Warcraft: Forever auction house listings priced below what a vend
 
 ## Features
 
-- **Scan**: reads the auction house item list and shows items priced below vendor value, best profit first.
+- **Full scan**: reads every auction at once (allowed every 15 minutes) and lists everything with a buyout below vendor value, complete and without checking each item.
+- **Scan**: reads the auction house item list between full scans and checks each candidate, best profit first.
 - **Buy-it-now only**: an auction is only listed if it has a buyout price. Bid-only auctions are ignored.
 - **Minimum profit per unit**: set how far below the vendor price an auction must be, for example `50k`, `5s` or `1g 20s`.
 - **One-click buying**: click a find to check its live auctions, then press Buy. Nothing is ever bought automatically.
 - **Key binding**: "Buy next find" (Options > Keybindings > AddOns) or `/vfloor buy` checks and buys the best find, one step per press.
 - **Stackable goods**: checked before listing, so each row shows the units really below vendor price and the total profit.
 - **Ignore list**: right-click a find to hide that item for good.
-- **Settings** under Options > AddOns > VendorFloor, and a session ledger (spent, vendor value, profit) in the window.
+- **Collect and sell**: a button at the mailbox collects the items VendorFloor bought, a button at a merchant sells them (never more than it bought).
+- **Ledger**: buys, spending, sales, real profit, profit per hour and what is still to sell. Progress bar and a summary of the whole list.
+- **Settings** under Options > AddOns > VendorFloor.
 - **English and German**: follows the game client's language.
 - **Continuous mode**: rescans automatically after each round.
 - **Alerts**: new finds are announced in chat, with an optional sound.
@@ -21,8 +24,9 @@ Finds World of Warcraft: Forever auction house listings priced below what a vend
 ## Usage
 
 1. Open the auction house. The VendorFloor window appears beside it.
-2. Press **Scan**. Candidates are checked for buyout prices one by one.
+2. Press **Full scan** (every 15 minutes) or **Scan**. Finds of a scan are checked for a buyout one by one.
 3. Click a find to check its live auctions, then press **Buy**.
+4. At the mailbox press **Collect purchases**, at a merchant **Sell purchases**.
 
 | Command | Effect |
 | --- | --- |
@@ -32,7 +36,9 @@ Finds World of Warcraft: Forever auction house listings priced below what a vend
 | `/vfloor sound` | Toggle the alert sound |
 | `/vfloor buy` | Check and buy the next find (same as the key binding) |
 | `/vfloor ignore list` / `clear` | Show or clear the ignore list |
+| `/vfloor full` | Start a full scan |
 | `/vfloor stats` | Totals since install |
+| `/vfloor forget` | Forget the purchases still to sell |
 | `/vfloor options` | Open the settings |
 | `/vfloor reset` | Reset the window position |
 

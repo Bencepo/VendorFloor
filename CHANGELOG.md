@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0-beta
+
+- Full scan: reads every auction of the auction house at once (allowed every 15 minutes). Each auction comes with its buyout, so finds appear complete and without checking each item. Between full scans the normal rounds keep running.
+- Collect purchases: a button at the mailbox takes the items VendorFloor bought out of the auction house mail.
+- Sell purchases: a button at a merchant sells them, at most as many as VendorFloor bought, so items of your own stay.
+- Ledger counts sales and the profit they really made, profit per hour and what is still to sell. `/vfloor stats` shows the totals, `/vfloor forget` clears the purchases still to sell.
+- Progress bar for full scans and checks, and a summary line with the cost and profit of the whole list.
+
 ## 0.2.2-beta
 
 - Faster checking: results the auction house already holds are read at once instead of after a 15 second wait.
