@@ -903,6 +903,39 @@ end
 -- Day number (days since 1970) as the key of the price history: short in the saved file.
 local function Today() return floor(time() / 86400) end
 
+-- What the cheapest tenth of the listed units costs (weighted by count, own auctions left
+-- out): the price to buy at, and about the price a sale has to beat.
+local function ListingLow(a)
+	local list, total = {}, 0
+	for _, x in ipairs(a) do
+		if not x[3] then
+			list[#list + 1] = x
+			total = total + x[2]
+		end
+	end
+	if total == 0 then return nil end
+	table.sort(list, function(p, q) return p[1] < q[1] end)
+	local run = 0
+	for _, x in ipairs(list) do
+		run = run + x[2]
+		if run >= total * 0.1 then return x[1] end
+	end
+	return list[#list][1]
+end
+
+-- Latest low price of a price key (from the last full scan or price check), or nil.
+local function StoreLow(pk, value)
+	db.lows = db.lows or {}
+	db.lows[pk] = { floor(value + 0.5), time() }
+end
+
+local function LowValue(pk)
+	local l = db.lows and db.lows[pk]
+	if l and time() - l[2] < 3 * 86400 then return l[1] end
+	return nil
+end
+ns.LowValue = LowValue
+
 local function StorePrice(pk, value)
 	db.prices = db.prices or {}
 	local h = db.prices[pk] or {}
@@ -964,9 +997,13 @@ local matCache = {}
 
 local function MatValue(itemID, live)
 	if matCache[itemID] ~= nil then return matCache[itemID] or nil end
+	-- materials are sold again: value them at what a sale has to beat (the low price), not the median
 	local pk = PlainKey(itemID)
-	local value = MarketValue(pk)
-	if not value and live and live[pk] then value = ListingMedian(live[pk].a) end
+	local value = live and live[pk] and ListingLow(live[pk].a) or LowValue(pk)
+	if not value then
+		local med = MarketValue(pk)
+		value = med and med * 0.9
+	end
 	matCache[itemID] = value or false
 	return value
 end
@@ -1013,7 +1050,10 @@ local function FinishFull(failed)
 	wipe(matCache)
 	for pk, it in pairs(full.items) do
 		local med = ListingMedian(it.a)
-		if med then StorePrice(pk, med) end
+		if med then
+			StorePrice(pk, med)
+			StoreLow(pk, ListingLow(it.a))
+		end
 	end
 	-- 2. finds per tab
 	local found, counts = {}, { vendor = 0, de = 0 }
@@ -1159,6 +1199,7 @@ local function ReadCraftPrice(id)
 	local med = ListingMedian(a)
 	if med then
 		StorePrice(PlainKey(id), med)
+		StoreLow(PlainKey(id), ListingLow(a))
 		craft.found = craft.found + 1
 	end
 end
