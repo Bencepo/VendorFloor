@@ -403,6 +403,7 @@ local function StartQuick()
 				d.key, d.id, d.vendor, d.mode = key, id, vendor, "vendor"
 				d.name, d.link, d.icon, d.dropped = name, link, icon, nil
 				d.price = d.price or vendor
+				d.browsePrice = d.browsePrice or vendor
 				d.commodity = IsCommodity(key) == true
 				queued[k] = d
 				Enqueue(d)
@@ -795,7 +796,8 @@ local function ListingMedian(a)
 	end
 end
 
-local function Today() return date("%Y-%m-%d") end
+-- Day number (days since 1970) as the key of the price history: short in the saved file.
+local function Today() return floor(time() / 86400) end
 
 local function StorePrice(pk, value)
 	db.prices = db.prices or {}
@@ -852,10 +854,14 @@ local DE_GREEN = {
 local DE_BLUE = { { 25, SHARD.sglim }, { 30, SHARD.lglim }, { 35, SHARD.sglow }, { 40, SHARD.lglow },
 	{ 45, SHARD.srad }, { 50, SHARD.lrad }, { 55, SHARD.sbril }, { 65, SHARD.lbril } }
 
+local matCache = {}
+
 local function MatValue(itemID, live)
+	if matCache[itemID] ~= nil then return matCache[itemID] or nil end
 	local pk = PlainKey(itemID)
 	local value = MarketValue(pk)
 	if not value and live and live[pk] then value = ListingMedian(live[pk].a) end
+	matCache[itemID] = value or false
 	return value
 end
 
@@ -896,6 +902,7 @@ local function FinishFull(failed)
 		return
 	end
 	-- 1. today's usual price of every item
+	wipe(matCache)
 	local medians = {}
 	for pk, it in pairs(full.items) do
 		local med, n = ListingMedian(it.a)
