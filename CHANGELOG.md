@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.2-beta
+
+- Faster checking: results the auction house already holds are read at once instead of after a 15 second wait.
+- Fewer lost finds: a check without an answer is tried again later instead of dropping the find, and several variants of one item (e.g. "of the Bear", "of the Monkey") whose data is still loading are all kept.
+- Stackable goods appear in the list right after the scan; the check then counts the units below vendor price ("?×" until then).
+- Single items are checked first, best potential profit first.
+
 ## 0.2.1-beta
 
 - Fixed: the window failed to open with "attempt to index upvalue 'L'" when the texts file had not been loaded. VendorFloor now falls back to English texts.

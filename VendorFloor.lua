@@ -21,6 +21,8 @@ if VERSION == "" or VERSION:find("^@") then VERSION = "dev" end
 local PREFIX = "|cff33ff99VendorFloor:|r "
 local ROWS, ROW_HEIGHT = 12, 20
 local SEND_TIMEOUT = 15
+local CHECK_TIMEOUT = 6    -- seconds a check waits for the auction house before it tries again later
+local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 
 local defaults = {
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
@@ -33,7 +35,7 @@ local db
 
 local deals, order = {}, {}   -- confirmed finds: by key and as a sorted list
 local queue, queued = {}, {}  -- finds still to be checked (list and by key)
-local pendingInfo = {}        -- itemID -> browse result whose item data is still loading
+local pendingInfo = {}        -- itemID -> browse results whose item data is still loading
 local pendingBuys = {}        -- auctionID -> item purchase waiting for confirmation
 local scan = { active = false, seen = 0, round = 0 }
 local buy = {}                -- state of the find being checked or bought
@@ -46,7 +48,7 @@ local statusText = ""
 local lastSound = 0
 local ui
 
-local StartScan, StopScan, Verify, ResetBuy, Refresh
+local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults
 
 local function Print(msg)
 	DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
@@ -148,13 +150,21 @@ local function IsIgnored(itemID)
 	return db.ignore and db.ignore[itemID] and true or false
 end
 
+-- Stackable goods sell at a fixed price per unit; single items can be bid-only.
+-- nil when the item data is not there yet.
+local function IsCommodity(key)
+	local info = AH.GetItemKeyInfo and AH.GetItemKeyInfo(key)
+	if info == nil then return nil end
+	return info.isCommodity and true or false
+end
+
 -- Take the find into the list and announce it.
 local function Confirm(d)
 	if d.dropped or deals[d.k] then return end
 	deals[d.k] = d
 	order[#order + 1] = d
-	Print(L["%s below vendor price: %d× for %s each, vendor pays %s"]:format(d.link or d.name, d.count or 1,
-		Money(d.price), Money(d.vendor)))
+	Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
+		d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
 	if db.sound and GetTime() - lastSound > 2 then
 		lastSound = GetTime()
 		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
@@ -176,7 +186,8 @@ local function Evaluate(result)
 	if IsIgnored(id) then return end
 	local vendor, name, link, icon = VendorPrice(id)
 	if vendor == nil then
-		pendingInfo[id] = result
+		pendingInfo[id] = pendingInfo[id] or {}
+		table.insert(pendingInfo[id], result)
 		if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
 		return
 	end
@@ -189,7 +200,17 @@ local function Evaluate(result)
 	end
 	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
 	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
-	d.price = d.price or price
+	d.commodity = IsCommodity(key) == true
+	if d.commodity then
+		-- Stackable goods always sell at a fixed price: listed at once with the browse price,
+		-- the check later only counts the units below the vendor price.
+		d.price = price
+		if not d.count then d.profit = vendor - price end
+		Confirm(d)
+	else
+		-- Single items can be bid-only auctions: listed only once the check finds a buyout.
+		d.price = d.price or price
+	end
 	Enqueue(d)
 end
 
@@ -283,6 +304,10 @@ local function FinishScan()
 		local d = order[i]
 		if d.stale and d ~= buy.deal then RemoveDeal(d) end
 	end
+	table.sort(queue, function(a, b)
+		if a.commodity ~= b.commodity then return not a.commodity end
+		return (a.vendor - a.price) > (b.vendor - b.price)
+	end)
 	if queue[1] then
 		SetStatus(L["%d items read. Checking %d candidates …"]:format(scan.seen, #queue))
 	else
@@ -339,6 +364,18 @@ end
 -- Result of a check: with real offers into the list, without them out of it.
 -- offer: { unit = cheapest unit price, count = units below vendor price, profit = total profit }
 local function FinishCheck(d, offer)
+	if offer == false then
+		-- no answer: try once more at the end of the queue, keep what is already listed
+		d.retries = (d.retries or 0) + 1
+		if d.retries <= 1 then
+			queue[#queue + 1] = d
+		end
+		wipe(buy)
+		if not queue[1] and not scan.active then RoundDone() end
+		Refresh()
+		return
+	end
+	d.retries = nil
 	if offer then
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
@@ -431,6 +468,20 @@ local function ReadItem()
 	Refresh()
 end
 
+-- Does the auction house already hold the results of the last query for this find?
+-- It sends no event for results it had before, so they are read without one.
+ResultsReady = function(d)
+	if not d then return false end
+	if d.commodity then
+		return AH.HasFullCommoditySearchResults(d.id) or (AH.GetCommoditySearchResultsQuantity(d.id) or 0) > 0
+	end
+	return AH.HasSearchResults(d.key) and (AH.HasFullItemSearchResults(d.key) or (AH.GetItemSearchResultsQuantity(d.key) or 0) > 0)
+end
+
+ReadResults = function()
+	if buy.deal and buy.deal.commodity then ReadCommodity() else ReadItem() end
+end
+
 -- The buy button and the key binding. Runs only on a click or key press.
 local function Action()
 	local state = buy.state
@@ -518,12 +569,17 @@ local function Tick()
 		if not d.dropped then Verify(d, "check") end
 		return
 	end
-	if state == "verifying" and now - buy.t > SEND_TIMEOUT then
-		if buy.purpose == "check" then
-			FinishCheck(buy.deal, nil)
-		else
-			ResetBuy(L["No answer while checking."])
-		end
+	-- A check reads held results quickly. A purchase waits longer for fresh ones, so an
+	-- auction bought a moment ago is not offered again from old results.
+	local wait = buy.purpose == "check" and CACHE_WAIT or 2.5
+	if state == "verifying" and sentAt and now - sentAt > wait and ResultsReady(buy.deal) then
+		ReadResults()
+		return
+	end
+	if state == "verifying" and buy.purpose == "check" and now - buy.t > CHECK_TIMEOUT then
+		FinishCheck(buy.deal, false)
+	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
+		ResetBuy(L["No answer while checking."])
 	elseif state == "bought" and now - buy.t > 1.5 then
 		Verify(buy.deal, "buy") -- more of it below the vendor price?
 	elseif (state == "quoting" or state == "confirming") and now - buy.t > 12 then
@@ -553,8 +609,8 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s → %s  |cff40ff40+%s|r |cffaaaaaa(%d×)|r"):format(Money(d.price), Money(d.vendor),
-				Money(d.profit or 0), d.count or 1))
+			row.info:SetText(("%s → %s  |cff40ff40+%s|r |cffaaaaaa(%s×)|r"):format(Money(d.price), Money(d.vendor),
+				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
 		else
@@ -744,7 +800,11 @@ local function BuildUI()
 			GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 			GameTooltip:SetHyperlink(d.link or ("item:" .. d.id))
 			GameTooltip:AddLine(" ")
-			GameTooltip:AddLine(L["Below vendor price: %d×, total profit %s"]:format(d.count or 1, Money(d.profit or 0)), 0.25, 1, 0.25)
+			if d.count then
+				GameTooltip:AddLine(L["Below vendor price: %d×, total profit %s"]:format(d.count, Money(d.profit or 0)), 0.25, 1, 0.25)
+			else
+				GameTooltip:AddLine(L["Profit per unit %s, units not counted yet"]:format(Money(d.profit or 0)), 0.25, 1, 0.25)
+			end
 			GameTooltip:AddLine(L["Listed on the AH: %d"]:format(d.listed or 0), 0.7, 0.7, 0.7)
 			GameTooltip:AddLine(L["Click: check and buy. Right-click: hide this item."], 0.7, 0.7, 0.7, true)
 			GameTooltip:Show()
@@ -895,22 +955,30 @@ function handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
 end
 
 function handlers.GET_ITEM_INFO_RECEIVED(id, success)
-	local result = pendingInfo[id]
-	if not result then return end
+	local results = pendingInfo[id]
+	if not results then return end
 	pendingInfo[id] = nil
 	if success and VendorPrice(id) ~= nil then
-		Evaluate(result)
+		for _, result in ipairs(results) do Evaluate(result) end
 		Refresh()
 	end
 end
 
 function handlers.COMMODITY_SEARCH_RESULTS_UPDATED(id)
-	if buy.state == "verifying" and buy.deal and buy.deal.id == id then ReadCommodity() end
+	if buy.state == "verifying" and buy.deal and buy.deal.id == id then
+		buy.deal.commodity = true
+		ReadCommodity()
+	end
 end
+handlers.COMMODITY_SEARCH_RESULTS_ADDED = handlers.COMMODITY_SEARCH_RESULTS_UPDATED
 
 function handlers.ITEM_SEARCH_RESULTS_UPDATED(key)
-	if buy.state == "verifying" and buy.deal and type(key) == "table" and key.itemID == buy.deal.id then ReadItem() end
+	if buy.state == "verifying" and buy.deal and type(key) == "table" and key.itemID == buy.deal.id then
+		buy.deal.commodity = false
+		ReadItem()
+	end
 end
+handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 
 function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
 	local p = pendingBuys[auctionID]

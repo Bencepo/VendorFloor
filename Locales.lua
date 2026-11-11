@@ -38,6 +38,7 @@ L["Session: %d buys, spent %s, vendor value %s, profit %s"] = "Sitzung: %d Käuf
 -- Rows
 L["Listed on the AH: %d"] = "Im AH gelistet: %d"
 L["Below vendor price: %d×, total profit %s"] = "Unter Händlerpreis: %d×, Gewinn gesamt %s"
+L["Profit per unit %s, units not counted yet"] = "Gewinn je Stück %s, Stückzahl noch nicht gezählt"
 L["Click: check and buy. Right-click: hide this item."] = "Klick: prüfen und kaufen. Rechtsklick: Gegenstand ausblenden."
 
 -- Scan
@@ -50,7 +51,7 @@ L["Checking: %s (%d left)"] = "Prüfe: %s (noch %d)"
 L["Scan stopped."] = "Scan gestoppt."
 L["The auction house is not responding. Scan stopped."] = "Das Auktionshaus antwortet nicht. Scan abgebrochen."
 L["The auction house rejected the query."] = "Das Auktionshaus hat die Abfrage abgelehnt."
-L["%s below vendor price: %d× for %s each, vendor pays %s"] = "%s unter Händlerpreis: %d× zu je %s, Händler zahlt %s"
+L["%s below vendor price: %s× for %s each, vendor pays %s"] = "%s unter Händlerpreis: %s× zu je %s, Händler zahlt %s"
 
 -- Buying
 L["Checking %s …"] = "Prüfe %s …"
