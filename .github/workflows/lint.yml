@@ -32,5 +32,7 @@ jobs:
               *) echo "::warning file=$file,line=$ln,col=$col::$msg" ;;
             esac
           done < luacheck.txt
+          luacheck *.lua --formatter default --no-color | tail -1 > summary.txt
+          echo "::notice title=luacheck::$(cat summary.txt) (exit $code)"
           if [ $code -ge 2 ]; then exit $code; fi
           exit 0
