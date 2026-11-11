@@ -7,6 +7,7 @@
 - Disenchant tab between full scans: normal scans and quick rounds also find gear below its disenchant value (with the prices stored by earlier full scans).
 - The finds of the last full scan (up to an hour old) are back when you open the auction house again, so the tabs are not empty until the next full scan is allowed. They are checked when you click them.
 - At most 150 checks per round, the most promising first; the rest follow in the next round.
+- Sound and taskbar flash once per round (at most once a minute) instead of per find; the check counter counts up correctly.
 - Quieter chat: no line per find any more, one line per round with the new finds per tab (sound and taskbar flash stay).
 
 ## 0.6.0-beta

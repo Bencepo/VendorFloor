@@ -63,7 +63,6 @@ local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
 local ahOpen = false
 local offset = 0
 local statusText = ""
-local lastSound = 0
 local ui
 
 local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady
@@ -222,7 +221,12 @@ local function Watch(itemID)
 	db.watch[itemID] = w
 end
 
-local function Flash()
+-- Sound and taskbar flash for new finds: once per round, at most once a minute.
+local lastAlert = 0
+local function Alert()
+	if GetTime() - lastAlert < 60 then return end
+	lastAlert = GetTime()
+	if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
 	if db.flash and FlashClientIcon then FlashClientIcon() end
 end
 
@@ -246,11 +250,6 @@ local function Confirm(d, quiet)
 	local mode = d.mode or "vendor"
 	if mode == "vendor" then Watch(d.id) end
 	newFinds[mode] = (newFinds[mode] or 0) + 1
-	if db.sound and GetTime() - lastSound > 2 then
-		lastSound = GetTime()
-		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
-	end
-	Flash()
 end
 
 -- Every candidate is checked against its real auctions before it is listed: an item
@@ -427,7 +426,7 @@ local function StartQuick()
 		end
 	end
 	if not queue[1] then return false end
-	scan.checkTotal, scan.seen = #queue, 0
+	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
 	SetStatus(L["Quick round: checking %d items that were often below vendor price …"]:format(#queue))
 	Refresh()
 	return true
@@ -452,6 +451,7 @@ local function RoundDone()
 	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d."]:format(scan.seen, v, e))
 	if v + e > 0 then
 		Print(L["New finds: vendor %d, disenchant %d."]:format(v, e))
+		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + db.interval end
 end
@@ -472,7 +472,7 @@ local function FinishScan()
 		d.queuedRound = nil
 		if not deals[d.k] then queued[d.k] = nil end
 	end
-	scan.checkTotal = #queue
+	scan.checkTotal, scan.checked = #queue, 0
 	if queue[1] then
 		SetStatus(L["%d items read. Checking %d candidates …"]:format(scan.seen, #queue))
 	else
@@ -1001,8 +1001,7 @@ local function FinishFull(failed)
 		counts.vendor, counts.de))
 	if new > 0 then
 		Print(L["%d new finds (vendor %d, disenchant %d)."]:format(new, counts.vendor, counts.de))
-		if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
-		Flash()
+		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + 5 end
 	Refresh()
@@ -1079,7 +1078,10 @@ local function Tick()
 	local state = buy.state
 	if not state and not scan.active and queue[1] then
 		local d = table.remove(queue, 1)
-		if not d.dropped then Verify(d, "check") end
+		if not d.dropped then
+			scan.checked = (scan.checked or 0) + 1
+			Verify(d, "check")
+		end
 		return
 	end
 	-- A check reads held results quickly. A purchase waits longer for fresh ones, so an
@@ -1200,8 +1202,8 @@ Refresh = function()
 	if full.active then
 		fraction = full.phase == "reading" and full.count and full.count > 0 and full.index / full.count
 			or full.phase == "loading" and 1 or 0
-	elseif checking and (scan.checkTotal or 0) > 0 then
-		fraction = 1 - #queue / scan.checkTotal
+	elseif checking and ((scan.checked or 0) + #queue) > 0 then
+		fraction = (scan.checked or 0) / ((scan.checked or 0) + #queue)
 	elseif scan.active then
 		fraction = 0
 	end
@@ -1212,8 +1214,8 @@ Refresh = function()
 		local label
 		if full.active then
 			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
-		elseif checking and (scan.checkTotal or 0) > 0 then
-			label = L["Checking %d of %d (%d%%)"]:format(scan.checkTotal - #queue, scan.checkTotal, floor(fraction * 100))
+		elseif checking and ((scan.checked or 0) + #queue) > 0 then
+			label = L["Checking %d of %d (%d%%)"]:format(scan.checked or 0, (scan.checked or 0) + #queue, floor(fraction * 100))
 		else
 			label = L["Reading auctions: %d"]:format(scan.seen or 0)
 		end
