@@ -65,7 +65,7 @@ local offset = 0
 local statusText = ""
 local ui
 
-local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady
+local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady, StartCraftScan
 
 -- The finds of the tab shown, in list order.
 local function View()
@@ -134,14 +134,21 @@ end
 
 local SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
 
-local function BrowseQuery()
+-- The item list to read. The disenchant tab reads only green and blue weapons and armor.
+local function BrowseQuery(mode)
+	local qualities = { "PoorQuality", "CommonQuality", "UncommonQuality", "RareQuality",
+		"EpicQuality", "LegendaryQuality", "ArtifactQuality" }
+	local classes = {}
+	if mode == "de" then
+		qualities = { "UncommonQuality", "RareQuality" }
+		classes = { { classID = 2 }, { classID = 4 } } -- weapons, armor
+	end
 	local filters = {}
-	for _, name in ipairs({ "PoorQuality", "CommonQuality", "UncommonQuality", "RareQuality",
-		"EpicQuality", "LegendaryQuality", "ArtifactQuality" }) do
+	for _, name in ipairs(qualities) do
 		local value = Enum.AuctionHouseFilter and Enum.AuctionHouseFilter[name]
 		if value ~= nil then filters[#filters + 1] = value end
 	end
-	return { searchString = "", minLevel = 0, maxLevel = 0, filters = filters, itemClassFilters = {}, sorts = SORTS }
+	return { searchString = "", minLevel = 0, maxLevel = 0, filters = filters, itemClassFilters = classes, sorts = SORTS }
 end
 
 ---------------------------------------------------------------------------
@@ -311,7 +318,11 @@ local function Evaluate(result)
 		if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
 		return
 	end
-	if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
+	-- each tab scans for itself: the vendor tab only for vendor finds, the disenchant tab only for gear
+	if scan.mode ~= "de" then
+		if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
+		return
+	end
 	if ns.DisenchantValue then
 		local de = ns.DisenchantValue(link or id)
 		if de and Worth(de, price) then AddCandidate(result, "de", de, id, name, link, icon) end
@@ -373,6 +384,7 @@ StartScan = function()
 	end
 	if buy.state or full.active then return end
 	scan.active, scan.seen, scan.nextAt = true, 0, nil
+	scan.mode = db.tab == "de" and "de" or "vendor"
 	scan.round = scan.round + 1
 	tries = 0
 	wipe(queue)
@@ -380,8 +392,9 @@ StartScan = function()
 	for _, d in ipairs(order) do
 		if not (d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN) then d.stale = true end
 	end
-	Send(function() AH.SendBrowseQuery(BrowseQuery()) end)
-	SetStatus(L["Scanning …"])
+	local mode = scan.mode
+	Send(function() AH.SendBrowseQuery(BrowseQuery(mode)) end)
+	SetStatus(mode == "de" and L["Scanning green and blue weapons and armor …"] or L["Scanning …"])
 	Refresh()
 end
 
@@ -396,6 +409,7 @@ end
 -- reading the whole item list. Gear is left out (its auction key depends on level and suffix).
 local function StartQuick()
 	if not ahOpen or buy.state or full.active then return false end
+	scan.mode = "vendor"
 	local list = {}
 	for itemID, w in pairs(db.watch or {}) do
 		if not IsIgnored(itemID) then list[#list + 1] = { id = itemID, hits = w.hits or 0 } end
@@ -434,10 +448,17 @@ end
 
 -- Continuous mode: a full scan whenever one is allowed, otherwise two quick rounds and
 -- then one reading the whole item list.
+-- Continuous mode follows the tab shown: a full scan whenever one is allowed (it fills
+-- every tab), otherwise the vendor tab alternates quick rounds and the whole item list,
+-- the disenchant tab reads gear only, the crafting tab checks the prices of its items.
 NextRound = function()
 	scan.rounds = (scan.rounds or 0) + 1
 	if FullReady() then
 		StartFull()
+	elseif db.tab == "craft" then
+		if not StartCraftScan() then scan.nextAt = GetTime() + db.interval end
+	elseif db.tab == "de" then
+		StartScan()
 	elseif scan.rounds % 3 ~= 0 and StartQuick() then
 		return
 	else
@@ -1007,6 +1028,112 @@ local function FinishFull(failed)
 	Refresh()
 end
 
+---------------------------------------------------------------------------
+-- Price check for the crafting tab: one search per reagent and product of your
+-- recipes, their current median price goes into the price history.
+---------------------------------------------------------------------------
+
+local craft = {}
+local CRAFT_WAIT, CRAFT_TIMEOUT = 0.6, 3
+
+local function CraftItems()
+	local char = (UnitName("player") or "?") .. "-" .. (GetRealmName and GetRealmName() or "")
+	local mine = db.recipes and db.recipes[char]
+	local seen, list = {}, {}
+	local function add(id)
+		if id and not seen[id] then
+			seen[id] = true
+			list[#list + 1] = id
+		end
+	end
+	for _, p in pairs(mine or {}) do
+		for _, rec in ipairs(p.list or {}) do
+			add(rec.out)
+			for _, r in ipairs(rec.r) do
+				-- reagents a merchant sells are not looked up on the auction house
+				if not (db.vendorBuy and db.vendorBuy[r[1]]) then add(r[1]) end
+			end
+		end
+	end
+	return list
+end
+
+StartCraftScan = function()
+	if not ahOpen or buy.state or full.active or scan.active then return false end
+	local list = CraftItems()
+	if not list[1] then
+		SetStatus(L["Open each profession window once so VendorFloor can read your recipes."])
+		return false
+	end
+	wipe(craft)
+	craft.active, craft.list, craft.i, craft.found = true, list, 0, 0
+	scan.nextAt = nil
+	SetStatus(L["Price check: %d reagents and products …"]:format(#list))
+	Refresh()
+	return true
+end
+
+local function StopCraftScan(msg)
+	wipe(craft)
+	if msg then SetStatus(msg) end
+end
+
+local function ReadCraftPrice(id)
+	local key = AH.MakeItemKey and AH.MakeItemKey(id)
+	local a = {}
+	local n = AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(id) or 0
+	for i = 1, n do
+		local info = AH.GetCommoditySearchResultInfo(id, i)
+		if info and info.unitPrice and info.quantity and not info.containsOwnerItem then
+			a[#a + 1] = { info.unitPrice, info.quantity }
+		end
+	end
+	if not a[1] and key then
+		for i = 1, (AH.GetNumItemSearchResults(key) or 0) do
+			local info = AH.GetItemSearchResultInfo(key, i)
+			if info and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem then
+				local q = max(info.quantity or 1, 1)
+				a[#a + 1] = { info.buyoutAmount / q, q }
+			end
+		end
+	end
+	local med = ListingMedian(a)
+	if med then
+		StorePrice(PlainKey(id), med)
+		craft.found = craft.found + 1
+	end
+end
+
+local function CraftTick(now)
+	if craft.cur then
+		local id, key = craft.cur, craft.key
+		local ready = AH.HasFullCommoditySearchResults(id) or (AH.GetCommoditySearchResultsQuantity(id) or 0) > 0
+			or (key and AH.HasSearchResults(key) and (AH.HasFullItemSearchResults(key) or (AH.GetItemSearchResultsQuantity(key) or 0) > 0))
+		if ready and now - craft.t > CRAFT_WAIT then
+			ReadCraftPrice(id)
+			craft.cur = nil
+		elseif now - craft.t > CRAFT_TIMEOUT then
+			craft.cur = nil -- no auctions of it right now
+		end
+		return
+	end
+	craft.i = craft.i + 1
+	local id = craft.list[craft.i]
+	if not id then
+		local found = craft.found
+		local total = #craft.list
+		StopCraftScan(L["Price check done: %d of %d items on the auction house."]:format(found, total))
+		ns.craftDirty = true
+		if db.loop then scan.nextAt = GetTime() + db.interval end
+		Refresh()
+		return
+	end
+	local key = AH.MakeItemKey and AH.MakeItemKey(id)
+	craft.cur, craft.key, craft.t = id, key, now
+	Send(function() AH.SendSearchQuery(key, SORTS, true) end)
+	Refresh()
+end
+
 local function FullTick(now)
 	if full.phase == "waiting" then
 		if now - full.t0 > FULL_WAIT then FinishFull(true) end
@@ -1054,6 +1181,10 @@ local function Tick()
 	local now = GetTime()
 	if full.active then
 		FullTick(now)
+		return
+	end
+	if craft.active and not pendingSend then
+		CraftTick(now)
 		return
 	end
 	if pendingSend then
@@ -1127,8 +1258,8 @@ end
 
 local TAB_HINT = {
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
-	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). Filled by full scans. Needs Enchanting.",
-	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes; prices come from full scans and merchants you visit.",
+	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting.",
+	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
 
 -- Crafting tab: rows show recipes instead of auctions.
@@ -1202,6 +1333,8 @@ Refresh = function()
 	if full.active then
 		fraction = full.phase == "reading" and full.count and full.count > 0 and full.index / full.count
 			or full.phase == "loading" and 1 or 0
+	elseif craft.active then
+		fraction = craft.i / max(#craft.list, 1)
 	elseif checking and ((scan.checked or 0) + #queue) > 0 then
 		fraction = (scan.checked or 0) / ((scan.checked or 0) + #queue)
 	elseif scan.active then
@@ -1214,6 +1347,8 @@ Refresh = function()
 		local label
 		if full.active then
 			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
+		elseif craft.active then
+			label = L["Prices %d of %d (%d%%)"]:format(craft.i, #craft.list, floor(fraction * 100))
 		elseif checking and ((scan.checked or 0) + #queue) > 0 then
 			label = L["Checking %d of %d (%d%%)"]:format(scan.checked or 0, (scan.checked or 0) + #queue, floor(fraction * 100))
 		else
@@ -1262,14 +1397,17 @@ end
 -- mode waits for the next round (with the seconds left), otherwise "Scan".
 local function UpdateScanButton()
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
-	local waiting = scan.nextAt and not scan.active and not checking
-	local running = scan.active or checking or waiting
+	local waiting = scan.nextAt and not scan.active and not checking and not craft.active
+	local running = scan.active or checking or waiting or craft.active
 	if waiting then
 		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
 	else
 		ui.scan:SetText(running and L["Stop"] or L["Scan"])
 	end
 	ui.scan:SetEnabled(not full.active and (running or not buy.state))
+	if not running then
+		ui.scan:SetText(db.tab == "craft" and L["Prices"] or L["Scan"])
+	end
 	-- while something runs the button is shown switched on
 	ui.scan:SetOn(running)
 end
@@ -1445,8 +1583,14 @@ local function BuildUI()
 	f.scan = FlatButton(f, 90, 24)
 	f.scan:SetPoint("TOPLEFT", 10, -38)
 	f.scan:SetScript("OnClick", function()
-		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
+		if craft.active then
+			StopCraftScan(L["Scan stopped."])
+			scan.nextAt = nil
+			Refresh()
+		elseif scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
 			StopAll(L["Scan stopped."])
+		elseif db.tab == "craft" then
+			StartCraftScan()
 		else
 			StartScan()
 		end
@@ -1827,6 +1971,7 @@ end
 
 function handlers.AUCTION_HOUSE_CLOSED()
 	ahOpen = false
+	StopCraftScan()
 	full.active = false
 	if ui then ui:Hide() end
 	-- prices change while the auction house is closed: start the next visit empty
