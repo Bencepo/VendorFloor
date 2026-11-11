@@ -162,6 +162,35 @@ local function DealKey(key, mode)
 	return k
 end
 
+-- Disenchant finds are grouped by item: every level and suffix of an item disenchants
+-- the same. The variants (their auction keys, cheapest first) are tried one by one.
+local function GroupKey(key, mode)
+	if mode == "de" then return "de|" .. (key.itemID or 0) end
+	return DealKey(key, mode)
+end
+
+local function AddVariant(d, key, price)
+	d.variants = d.variants or {}
+	local dk = DealKey(key)
+	for _, v in ipairs(d.variants) do
+		if v.dk == dk then
+			if price < v.price then v.price = price end
+			return
+		end
+	end
+	d.variants[#d.variants + 1] = { dk = dk, key = key, price = price }
+	table.sort(d.variants, function(a, b) return a.price < b.price end)
+	d.key, d.vi, d.triedPlain = d.variants[1].key, 1, nil
+end
+
+-- The next variant of a grouped find to search, after the current one had nothing.
+local function NextVariant(d)
+	if not (d.variants and (d.vi or 1) < #d.variants) then return false end
+	d.vi = (d.vi or 1) + 1
+	d.key, d.triedPlain = d.variants[d.vi].key, nil
+	return true
+end
+
 local function RemoveDeal(d)
 	d.dropped = true
 	deals[d.k] = nil
@@ -277,7 +306,7 @@ end
 -- A browse result as a candidate of one tab (target: what one unit brings in that tab).
 local function AddCandidate(result, mode, target, id, name, link, icon)
 	local key, price = result.itemKey, result.minPrice
-	local k = DealKey(key, mode)
+	local k = GroupKey(key, mode)
 	local d = deals[k] or queued[k]
 	if not d then
 		d = { k = k }
@@ -294,8 +323,19 @@ local function AddCandidate(result, mode, target, id, name, link, icon)
 		queued[k] = nil
 		return
 	end
+	if mode == "de" and d.queuedRound == scan.round then
+		-- another level or suffix of an item already in this round's group
+		AddVariant(d, key, price)
+		d.listed = (d.listed or 0) + (result.totalQuantity or 0)
+		if price < (d.browsePrice or price) then d.browsePrice = price end
+		return
+	end
 	d.browsePrice, d.mode = price, mode
 	d.key, d.id, d.vendor, d.listed = key, id, target, result.totalQuantity or 0
+	if mode == "de" then
+		d.variants = nil
+		AddVariant(d, key, price)
+	end
 	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
 	d.commodity = IsCommodity(key) == true
 	if d.commodity then
@@ -660,6 +700,10 @@ local function ReadItem()
 		return
 	end
 	if not offer then
+		if NextVariant(d) then
+			Verify(d, "buy")
+			return
+		end
 		if d.plainKey and not d.triedPlain then
 			-- the full scan built this key from the item link; the plain item key may be the one in use
 			d.key, d.triedPlain = d.plainKey, true
@@ -974,7 +1018,7 @@ local function FinishFull(failed)
 	-- 2. finds per tab
 	local found, counts = {}, { vendor = 0, de = 0 }
 	local function add(mode, pk, it, target, unit, count)
-		local k = DealKey(it.key, mode)
+		local k = GroupKey(it.key, mode)
 		local g = found[k]
 		if not g then
 			g = { k = k, key = it.key, plainKey = it.plainKey, id = it.id, vendor = target, price = unit, count = 0,
@@ -984,6 +1028,11 @@ local function FinishFull(failed)
 		end
 		g.count, g.profit, g.listed = g.count + count, g.profit + (target - unit) * count, g.listed + 1
 		if unit < g.price then g.price = unit end
+		if mode == "de" then
+			AddVariant(g, it.key, unit)
+			-- the group shows the base item, not one of its variants
+			g.name, g.link = GetItemInfo(it.id), select(2, GetItemInfo(it.id)) or g.link
+		end
 	end
 	for pk, it in pairs(full.items) do
 		local de = DisenchantValue(it.link or it.id, full.items)
@@ -1005,6 +1054,7 @@ local function FinishFull(failed)
 		if d then
 			d.price, d.count, d.profit, d.listed, d.fullAt, d.stale = g.price, g.count, g.profit, g.listed, now, false
 			d.vendor, d.mode = g.vendor, g.mode
+			if g.variants then d.variants, d.key, d.vi, d.triedPlain = g.variants, g.key, 1, nil end
 			d.plainKey = d.plainKey or g.plainKey
 		else
 			Confirm(g, true)
@@ -1023,7 +1073,7 @@ local function FinishFull(failed)
 	for _, g in pairs(found) do
 		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
 			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
-			mode = g.mode, commodity = g.commodity }
+			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
 	end
 	db.lastFinds = { at = time(), list = keep }
 	SortDeals()
@@ -1237,7 +1287,9 @@ local function Tick()
 		-- No answer to a purchase check: the auction house sends none for a search without
 		-- results. Gear from a full scan gets a second try with the plain item key, then it is gone.
 		local d = buy.deal
-		if d and d.plainKey and not d.triedPlain then
+		if d and NextVariant(d) then
+			Verify(d, "buy")
+		elseif d and d.plainKey and not d.triedPlain then
 			d.key, d.triedPlain = d.plainKey, true
 			Verify(d, "buy")
 		else
@@ -1958,7 +2010,7 @@ local function RestoreFinds()
 	local age = time() - last.at
 	local n = 0
 	for _, g in ipairs(last.list) do
-		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or g.mode == "de") then
+		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or (g.mode == "de" and g.variants)) then
 			local d = {}
 			for field, value in pairs(g) do d[field] = value end
 			d.fullAt, d.stale = GetTime() - age, false

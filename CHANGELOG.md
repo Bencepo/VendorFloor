@@ -5,7 +5,8 @@
 - Much faster buying of gear finds (disenchant tab, gear in the vendor tab): a purchase check that gets no answer gives up after 5 instead of 15 seconds, tries the plain item key right away, and remembers per item which key works.
 - Each tab scans for itself: "Scan" on the disenchant tab reads only green and blue weapons and armor, the vendor tab only looks for vendor finds (lighter on the frame rate). The crafting tab gets a "Prices" button: one search per reagent and product of your recipes, the current price goes into the price history. Continuous mode follows the tab shown; full scans still fill every tab.
 - Disenchant values now follow the WoW Forever table: rows by the level required to equip the item (not its item level), the same row for green and blue items, a shard chance of about 4% for greens. Before, the Classic table by item level gave values one band too high or too low.
-- Disenchant finds show their disenchant value ("DE ~13s 19c") instead of a vendor price in the list, the status line and chat; rows show the full item name with its suffix.
+- Disenchant finds are grouped by item: all levels and suffixes of an item are one row (they disenchant the same). Buying tries the cheapest variant first, then the next.
+- Disenchant finds show their disenchant value ("DE ~13s 19c") instead of a vendor price in the list, the status line and chat.
 - Items bought on the disenchant tab can be taken out of the mail with "Collect purchases" as well.
 - Removed the market tab and posting: too many questionable finds and checks. Price history stays (disenchant materials, crafting).
 - Disenchant tab between full scans: normal scans and quick rounds also find gear below its disenchant value (with the prices stored by earlier full scans).
