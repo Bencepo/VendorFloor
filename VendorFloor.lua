@@ -959,10 +959,16 @@ local function FlatButton(parent, width, height, kind)
 	b:SetFontString(fs)
 	b.kind, b.on, b.hover = kind, false, false
 	if kind == "primary" then
+		fs:SetShadowOffset(0, 0)
+		local font, size = fs:GetFont()
+		if font then fs:SetFont(font, (size or 12) + 1, "") end
 		-- dark text on gold: drop the colour codes of money amounts, they would vanish on gold
 		local setText = b.SetText
 		function b:SetText(text)
-			text = text and tostring(text):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "") or text
+			if text then
+				-- drop the money colours and force dark text: colour codes win over font colours
+				text = "|cff1a1205" .. tostring(text):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "") .. "|r"
+			end
 			setText(self, text)
 		end
 	end
