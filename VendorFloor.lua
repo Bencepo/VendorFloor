@@ -805,7 +805,7 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s > %s  |cff40ff40+%s|r |cffaaaaaa(%s×)|r"):format(Money(d.price), Money(d.vendor),
+			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price), Money(d.vendor),
 				Money(d.profit or 0), d.count and tostring(d.count) or "?"))
 			row.mark:SetShown(d == selected)
 			row:Show()
@@ -884,12 +884,8 @@ local function UpdateScanButton()
 		ui.scan:SetText(running and L["Stop"] or L["Scan"])
 	end
 	ui.scan:SetEnabled(not full.active and (running or not buy.state))
-	-- while something runs the button stays pressed in, like a switch that is on
-	if running then
-		ui.scan:SetButtonState("PUSHED", true)
-	else
-		ui.scan:SetButtonState("NORMAL")
-	end
+	-- while something runs the button is shown switched on
+	ui.scan:SetOn(running)
 end
 
 -- The full scan button: its countdown runs once a second (the scan button's as well).
@@ -927,17 +923,85 @@ local function PlaceWindow()
 	end
 end
 
+---------------------------------------------------------------------------
+-- Look: flat dark panels in the colours of bencepo.github.io
+---------------------------------------------------------------------------
+
+local WHITE = "Interface\\Buttons\\WHITE8X8"
+local C = {
+	bg = { 0.059, 0.075, 0.094, 0.97 },    -- #0f1318
+	panel = { 0.110, 0.137, 0.173, 1 },    -- #1c232c
+	line = { 0.157, 0.192, 0.235, 1 },     -- #28313c
+	well = { 0.043, 0.055, 0.071, 1 },     -- #0b0e12
+	gold = { 0.878, 0.659, 0.227, 1 },     -- #e0a83a
+	goldDim = { 0.165, 0.141, 0.086, 1 },  -- #2a2416
+	text = { 0.902, 0.914, 0.933, 1 },     -- #e6e9ee
+	muted = { 0.553, 0.592, 0.647, 1 },    -- #8d97a5
+	dark = { 0.102, 0.071, 0.020, 1 },     -- #1a1205
+}
+ns.C = C
+
+local function Flat(frame, bg, border)
+	if not frame.SetBackdrop then Mixin(frame, BackdropTemplateMixin) end
+	frame:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
+	frame:SetBackdropColor(unpack(bg or C.panel))
+	frame:SetBackdropBorderColor(unpack(border or C.line))
+end
+ns.Flat = Flat
+
+-- A flat button. kind "primary": gold with dark text (the main action).
+-- :SetOn(true) shows it switched on (gold border and text), e.g. while a scan runs.
+local function FlatButton(parent, width, height, kind)
+	local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+	b:SetSize(width or 80, height or 22)
+	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	fs:SetPoint("CENTER", 0, 0)
+	b:SetFontString(fs)
+	b.kind, b.on, b.hover = kind, false, false
+	function b:Restyle()
+		local enabled = self:IsEnabled()
+		local bg, border, text
+		if self.kind == "primary" then
+			bg, border, text = C.gold, C.gold, C.dark
+		elseif self.on then
+			bg, border, text = C.goldDim, C.gold, C.gold
+		else
+			bg, border, text = C.panel, self.hover and C.gold or C.line, C.text
+		end
+		Flat(self, bg, border)
+		fs:SetTextColor(unpack(text))
+		self:SetAlpha(enabled and 1 or 0.45)
+		if self.kind == "primary" and self.hover and enabled then self:SetBackdropColor(0.95, 0.75, 0.32, 1) end
+	end
+	function b:SetOn(on) self.on = on and true or false self:Restyle() end
+	b:HookScript("OnEnter", function(self) self.hover = true self:Restyle() end)
+	b:HookScript("OnLeave", function(self) self.hover = false self:Restyle() end)
+	b:HookScript("OnEnable", function(self) self:Restyle() end)
+	b:HookScript("OnDisable", function(self) self:Restyle() end)
+	b:SetScript("OnMouseDown", function(self) if self:IsEnabled() then fs:SetPoint("CENTER", 0, -1) end end)
+	b:SetScript("OnMouseUp", function() fs:SetPoint("CENTER", 0, 0) end)
+	b:Restyle()
+	return b
+end
+ns.FlatButton = FlatButton
+
+-- A switch with a label (checked = on), with SetChecked/GetChecked like a check button.
+local function FlatToggle(parent, label, width)
+	local b = FlatButton(parent, width or 96, 22)
+	b.checked = false
+	function b:SetChecked(v) self.checked = v and true or false self:SetText((self.checked and "|TInterface\\RaidFrame\\ReadyCheck-Ready:12|t " or "") .. label) self:SetOn(self.checked) end
+	function b:GetChecked() return self.checked end
+	b:SetScript("PreClick", function(self) self:SetChecked(not self.checked) end)
+	b:SetChecked(false)
+	return b
+end
+
 local function BuildUI()
 	if ui then return end
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
-	f:SetSize(520, 152 + ROWS * ROW_HEIGHT)
+	f:SetSize(520, 178 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
-	f:SetBackdrop({
-		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		edgeSize = 14, insets = { left = 3, right = 3, top = 3, bottom = 3 },
-	})
-	f:SetBackdropColor(0, 0, 0, 0.92)
+	Flat(f, C.bg, C.line)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -960,16 +1024,26 @@ local function BuildUI()
 		scan.nextAt = nil
 	end)
 
-	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	title:SetPoint("TOPLEFT", 10, -9)
-	title:SetText(L["VendorFloor %s"]:format(VERSION))
+	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", 12, -9)
+	title:SetText("VendorFloor")
+	title:SetTextColor(unpack(C.gold))
+	local version = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	version:SetPoint("LEFT", title, "RIGHT", 6, -1)
+	version:SetText(VERSION)
+	local head = f:CreateTexture(nil, "ARTWORK")
+	head:SetColorTexture(unpack(C.line))
+	head:SetHeight(1)
+	head:SetPoint("TOPLEFT", 1, -30)
+	head:SetPoint("TOPRIGHT", -1, -30)
 
-	local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
-	close:SetPoint("TOPRIGHT", 2, 2)
+	local close = FlatButton(f, 22, 20)
+	close:SetPoint("TOPRIGHT", -6, -5)
+	close:SetText("x")
+	close:SetScript("OnClick", function() f:Hide() end)
 
-	f.scan = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.scan:SetSize(78, 22)
-	f.scan:SetPoint("TOPLEFT", 8, -28)
+	f.scan = FlatButton(f, 78, 22)
+	f.scan:SetPoint("TOPLEFT", 10, -38)
 	f.scan:SetScript("OnClick", function()
 		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
 			StopAll(L["Scan stopped."])
@@ -979,23 +1053,21 @@ local function BuildUI()
 	end)
 
 	-- full scan: every auction at once, allowed every 15 minutes
-	f.full = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.full:SetSize(116, 22)
-	f.full:SetPoint("LEFT", f.scan, "RIGHT", 4, 0)
+	f.full = FlatButton(f, 116, 22)
+	f.full:SetPoint("LEFT", f.scan, "RIGHT", 6, 0)
 	f.full:SetScript("OnClick", function() StartFull() end)
-	f.full:SetScript("OnEnter", function(self)
+	f.full:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:AddLine(L["Full scan"])
 		GameTooltip:AddLine(L["Reads every auction at once: complete, without checking each item."], 1, 1, 1, true)
 		GameTooltip:AddLine(L["The full scan is available every 15 minutes."], 0.7, 0.7, 0.7, true)
 		GameTooltip:Show()
 	end)
-	f.full:SetScript("OnLeave", function(self)
+	f.full:HookScript("OnLeave", function(self)
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 
-	local loop = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
-	loop:SetSize(24, 24)
+	local loop = FlatToggle(f, L["Continuous"], 100)
 	loop:SetPoint("LEFT", f.full, "RIGHT", 6, 0)
 	loop:SetChecked(db.loop)
 	loop:SetScript("OnClick", function(self)
@@ -1003,17 +1075,19 @@ local function BuildUI()
 		if not db.loop then scan.nextAt = nil end
 	end)
 	f.loop = loop
-	local loopText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	loopText:SetPoint("LEFT", loop, "RIGHT", 2, 0)
-	loopText:SetText(L["Continuous"])
 
 	f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	f.count:SetPoint("TOPRIGHT", -30, -10)
 
 	-- Minimum profit per unit: how far below the vendor price an auction must be
-	local profit = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
-	profit:SetSize(78, 20)
-	profit:SetPoint("TOPRIGHT", -12, -29)
+	local profit = CreateFrame("EditBox", nil, f, "BackdropTemplate")
+	Flat(profit, C.well, C.line)
+	profit:SetFontObject("GameFontHighlightSmall")
+	profit:SetTextInsets(6, 6, 0, 0)
+	profit:SetSize(78, 22)
+	profit:SetPoint("TOPRIGHT", -10, -38)
+	profit:HookScript("OnEditFocusGained", function(self) self:SetBackdropBorderColor(unpack(C.gold)) end)
+	profit:HookScript("OnEditFocusLost", function(self) self:SetBackdropBorderColor(unpack(C.line)) end)
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
@@ -1045,21 +1119,21 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 	f.profit = profit
-	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	profitText:SetPoint("RIGHT", profit, "LEFT", -8, 0)
 	profitText:SetText(L["Min. profit/unit"])
 
 	-- progress bar under the buttons
 	f.bar = CreateFrame("StatusBar", nil, f)
-	f.bar:SetPoint("TOPLEFT", 10, -56)
+	f.bar:SetPoint("TOPLEFT", 10, -66)
 	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
-	f.bar:SetHeight(10)
-	f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
-	f.bar:SetStatusBarColor(0.95, 0.71, 0.2)
+	f.bar:SetHeight(12)
+	f.bar:SetStatusBarTexture(WHITE)
+	f.bar:SetStatusBarColor(unpack(C.gold))
 	f.bar:SetMinMaxValues(0, 1)
 	f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
 	f.bar.bg:SetAllPoints()
-	f.bar.bg:SetColorTexture(1, 1, 1, 0.08)
+	f.bar.bg:SetColorTexture(unpack(C.well))
 	f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.bar.text:SetPoint("CENTER", 0, 0)
 	local font = f.bar.text:GetFont()
@@ -1070,16 +1144,24 @@ local function BuildUI()
 	for i = 1, ROWS do
 		local row = CreateFrame("Button", nil, f)
 		row:SetHeight(ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 8, -66 - (i - 1) * ROW_HEIGHT)
-		row:SetPoint("RIGHT", f, "RIGHT", -8, 0)
+		row:SetPoint("TOPLEFT", 10, -84 - (i - 1) * ROW_HEIGHT)
+		row:SetPoint("RIGHT", f, "RIGHT", -10, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-		row:SetHighlightTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight", "ADD")
+		if i % 2 == 0 then
+			local zebra = row:CreateTexture(nil, "BACKGROUND", nil, -1)
+			zebra:SetAllPoints()
+			zebra:SetColorTexture(1, 1, 1, 0.025)
+		end
+		local hl = row:CreateTexture(nil, "HIGHLIGHT")
+		hl:SetAllPoints()
+		hl:SetColorTexture(1, 1, 1, 0.06)
 		row.mark = row:CreateTexture(nil, "BACKGROUND")
 		row.mark:SetAllPoints()
-		row.mark:SetColorTexture(1, 0.82, 0, 0.18)
+		row.mark:SetColorTexture(C.gold[1], C.gold[2], C.gold[3], 0.16)
 		row.icon = row:CreateTexture(nil, "ARTWORK")
 		row.icon:SetSize(ROW_HEIGHT - 2, ROW_HEIGHT - 2)
-		row.icon:SetPoint("LEFT", 0, 0)
+		row.icon:SetPoint("LEFT", 2, 0)
+		row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
 		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		row.info:SetPoint("RIGHT", -2, 0)
 		row.info:SetJustifyH("RIGHT")
@@ -1133,10 +1215,15 @@ local function BuildUI()
 	f.status:SetWordWrap(false)
 	f.status:SetText(statusText)
 
-	f.action = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.action:SetHeight(24)
-	f.action:SetPoint("BOTTOMLEFT", 8, 8)
-	f.action:SetPoint("BOTTOMRIGHT", -8, 8)
+	local foot = f:CreateTexture(nil, "ARTWORK")
+	foot:SetColorTexture(unpack(C.line))
+	foot:SetHeight(1)
+	foot:SetPoint("BOTTOMLEFT", 1, 88)
+	foot:SetPoint("BOTTOMRIGHT", -1, 88)
+
+	f.action = FlatButton(f, 100, 26, "primary")
+	f.action:SetPoint("BOTTOMLEFT", 10, 8)
+	f.action:SetPoint("BOTTOMRIGHT", -10, 8)
 	f.action:SetScript("OnClick", VendorFloor_BuyNext)
 
 	local elapsed, second = 0, 0

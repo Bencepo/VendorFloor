@@ -371,20 +371,20 @@ end
 local sellButton
 
 local function MakeButton(parent, onClick, tooltip, label)
-	local b = CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
+	local b = ns.FlatButton and ns.FlatButton(parent, 170, 24, "primary") or CreateFrame("Button", nil, parent, "UIPanelButtonTemplate")
 	b:SetSize(170, 24)
 	b:SetText(label)
 	-- MERCHANT_SHOW and MAIL_SHOW fire before their window is visible: refresh once it is
 	parent:HookScript("OnShow", function() if ns.UpdateTradeButtons then ns.UpdateTradeButtons() end end)
 	b:SetPoint("TOPLEFT", parent, "TOPRIGHT", 4, -30)
 	b:SetScript("OnClick", onClick)
-	b:SetScript("OnEnter", function(self)
+	b:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
 		GameTooltip:AddLine("VendorFloor")
 		GameTooltip:AddLine(tooltip, 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
-	b:SetScript("OnLeave", function(self)
+	b:HookScript("OnLeave", function(self)
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 	return b
