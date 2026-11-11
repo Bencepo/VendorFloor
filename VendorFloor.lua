@@ -40,6 +40,8 @@ local db
 local deals, order = {}, {}   -- confirmed finds: by key and as a sorted list
 local queue, queued = {}, {}  -- finds still to be checked (list and by key)
 local pendingInfo = {}        -- itemID -> browse results whose item data is still loading
+local noOffer = {}            -- deal key -> { price, at }: checked, no buyout below vendor price (e.g. bid-only)
+local NO_OFFER_KEEP = 30 * 60  -- seconds such a key is skipped while its browse price stays the same
 local pendingBuys = {}        -- auctionID -> item purchase waiting for confirmation
 local scan = { active = false, seen = 0, round = 0 }
 local full = { active = false } -- the full scan (every auction at once)
@@ -219,6 +221,14 @@ local function Evaluate(result)
 		d.stale = false -- seen and counted by the last full scan: no check needed
 		return
 	end
+	-- Checked before without a buyout below the vendor price (bid-only auctions show their
+	-- bid as the browse price): skip it until a cheaper listing appears or the entry expires.
+	local skip = noOffer[k]
+	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
+		queued[k] = nil
+		return
+	end
+	d.browsePrice = price
 	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
 	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
 	d.commodity = IsCommodity(key) == true
@@ -394,11 +404,13 @@ local function FinishCheck(d, offer)
 	end
 	d.retries = nil
 	if offer then
+		noOffer[d.k] = nil
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
-	elseif deals[d.k] then
-		RemoveDeal(d)
+	else
+		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
+		if deals[d.k] then RemoveDeal(d) end
 	end
 	queued[d.k] = nil
 	wipe(buy)
