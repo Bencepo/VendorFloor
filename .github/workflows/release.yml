@@ -36,13 +36,17 @@ jobs:
           fi
           tag="v${version}"
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+          # Released means: a GitHub release exists for the tag. A tag without a release
+          # (an earlier run that failed) is released again.
+          if gh release view "${tag}" >/dev/null 2>&1; then
             echo "${tag} already released"
             echo "release=false" >> "$GITHUB_OUTPUT"
           else
             echo "New version ${tag}"
             echo "release=true" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   lint:
     needs: version
@@ -69,13 +73,23 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ needs.version.outputs.tag }}" -m "VendorFloor ${{ needs.version.outputs.tag }}"
-          git push origin "${{ needs.version.outputs.tag }}"
+          tag="${{ needs.version.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+            git checkout -q "${tag}"
+          else
+            git tag -a "${tag}" -m "VendorFloor ${tag}"
+            git push origin "${tag}"
+          fi
 
       # The packager's output is passed back as an annotation, and the run fails when
       # nothing was uploaded to CurseForge, so a silent skip cannot go unnoticed.
+      # The packager decides by GITHUB_REF: on a branch push it skips a tagged commit
+      # ("future tag") and waits for a tag run that GITHUB_TOKEN tags never start.
       - name: Package and upload
         run: |
+          export GITHUB_REF="refs/tags/${{ needs.version.outputs.tag }}"
+          export GITHUB_REF_NAME="${{ needs.version.outputs.tag }}"
+          export GITHUB_REF_TYPE=tag
           curl -sSfL https://raw.githubusercontent.com/BigWigsMods/packager/v2/release.sh -o "$RUNNER_TEMP/release.sh"
           if [ -z "$CF_API_KEY" ]; then echo "::warning title=packager::CF_API_KEY is empty: the secret is missing or misnamed"; fi
           set +e
