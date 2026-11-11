@@ -3,6 +3,8 @@
 ## 0.6.1-beta
 
 - Much faster buying of gear finds (disenchant and market tabs, gear in the vendor tab): a purchase check that gets no answer gives up after 5 instead of 15 seconds, tries the plain item key right away, and remembers per item which key works.
+- Market and disenchant tabs between full scans: normal scans and quick rounds now also find auctions far below their usual price and below their disenchant value (using the prices stored by earlier full scans).
+- The finds of the last full scan (up to an hour old) are back when you open the auction house again, so the tabs are not empty until the next full scan is allowed. They are checked when you click them.
 
 ## 0.6.0-beta
 

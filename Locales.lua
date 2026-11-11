@@ -213,3 +213,6 @@ L["Open each profession window once so VendorFloor can read your recipes."] = "�
 L["%d crafts with profit (%d recipes without prices yet):"] = "%d Rezepte mit Gewinn (%d Rezepte noch ohne Preise):"
 L["Craft profits"] = "Gewinn je Rezept"
 L["Shows which of your learned recipes make a profit, with prices from VendorFloor's full scans and from merchants."] = "Zeigt, welche deiner erlernten Rezepte Gewinn bringen, mit Preisen aus VendorFloors Komplett-Scans und von H채ndlern."
+L["Market: %s for %s, usually worth %s"] = "Markt: %s f체r %s, 체blicher Preis %s"
+L["Disenchant: %s for %s, disenchanting brings about %s"] = "Entzaubern: %s f체r %s, Entzaubern bringt etwa %s"
+L["%d finds from the full scan %d min ago. They are checked when you click them."] = "%d Funde aus dem Komplett-Scan vor %d Min. Sie werden beim Anklicken gepr체ft."

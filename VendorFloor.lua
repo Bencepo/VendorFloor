@@ -240,9 +240,16 @@ local function Confirm(d, quiet)
 	deals[d.k] = d
 	order[#order + 1] = d
 	if quiet then return end
-	if (d.mode or "vendor") == "vendor" then Watch(d.id) end
-	Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
-		d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
+	local mode = d.mode or "vendor"
+	if mode == "vendor" then
+		Watch(d.id)
+		Print(L["%s below vendor price: %s× for %s each, vendor pays %s"]:format(d.link or d.name,
+			d.count and tostring(d.count) or "?", Money(d.price), Money(d.vendor)))
+	elseif mode == "market" then
+		Print(L["Market: %s for %s, usually worth %s"]:format(d.link or d.name, Money(d.price), Money(d.vendor / AH_CUT)))
+	else
+		Print(L["Disenchant: %s for %s, disenchanting brings about %s"]:format(d.link or d.name, Money(d.price), Money(d.vendor)))
+	end
 	if db.sound and GetTime() - lastSound > 2 then
 		lastSound = GetTime()
 		PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959)
@@ -259,6 +266,45 @@ local function Enqueue(d)
 	queue[#queue + 1] = d
 end
 
+-- A browse result as a candidate of one tab (target: what one unit brings in that tab).
+local function AddCandidate(result, mode, target, id, name, link, icon)
+	local key, price = result.itemKey, result.minPrice
+	local k = DealKey(key, mode)
+	local d = deals[k] or queued[k]
+	if not d then
+		d = { k = k }
+		queued[k] = d
+	end
+	if d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN then
+		d.stale = false -- seen and counted by the last full scan: no check needed
+		return
+	end
+	-- Checked before without a buyout below the target (bid-only auctions show their bid
+	-- as the browse price): skip it until a cheaper listing appears or the entry expires.
+	local skip = noOffer[k]
+	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
+		queued[k] = nil
+		return
+	end
+	d.browsePrice, d.mode = price, mode
+	d.key, d.id, d.vendor, d.listed = key, id, target, result.totalQuantity or 0
+	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
+	d.commodity = IsCommodity(key) == true
+	if d.commodity then
+		-- Stackable goods always sell at a fixed price: listed at once with the browse price,
+		-- the check later only counts the units below the target.
+		d.price = price
+		if not d.count then d.profit = target - price end
+		Confirm(d)
+	else
+		-- Single items can be bid-only auctions: listed only once the check finds a buyout.
+		d.price = d.price or price
+	end
+	Enqueue(d)
+end
+
+-- One browse result, for all three auction tabs: below the vendor price, far below its
+-- usual price (from earlier full scans) and below its disenchant value.
 local function Evaluate(result)
 	local key = result.itemKey
 	local id, price = key.itemID, result.minPrice
@@ -270,39 +316,18 @@ local function Evaluate(result)
 		if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
 		return
 	end
-	if vendor <= 0 or not Worth(vendor, price) then return end
-	local k = DealKey(key)
-	local d = deals[k] or queued[k]
-	if not d then
-		d = { k = k }
-		queued[k] = d
+	if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
+	if ns.MarketValue then
+		local usual = ns.MarketValue(DealKey(key))
+		if not usual and ns.PlainKey then usual = ns.MarketValue(ns.PlainKey(id)) end
+		if usual and price <= usual * (1 - (db.marketDiscount or 30) / 100) and Worth(usual * AH_CUT, price) then
+			AddCandidate(result, "market", usual * AH_CUT, id, name, link, icon)
+		end
 	end
-	if d.fullAt and GetTime() - d.fullAt < FULL_COOLDOWN then
-		d.stale = false -- seen and counted by the last full scan: no check needed
-		return
+	if ns.DisenchantValue then
+		local de = ns.DisenchantValue(link or id)
+		if de and Worth(de, price) then AddCandidate(result, "de", de, id, name, link, icon) end
 	end
-	-- Checked before without a buyout below the vendor price (bid-only auctions show their
-	-- bid as the browse price): skip it until a cheaper listing appears or the entry expires.
-	local skip = noOffer[k]
-	if skip and price >= skip.price and GetTime() - skip.at < NO_OFFER_KEEP and not deals[k] then
-		queued[k] = nil
-		return
-	end
-	d.browsePrice, d.mode = price, "vendor"
-	d.key, d.id, d.vendor, d.listed = key, id, vendor, result.totalQuantity or 0
-	d.name, d.link, d.icon, d.stale, d.dropped = name, link, icon, false, nil
-	d.commodity = IsCommodity(key) == true
-	if d.commodity then
-		-- Stackable goods always sell at a fixed price: listed at once with the browse price,
-		-- the check later only counts the units below the vendor price.
-		d.price = price
-		if not d.count then d.profit = vendor - price end
-		Confirm(d)
-	else
-		-- Single items can be bid-only auctions: listed only once the check finds a buyout.
-		d.price = d.price or price
-	end
-	Enqueue(d)
 end
 
 local function Process(results)
@@ -901,6 +926,7 @@ local function DisenchantValue(item, live)
 	end
 	return value and value * AH_CUT or nil
 end
+ns.DisenchantValue = DisenchantValue
 
 local function FinishFull(failed)
 	full.active = false
@@ -972,6 +998,14 @@ local function FinishFull(failed)
 	end
 	full.items = nil
 	ns.craftDirty = true
+	-- kept for the next visit: until the next full scan is allowed the finds come from here
+	local keep = {}
+	for _, g in pairs(found) do
+		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
+			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
+			mode = g.mode, commodity = g.commodity }
+	end
+	db.lastFinds = { at = time(), list = keep }
 	SortDeals()
 	SetStatus(L["Full scan done: %d auctions. Vendor %d, market %d, disenchant %d finds."]:format(full.count or 0,
 		counts.vendor, counts.market, counts.de))
@@ -1897,8 +1931,31 @@ function handlers.ADDON_LOADED(name)
 	if not ok then Print(tostring(err)) end
 end
 
+-- The finds of the last full scan (up to an hour old), so the tabs are not empty until the
+-- next full scan is allowed. Each is checked against the live auctions when clicked.
+local function RestoreFinds()
+	local last = db.lastFinds
+	if not (last and last.list and time() - (last.at or 0) < 3600) then return end
+	local age = time() - last.at
+	local n = 0
+	for _, g in ipairs(last.list) do
+		if not deals[g.k] and not IsIgnored(g.id) then
+			local d = {}
+			for field, value in pairs(g) do d[field] = value end
+			d.fullAt, d.stale = GetTime() - age, false
+			Confirm(d, true)
+			n = n + 1
+		end
+	end
+	if n > 0 then
+		SortDeals()
+		SetStatus(L["%d finds from the full scan %d min ago. They are checked when you click them."]:format(n, floor(age / 60)))
+	end
+end
+
 function handlers.AUCTION_HOUSE_SHOW()
 	ahOpen = true
+	pcall(RestoreFinds)
 	if not db.hidden then ShowWindow() end
 end
 
