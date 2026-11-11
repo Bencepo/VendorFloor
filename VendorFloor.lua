@@ -814,8 +814,6 @@ Refresh = function()
 		end
 	end
 	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
-	ui.scan:SetText((scan.active or checking) and L["Stop"] or L["Scan"])
-	ui.scan:SetEnabled(not full.active and (scan.active or checking or not buy.state))
 	ns.UpdateFullButton()
 
 	-- progress: full scan (auctions read), check phase (candidates checked), browsing (no total known)
@@ -874,9 +872,23 @@ Refresh = function()
 	ui.action:SetEnabled(enabled)
 end
 
--- The full scan button: its countdown runs once a second.
+-- Scan button: "Stop" while a round runs, while finds are checked and while continuous
+-- mode waits for the next round (with the seconds left), otherwise "Scan".
+local function UpdateScanButton()
+	local checking = buy.purpose == "check" or (queue[1] ~= nil and not buy.state)
+	local waiting = scan.nextAt and not scan.active and not checking
+	if waiting then
+		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
+	else
+		ui.scan:SetText((scan.active or checking) and L["Stop"] or L["Scan"])
+	end
+	ui.scan:SetEnabled(not full.active and (scan.active or checking or waiting or not buy.state))
+end
+
+-- The full scan button: its countdown runs once a second (the scan button's as well).
 function ns.UpdateFullButton()
 	if not ui then return end
+	UpdateScanButton()
 	if full.active then
 		ui.full:SetText(L["Full scan"])
 		ui.full:SetEnabled(false)
@@ -949,10 +961,10 @@ local function BuildUI()
 	close:SetPoint("TOPRIGHT", 2, 2)
 
 	f.scan = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
-	f.scan:SetSize(70, 22)
+	f.scan:SetSize(78, 22)
 	f.scan:SetPoint("TOPLEFT", 8, -28)
 	f.scan:SetScript("OnClick", function()
-		if scan.active or buy.purpose == "check" or (queue[1] and not buy.state) then
+		if scan.active or scan.nextAt or buy.purpose == "check" or (queue[1] and not buy.state) then
 			StopAll(L["Scan stopped."])
 		else
 			StartScan()
