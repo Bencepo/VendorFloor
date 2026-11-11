@@ -898,22 +898,23 @@ local ESS = { lmagic = 10938, gmagic = 10939, lastral = 10998, gastral = 11082, 
 local SHARD = { sglim = 10978, lglim = 11084, sglow = 11138, lglow = 11139, srad = 11177, lrad = 11178,
 	sbril = 14343, lbril = 14344 }
 
--- green (uncommon): up to item level, { dust, avg. count }, { essence, avg. count }, shard (5%)
-local DE_GREEN = {
-	{ 15, { DUST.strange, 1.5 }, { ESS.lmagic, 1.5 }, nil },
-	{ 20, { DUST.strange, 2.5 }, { ESS.gmagic, 1.5 }, SHARD.sglim },
-	{ 25, { DUST.strange, 5 }, { ESS.lastral, 1.5 }, SHARD.sglim },
-	{ 30, { DUST.soul, 1.5 }, { ESS.gastral, 1.5 }, SHARD.lglim },
-	{ 35, { DUST.soul, 3.5 }, { ESS.lmystic, 1.5 }, SHARD.sglow },
-	{ 40, { DUST.vision, 1.5 }, { ESS.gmystic, 1.5 }, SHARD.lglow },
-	{ 45, { DUST.vision, 3.5 }, { ESS.lnether, 1.5 }, SHARD.srad },
-	{ 50, { DUST.dream, 1.5 }, { ESS.gnether, 1.5 }, SHARD.lrad },
-	{ 55, { DUST.dream, 3.5 }, { ESS.leternal, 1.5 }, SHARD.sbril },
-	{ 65, { DUST.illusion, 2.5 }, { ESS.geternal, 1.5 }, SHARD.lbril },
+-- WoW Forever disenchant table (wow-professions.com, Forever guide): rows by the level
+-- required to equip the item (not its item level), the same row for green and blue.
+-- up to required level, { dust, avg. count }, { essence, avg. count }, shard
+local DE_ROWS = {
+	{ 10, { DUST.strange, 1.5 }, { ESS.lmagic, 1.5 }, nil },
+	{ 15, { DUST.strange, 2.5 }, { ESS.gmagic, 1.5 }, SHARD.sglim },
+	{ 20, { DUST.strange, 5 }, { ESS.lastral, 1.5 }, SHARD.sglim },
+	{ 25, { DUST.soul, 1.5 }, { ESS.gastral, 1.5 }, SHARD.lglim },
+	{ 30, { DUST.soul, 3.5 }, { ESS.lmystic, 1.5 }, SHARD.sglow },
+	{ 35, { DUST.vision, 1.5 }, { ESS.gmystic, 1.5 }, SHARD.lglow },
+	{ 40, { DUST.vision, 3.5 }, { ESS.lnether, 1.5 }, SHARD.srad },
+	{ 45, { DUST.dream, 1.5 }, { ESS.gnether, 1.5 }, SHARD.lrad },
+	{ 50, { DUST.dream, 3.5 }, { ESS.leternal, 1.5 }, SHARD.sbril },
+	{ 55, { DUST.illusion, 1.5 }, { ESS.geternal, 1.5 }, SHARD.lbril },
+	{ 60, { DUST.illusion, 3.5 }, { ESS.geternal, 2 }, SHARD.lbril },
 }
--- blue (rare): up to item level, shard
-local DE_BLUE = { { 25, SHARD.sglim }, { 30, SHARD.lglim }, { 35, SHARD.sglow }, { 40, SHARD.lglow },
-	{ 45, SHARD.srad }, { 50, SHARD.lrad }, { 55, SHARD.sbril }, { 65, SHARD.lbril } }
+local SHARD_CHANCE = 0.04 -- green items: a shard in about 3-5% of cases
 
 local matCache = {}
 
@@ -927,30 +928,31 @@ local function MatValue(itemID, live)
 end
 
 -- What disenchanting one of these items brings (after the auction house cut), or nil.
+-- Green armor: 75% dust, 20% essence; green weapons the other way round; plus a small
+-- chance of a shard. Blue items: the shard of their row.
 local function DisenchantValue(item, live)
-	local _, _, quality, level, _, _, _, _, _, _, _, classID = GetItemInfo(item)
-	if not (quality and level and (classID == 2 or classID == 4)) or level < 5 then return nil end
+	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
+	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
+	local level = max(minLevel or 1, 1)
+	local row
+	for _, r in ipairs(DE_ROWS) do
+		if level <= r[1] then
+			row = r
+			break
+		end
+	end
+	row = row or DE_ROWS[#DE_ROWS]
 	local value
 	if quality == 2 then
-		for _, row in ipairs(DE_GREEN) do
-			if level <= row[1] then
-				local dust, ess = MatValue(row[2][1], live), MatValue(row[3][1], live)
-				if not (dust and ess) then return nil end
-				local main, side = 0.75, 0.20 -- armor: mostly dust; weapons: mostly essence
-				if classID == 2 then main, side = 0.20, 0.75 end
-				value = main * row[2][2] * dust + side * row[3][2] * ess
-				local shard = row[4] and MatValue(row[4], live)
-				if shard then value = value + 0.05 * shard end
-				break
-			end
-		end
-	elseif quality == 3 then
-		for _, row in ipairs(DE_BLUE) do
-			if level <= row[1] then
-				value = MatValue(row[2], live)
-				break
-			end
-		end
+		local dust, ess = MatValue(row[2][1], live), MatValue(row[3][1], live)
+		if not (dust and ess) then return nil end
+		local pDust, pEss = 0.75, 0.20
+		if classID == 2 then pDust, pEss = 0.20, 0.75 end
+		value = pDust * row[2][2] * dust + pEss * row[3][2] * ess
+		local shard = row[4] and MatValue(row[4], live)
+		if shard then value = value + SHARD_CHANCE * shard end
+	else
+		value = row[4] and MatValue(row[4], live)
 	end
 	return value and value * AH_CUT or nil
 end
@@ -1265,7 +1267,7 @@ end
 
 local TAB_HINT = {
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
-	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting.",
+	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
 	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
 
