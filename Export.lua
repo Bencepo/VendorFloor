@@ -52,7 +52,7 @@ end
 local exportFrame
 local function showExport(text, summary)
   if not exportFrame then
-    local win = CreateFrame("Frame", "VendorFloorExportFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    local win = CreateFrame("Frame", "VendorFloorExportFrame", UIParent, "BackdropTemplate")
     win:SetSize(560, 360)
     win:SetPoint("CENTER")
     win:SetFrameStrata("DIALOG")
@@ -151,66 +151,12 @@ end
 -- Minimap button and addon menu entry
 ---------------------------------------------------------------------------
 
--- A round button at the edge of the minimap. Drag it to move it; the angle is kept in
--- the saved table db (db.angle, db.hide). No libraries needed.
-local function MinimapButton(name, icon, db, onClick, onTooltip)
-	if not Minimap then return nil end
-	local b = CreateFrame("Button", name, Minimap)
-	b:SetSize(31, 31)
-	b:SetFrameStrata("MEDIUM")
-	b:SetFrameLevel(8)
-	b:RegisterForClicks("LeftButtonUp", "RightButtonUp")
-	b:RegisterForDrag("LeftButton")
-	b:SetHighlightTexture("Interface\\Minimap\\UI-Minimap-ZoomButton-Highlight")
-	local bg = b:CreateTexture(nil, "BACKGROUND")
-	bg:SetSize(20, 20)
-	bg:SetTexture("Interface\\Minimap\\UI-Minimap-Background")
-	bg:SetPoint("TOPLEFT", 7, -5)
-	local art = b:CreateTexture(nil, "ARTWORK")
-	art:SetSize(17, 17)
-	art:SetTexture(icon)
-	art:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-	art:SetPoint("TOPLEFT", 7, -6)
-	local border = b:CreateTexture(nil, "OVERLAY")
-	border:SetSize(53, 53)
-	border:SetTexture("Interface\\Minimap\\MiniMap-TrackingBorder")
-	border:SetPoint("TOPLEFT")
-	local function place()
-		local a = math.rad(db.angle or 225)
-		local r = (Minimap:GetWidth() / 2) + 10
-		b:ClearAllPoints()
-		b:SetPoint("CENTER", Minimap, "CENTER", math.cos(a) * r, math.sin(a) * r)
-	end
-	b:SetScript("OnDragStart", function(self)
-		self:SetScript("OnUpdate", function()
-			local mx, my = Minimap:GetCenter()
-			local cx, cy = GetCursorPosition()
-			local scale = Minimap:GetEffectiveScale()
-			db.angle = math.deg(math.atan2(cy / scale - my, cx / scale - mx))
-			place()
-		end)
-	end)
-	b:SetScript("OnDragStop", function(self) self:SetScript("OnUpdate", nil) end)
-	b:SetScript("OnClick", function(_, button) onClick(button) end)
-	b:SetScript("OnEnter", function(self)
-		GameTooltip:SetOwner(self, "ANCHOR_LEFT")
-		onTooltip(GameTooltip)
-		GameTooltip:Show()
-	end)
-	b:SetScript("OnLeave", function(self)
-		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
-	end)
-	place()
-	b:SetShown(not db.hide)
-	return b
-end
-
 -- Minimap icon through LibDataBroker and LibDBIcon (shipped in Libs), so minimap button
--- managers can collect it. The own button above is only used if the libraries are missing.
+-- managers can collect it.
 local function MinimapIcon(name, icon, db, onClick, onTooltip)
 	local ldb = LibStub and LibStub("LibDataBroker-1.1", true)
 	local dbi = LibStub and LibStub("LibDBIcon-1.0", true)
-	if not (ldb and dbi) then return MinimapButton(name .. "MinimapButton", icon, db, onClick, onTooltip) end
+	if not (ldb and dbi) then return nil end
 	if db.minimapPos == nil and db.angle then db.minimapPos = db.angle % 360 end
 	local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
 		type = "launcher", label = name, icon = icon,

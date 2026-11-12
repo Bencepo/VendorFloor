@@ -1,0 +1,29 @@
+{
+  "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
+  "runtime.version": "Lua 5.1",
+  "workspace.ignoreDir": [
+    "Libs",
+    ".release",
+    "tests",
+    "web",
+    ".github"
+  ],
+  "diagnostics.globals": [
+    "ATTACHMENTS_MAX_RECEIVE",
+    "AuctionHouseFrame",
+    "DEFAULT_CHAT_FRAME",
+    "ERR_AUCTION_EXPIRED_S",
+    "ERR_AUCTION_SOLD_S",
+    "ERR_AUCTION_WON_S",
+    "ERR_CANT_BE_DISENCHANTED",
+    "MailFrame",
+    "MerchantFrame",
+    "MinimalSliderWithSteppersMixin",
+    "ProfessionsFrame",
+    "SOUNDKIT",
+    "Settings",
+    "SlashCmdList",
+    "TradeSkillFrame",
+    "UISpecialFrames"
+  ]
+}

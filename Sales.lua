@@ -9,7 +9,7 @@
 
 local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
-local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetItemInfo = ns.GetItemInfo
 local floor, max, min = math.floor, math.max, math.min
 
 local KEEP = 3 * 86400   -- posted auctions are forgotten after this (longest duration is 48 h)

@@ -11,8 +11,8 @@ local ADDON, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 ns.COPPER = ns.COPPER or "c"
 local AH = C_AuctionHouse
-local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
-local GetMetadata = (C_AddOns and C_AddOns.GetAddOnMetadata) or GetAddOnMetadata
+local GetItemInfo = ns.GetItemInfo
+local GetMetadata = C_AddOns.GetAddOnMetadata
 local floor, min, max = math.floor, math.min, math.max
 
 local VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
@@ -116,7 +116,8 @@ end
 -- Reads "5s", "1g 20s", "50c", "50k" or a bare number (copper). nil when nothing is readable.
 local function ParseMoney(text)
 	text = (text or ""):lower()
-	if tonumber(text) then return floor(tonumber(text)) end
+	local plain = tonumber(text)
+	if plain then return floor(plain) end
 	local total, found = 0, false
 	for number, unit in text:gmatch("(%d+)%s*([gskc])") do
 		local value = tonumber(number)
@@ -877,7 +878,7 @@ local function KeyFor(itemID, link)
 	if not (link and equipLoc and equipLoc ~= "" and equipLoc ~= "INVTYPE_NON_EQUIP_IGNORE" and make) then
 		return plain, nil
 	end
-	local level = GetDetailedItemLevelInfo and GetDetailedItemLevelInfo(link)
+	local level = ns.GetDetailedItemLevelInfo and ns.GetDetailedItemLevelInfo(link)
 	local suffix = tonumber(link:match("item:%d+:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:(%-?%d+)")) or 0
 	return make(itemID, level or 0, suffix), plain
 end
@@ -2684,11 +2685,12 @@ SLASH_VENDORFLOOR1 = "/vfloor"
 SLASH_VENDORFLOOR2 = "/vendorfloor"
 SlashCmdList.VENDORFLOOR = function(msg)
 	local cmd, arg = (msg or ""):lower():match("^%s*(%S*)%s*(.-)%s*$")
-	if cmd == "profit" and ParseMoney(arg) then
-		SetMinProfit(ParseMoney(arg))
+	local num, money = tonumber(arg), ParseMoney(arg)
+	if cmd == "profit" and money then
+		SetMinProfit(money)
 		Print(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
-	elseif cmd == "interval" and tonumber(arg) then
-		db.interval = max(floor(tonumber(arg)), 5)
+	elseif cmd == "interval" and num then
+		db.interval = max(floor(num), 5)
 		Print(L["Pause between rounds: %d seconds"]:format(db.interval))
 	elseif cmd == "sound" then
 		db.sound = not db.sound
@@ -2707,12 +2709,12 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(ns.TotalLine())
 	elseif cmd == "export" then
 		ns.ShowExport()
-	elseif cmd == "percent" and tonumber(arg) then
-		db.minPercent = max(floor(tonumber(arg)), 0)
+	elseif cmd == "percent" and num then
+		db.minPercent = max(floor(num), 0)
 		Print(L["Minimum profit in percent: %d%%"]:format(db.minPercent))
 		if ui then ui.ShowPct() Refresh() end
-	elseif cmd == "slot" and ParseMoney(arg) then
-		db.minSlot = ParseMoney(arg)
+	elseif cmd == "slot" and money then
+		db.minSlot = money
 		db.minSlotSilver = floor(db.minSlot / 100)
 		Print(L["Minimum profit per bag slot: %s"]:format(Money(db.minSlot)))
 	elseif cmd == "flash" then
