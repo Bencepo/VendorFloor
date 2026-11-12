@@ -48,7 +48,7 @@ describe("VendorFloor", function()
 			ns.RecordListing(DUST, { { 80, 10 }, { 90, 10 }, { 300, 1 } })
 			local pk = ns.PlainKey(DUST)
 			assert.equal(80, ns.LowValue(pk))
-			assert.equal(80, (ns.MarketValue(pk)))
+			assert.equal(90, (ns.MarketValue(pk))) -- 21 units: the 11th is at 90
 		end)
 	end)
 
