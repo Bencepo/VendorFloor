@@ -1008,12 +1008,126 @@ local function MatValue(itemID, live)
 	return value
 end
 
+---------------------------------------------------------------------------
+-- Learned disenchant results: every disenchant the player does is recorded (item and
+-- materials), and once there are enough of them they replace the table above.
+-- db.deLearn[key] = { n = disenchants, m = { [material itemID] = units } }
+-- keys: "i<itemID>" per item, "b<quality>:<classID>:<item level>" per kind of item.
+---------------------------------------------------------------------------
+
+local DE_SPELL = 13262
+local LEARN_ITEM, LEARN_KIND = 3, 5 -- disenchants needed before the results count
+local deCast
+
+local function BagCounts()
+	local counts = {}
+	local CC = C_Container
+	for bag = 0, 4 do
+		local slots = CC and CC.GetContainerNumSlots and CC.GetContainerNumSlots(bag) or 0
+		for slot = 1, slots do
+			local info = CC.GetContainerItemInfo(bag, slot)
+			if info and info.itemID then counts[info.itemID] = (counts[info.itemID] or 0) + (info.stackCount or 1) end
+		end
+	end
+	return counts
+end
+
+local function LearnKeys(itemID)
+	local _, _, quality, itemLevel, _, _, _, _, _, _, _, classID = GetItemInfo(itemID)
+	if not quality then return "i" .. itemID end
+	return "i" .. itemID, ("b%d:%d:%d"):format(quality, classID or 0, itemLevel or 0)
+end
+
+local function AddLearned(key, mats)
+	if not key then return end
+	db.deLearn = db.deLearn or {}
+	local e = db.deLearn[key] or { n = 0, m = {} }
+	e.n = e.n + 1
+	for id, qty in pairs(mats) do e.m[id] = (e.m[id] or 0) + qty end
+	db.deLearn[key] = e
+end
+
+-- The disenchanted item is the one missing from the bags when the materials show up.
+local function RecordDisenchant()
+	local before = deCast and deCast.bags
+	deCast = nil
+	if not before or not GetNumLootItems then return end
+	local mats, any = {}, false
+	for i = 1, GetNumLootItems() do
+		local link = GetLootSlotLink(i)
+		local id = link and GetItemInfoInstant(link)
+		local _, _, qty = GetLootSlotInfo(i)
+		if id then
+			mats[id] = (mats[id] or 0) + (qty or 1)
+			any = true
+		end
+	end
+	if not any then return end
+	local now, gone = BagCounts(), nil
+	for id, count in pairs(before) do
+		if (now[id] or 0) < count and not mats[id] then
+			gone = id
+			break
+		end
+	end
+	if not gone then return end
+	local itemKey, kindKey = LearnKeys(gone)
+	AddLearned(itemKey, mats)
+	AddLearned(kindKey, mats)
+end
+
+local deEvents = CreateFrame("Frame")
+for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY" }) do
+	pcall(deEvents.RegisterEvent, deEvents, event)
+end
+-- UNIT_SPELLCAST_SENT: unit, target, castGUID, spellID; FAILED/INTERRUPTED: unit, castGUID, spellID
+deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
+	if event == "LOOT_READY" then
+		if deCast and GetTime() - deCast.at < 15 then RecordDisenchant() end
+	elseif unit == "player" then
+		if event == "UNIT_SPELLCAST_SENT" then
+			if a4 == DE_SPELL then deCast = { at = GetTime(), bags = BagCounts() } end
+		elseif deCast and a3 == DE_SPELL then
+			deCast = nil
+		end
+	end
+end)
+
+-- Average materials per disenchant from the player's own results, or nil if there are too few.
+local function Learned(itemID)
+	if not db.deLearn then return nil end
+	local itemKey, kindKey = LearnKeys(itemID)
+	local e = db.deLearn[itemKey]
+	if not (e and e.n >= LEARN_ITEM) then
+		e = kindKey and db.deLearn[kindKey]
+		if not (e and e.n >= LEARN_KIND) then return nil end
+	end
+	return e
+end
+
+local function LearnedValue(e, live)
+	local value, priced = 0, false
+	for id, qty in pairs(e.m) do
+		local price = MatValue(id, live)
+		if price then
+			value = value + qty / e.n * price
+			priced = true
+		end
+	end
+	return priced and value or nil
+end
+
 -- What disenchanting one of these items brings (after the auction house cut), or nil.
 -- Green armor: 75% dust, 20% essence; green weapons the other way round; plus a small
 -- chance of a shard. Blue items: the shard of their row.
 local function DisenchantValue(item, live)
 	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
 	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
+	local learned = Learned(GetItemInfoInstant(item))
+	if learned then
+		local v = LearnedValue(learned, live)
+		if v then return v * AH_CUT end
+	end
 	local level = max(minLevel or 1, 1)
 	local row
 	for _, r in ipairs(DE_ROWS) do
@@ -2215,6 +2329,7 @@ local function Help()
 		L["/vfloor ignore list | clear – show or clear the ignore list"],
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
+		L["/vfloor de – your recorded disenchant results"],
 		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
 		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
 		L["/vfloor quick – quick round over the watch list"],
@@ -2269,6 +2384,20 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))
 	elseif cmd == "craft" then
 		ns.PrintCraft()
+	elseif cmd == "de" then
+		local list = {}
+		for key, e in pairs(db.deLearn or {}) do
+			local id = tonumber(key:match("^i(%d+)$"))
+			if id then list[#list + 1] = { id = id, e = e } end
+		end
+		table.sort(list, function(a, b) return a.e.n > b.e.n end)
+		if #list == 0 then Print(L["No disenchants recorded yet."]) end
+		for i = 1, min(#list, 15) do
+			local x = list[i]
+			local v = LearnedValue(x.e)
+			Print(L["%s: %d× disenchanted, about %s each"]:format(select(2, GetItemInfo(x.id)) or x.id, x.e.n,
+				v and Money(v * AH_CUT) or "?"))
+		end
 	elseif cmd == "quick" then
 		if not StartQuick() then Print(L["The watch list needs at least 5 items. They come from finds below vendor price."]) end
 	elseif cmd == "debug" then
