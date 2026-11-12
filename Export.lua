@@ -264,7 +264,7 @@ local minimapEvents = CreateFrame("Frame")
 minimapEvents:RegisterEvent("PLAYER_LOGIN")
 minimapEvents:SetScript("OnEvent", function()
 	if not ns.db then return end
-	local ok, b = pcall(MinimapIcon, "VendorFloor", "Interface\\Icons\\INV_Misc_Coin_02",
+	local ok, b = pcall(MinimapIcon, "VendorFloor", "Interface\\AddOns\\VendorFloor\\Icons\\minimap",
 		MinimapSettings(), MinimapClick, MinimapTooltip)
 	if ok then
 		minimapButton = b

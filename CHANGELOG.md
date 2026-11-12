@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Own minimap and addon list icon.
 - Own auctions: a buyer or an expiry is counted for the oldest auction without a buyer yet, so expired auctions are no longer missed after a sale.
 - Automated tests (busted) for prices, minimum profit, disenchant values and own auctions run with every change.
 
