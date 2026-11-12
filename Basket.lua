@@ -117,8 +117,11 @@ end
 -- Can this character disenchant? (Enchanting learned, Disenchant in the spell book)
 local ENCHANTING_SKILL_LINE = 333
 local function KnowsDisenchant()
-	if IsPlayerSpell and IsPlayerSpell(DISENCHANT) then return true end
-	if IsSpellKnown and IsSpellKnown(DISENCHANT) then return true end
+	-- the spell book API differs between clients: take whichever this one has
+	local spellBook = C_SpellBook
+	if spellBook and spellBook.IsSpellKnown and spellBook.IsSpellKnown(DISENCHANT) then return true end
+	local known = _G["IsPlayerSpell"] or _G["IsSpellKnown"]
+	if known and known(DISENCHANT) then return true end
 	if GetProfessions and GetProfessionInfo then
 		for _, index in pairs({ GetProfessions() }) do
 			if index and select(7, GetProfessionInfo(index)) == ENCHANTING_SKILL_LINE then return true end

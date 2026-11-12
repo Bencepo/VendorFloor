@@ -1,10 +1,10 @@
 # Changelog
 
-## 0.8.1
+## 0.8.2
 
 - The disenchant basket is its own small window now, not a button on the mail window. It only appears for characters that can disenchant, and only when new disenchant purchases arrive in your bags, or when you open it by hand (Menu > Disenchant basket). It closes when it is empty or with its x, and you can drag it anywhere.
 
-## 0.8.1
+## 0.8.2
 
 - Removed fallbacks for old clients (bags, addon info) and the spare minimap button that was only used without LibDBIcon.
 - Code check with LuaLS and the WoW API annotations runs with every change.
