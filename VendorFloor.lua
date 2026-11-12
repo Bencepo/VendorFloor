@@ -1069,7 +1069,7 @@ local function DeDebug(fmt, ...)
 	if db and db.deDebug then print("|cffe0a83aVendorFloor DE|r " .. fmt:format(...)) end
 end
 
-local function IsGear(id)
+local function DeGear(id)
 	local _, _, quality, _, _, _, _, _, _, _, _, classID = GetItemInfo(id)
 	return (quality == 2 or quality == 3 or quality == 4) and (classID == 2 or classID == 4)
 end
@@ -1081,13 +1081,13 @@ local function FindTarget(before, mats)
 	for bag = 0, 4 do
 		for slot = 1, (CC and CC.GetContainerNumSlots and CC.GetContainerNumSlots(bag) or 0) do
 			local info = CC.GetContainerItemInfo(bag, slot)
-			if info and info.isLocked and info.itemID and IsGear(info.itemID) then return info.itemID, "locked" end
+			if info and info.isLocked and info.itemID and DeGear(info.itemID) then return info.itemID, "locked" end
 		end
 	end
 	if not before then return nil end
 	local now = BagCounts()
 	for id, count in pairs(before) do
-		if (now[id] or 0) < count and not mats[id] and IsGear(id) then return id, "gone" end
+		if (now[id] or 0) < count and not mats[id] and DeGear(id) then return id, "gone" end
 	end
 end
 
