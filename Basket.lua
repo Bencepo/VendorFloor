@@ -120,8 +120,6 @@ local function KnowsDisenchant()
 	-- the spell book API differs between clients: take whichever this one has
 	local spellBook = C_SpellBook
 	if spellBook and spellBook.IsSpellInSpellBook and spellBook.IsSpellInSpellBook(DISENCHANT) then return true end
-	local known = _G["IsPlayerSpell"] or _G["IsSpellKnown"]
-	if known and known(DISENCHANT) then return true end
 	if GetProfessions and GetProfessionInfo then
 		for _, index in pairs({ GetProfessions() }) do
 			if index and select(7, GetProfessionInfo(index)) == ENCHANTING_SKILL_LINE then return true end
