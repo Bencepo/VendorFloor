@@ -68,10 +68,18 @@ local ui
 local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady, StartCraftScan
 
 -- The finds of the tab shown, in list order.
+-- A find passes the minimum profit in percent (changeable at any time, also for listed finds).
+local function Shown(d)
+	if d.mode == "de" and ns.CanDisenchant and not ns.CanDisenchant(d.id) then return false end
+	local pct = db and db.minPercent or 0
+	if pct <= 0 or not (d.price and d.vendor) or d.price <= 0 then return true end
+	return (d.vendor - d.price) / d.price * 100 >= pct
+end
+
 local function View()
 	local tab, list = db and db.tab or "vendor", {}
 	for _, d in ipairs(order) do
-		if (d.mode or "vendor") == tab then list[#list + 1] = d end
+		if (d.mode or "vendor") == tab and Shown(d) then list[#list + 1] = d end
 	end
 	return list
 end
@@ -192,6 +200,19 @@ local function NextVariant(d)
 	return true
 end
 
+-- The current finds are kept in the saved variables after every change (full scan, quick
+-- scan, check, purchase), so the next visit starts with what is really still there.
+local function SaveFinds()
+	if not (db and ahOpen) then return end
+	local keep = {}
+	for _, g in ipairs(order) do
+		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
+			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
+			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
+	end
+	db.lastFinds = { at = time(), list = keep }
+end
+
 local function RemoveDeal(d)
 	d.dropped = true
 	deals[d.k] = nil
@@ -199,6 +220,7 @@ local function RemoveDeal(d)
 		if order[i] == d then table.remove(order, i) end
 	end
 	if selected == d then selected = nil end
+	SaveFinds()
 end
 
 -- Best total profit first.
@@ -624,6 +646,7 @@ local function FinishCheck(d, offer)
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
+		SaveFinds()
 	else
 		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
 		if deals[d.k] then RemoveDeal(d) end
@@ -676,8 +699,35 @@ local function ItemOffer(d)
 	return { unit = best.unit, count = count, profit = profit, best = best }
 end
 
+-- The complete list of a checked item is a fresh price for it, like in a full scan.
+local function RecordCommodityPrices(d)
+	if not ns.RecordListing then return end
+	local a = {}
+	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
+		local info = AH.GetCommoditySearchResultInfo(d.id, i)
+		if info and info.unitPrice and info.quantity then
+			a[#a + 1] = { info.unitPrice, info.quantity, (info.numOwnerItems or 0) >= info.quantity or nil }
+		end
+	end
+	ns.RecordListing(d.plainKey or d.id, a)
+end
+
+local function RecordItemPrices(d)
+	if not ns.RecordListing then return end
+	local a = {}
+	for i = 1, AH.GetNumItemSearchResults(d.key) do
+		local info = AH.GetItemSearchResultInfo(d.key, i)
+		if info and info.buyoutAmount and info.buyoutAmount > 0 then
+			local q = max(info.quantity or 1, 1)
+			a[#a + 1] = { info.buyoutAmount / q, q, info.containsOwnerItem or nil }
+		end
+	end
+	ns.RecordListing(d.plainKey or d.id, a)
+end
+
 local function ReadCommodity()
 	local d = buy.deal
+	pcall(RecordCommodityPrices, d)
 	if buy.purpose == "check" then
 		FinishCheck(d, CommodityOffer(d))
 		return
@@ -695,6 +745,7 @@ end
 
 local function ReadItem()
 	local d = buy.deal
+	pcall(RecordItemPrices, d)
 	local offer = ItemOffer(d)
 	if buy.purpose == "check" then
 		FinishCheck(d, offer)
@@ -925,6 +976,21 @@ local function ListingLow(a)
 end
 
 -- Latest low price of a price key (from the last full scan or price check), or nil.
+local StorePrice
+
+-- Prices from a checked item's complete list of auctions (pk: price key or item ID).
+function ns.RecordListing(pk, a)
+	if type(pk) == "number" then pk = ns.PlainKey(pk) end
+	local med = pk and #a > 0 and ListingMedian(a)
+	if not med then return end
+	StorePrice(pk, med)
+	local low = ListingLow(a)
+	if low then
+		db.lows = db.lows or {}
+		db.lows[pk] = { floor(low + 0.5), time() }
+	end
+end
+
 local function StoreLow(pk, value)
 	db.lows = db.lows or {}
 	db.lows[pk] = { floor(value + 0.5), time() }
@@ -937,7 +1003,7 @@ local function LowValue(pk)
 end
 ns.LowValue = LowValue
 
-local function StorePrice(pk, value)
+function StorePrice(pk, value)
 	db.prices = db.prices or {}
 	local h = db.prices[pk] or {}
 	h[Today()] = floor(value + 0.5)
@@ -1178,6 +1244,40 @@ local function Learned(itemID)
 	return e
 end
 
+-- Gear that cannot be disenchanted: the wands enchanters make, plus every item the game
+-- refused to disenchant for you (learned from the error message).
+local NO_DE = { [11287] = true, [11288] = true, [11289] = true, [11290] = true }
+local function CanDisenchant(id)
+	return id and not NO_DE[id] and not (db.noDE and db.noDE[id])
+end
+ns.CanDisenchant = CanDisenchant
+
+local deTarget -- item clicked while the Disenchant cursor was up
+if C_Container and C_Container.UseContainerItem and hooksecurefunc then
+	hooksecurefunc(C_Container, "UseContainerItem", function(bag, slot)
+		if SpellIsTargeting and SpellIsTargeting() then
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			deTarget = info and info.itemID
+		end
+	end)
+end
+local noDeFrame = CreateFrame("Frame")
+noDeFrame:RegisterEvent("UI_ERROR_MESSAGE")
+noDeFrame:SetScript("OnEvent", function(_, _, _, msg)
+	if deTarget and ERR_CANT_BE_DISENCHANTED and msg == ERR_CANT_BE_DISENCHANTED then
+		db.noDE = db.noDE or {}
+		db.noDE[deTarget] = true
+		deTarget = nil
+	end
+end)
+
+-- How many of your own disenchants the value of this item is based on (nil: general table).
+function ns.DeLearnedCount(item)
+	local id = ItemID(item)
+	local e = id and Learned(id)
+	return e and e.n
+end
+
 local function LearnedValue(e, live)
 	local value, priced = 0, false
 	for id, qty in pairs(e.m) do
@@ -1197,6 +1297,7 @@ local function DisenchantValue(item, live)
 	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
 	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
 	local id = ItemID(item)
+	if not CanDisenchant(id) then return nil end
 	local learned = id and Learned(id)
 	if learned then
 		local v = LearnedValue(learned, live)
@@ -1226,6 +1327,24 @@ local function DisenchantValue(item, live)
 	return value and value * AH_CUT or nil
 end
 ns.DisenchantValue = DisenchantValue
+
+-- Your recorded disenchants as text lines, most disenchanted first.
+function ns.DeLines(limit)
+	local list, lines = {}, {}
+	for key, e in pairs(db.deLearn or {}) do
+		local id = tonumber(key:match("^i(%d+)$"))
+		if id then list[#list + 1] = { id = id, e = e } end
+	end
+	table.sort(list, function(a, b) return a.e.n > b.e.n end)
+	if #list == 0 then return { L["No disenchants recorded yet."] } end
+	for i = 1, min(#list, limit or #list) do
+		local x = list[i]
+		local v = LearnedValue(x.e)
+		lines[#lines + 1] = L["%s: %d× disenchanted, about %s each"]:format(select(2, GetItemInfo(x.id)) or x.id, x.e.n,
+			v and Money(v * AH_CUT) or "?")
+	end
+	return lines
+end
 
 local function FinishFull(failed)
 	full.active = false
@@ -1297,14 +1416,8 @@ local function FinishFull(failed)
 	full.items = nil
 	ns.craftDirty = true
 	-- kept for the next visit: until the next full scan is allowed the finds come from here
-	local keep = {}
-	for _, g in pairs(found) do
-		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
-			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
-			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
-	end
-	db.lastFinds = { at = time(), list = keep }
 	SortDeals()
+	SaveFinds()
 	SetStatus(L["Full scan done: %d auctions. Vendor %d, disenchant %d finds."]:format(full.count or 0,
 		counts.vendor, counts.de))
 	if new > 0 then
@@ -1593,7 +1706,7 @@ Refresh = function()
 		if mode == "craft" then
 			n = ns.CraftResults and #(ns.CraftResults()) or 0
 		else
-			for _, d in ipairs(order) do if (d.mode or "vendor") == mode then n = n + 1 end end
+			for _, d in ipairs(order) do if (d.mode or "vendor") == mode and Shown(d) then n = n + 1 end end
 		end
 		local tab = ui.tabs[mode]
 		tab:SetText(n > 0 and ("%s (%d)"):format(tab.label, n) or tab.label)
@@ -1911,7 +2024,7 @@ local function BuildUI()
 	f.loop = loop
 
 	f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	f.count:SetPoint("TOPRIGHT", -30, -10)
+	f.count:SetPoint("TOPRIGHT", -110, -10)
 
 	-- Minimum profit per unit: how far below the vendor price an auction must be
 	local profit = CreateFrame("EditBox", nil, f, "BackdropTemplate")
@@ -1962,7 +2075,7 @@ local function BuildUI()
 	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"] }
 	local prev
 	for _, mode in ipairs(TABS) do
-		local tab = FlatButton(f, 136, 24)
+		local tab = FlatButton(f, 132, 24)
 		tab.label = labels[mode]
 		if prev then tab:SetPoint("LEFT", prev, "RIGHT", 6, 0) else tab:SetPoint("TOPLEFT", 10, -68) end
 		tab:SetScript("OnClick", function()
@@ -1972,6 +2085,74 @@ local function BuildUI()
 		end)
 		f.tabs[mode], prev = tab, tab
 	end
+
+	-- minimum profit in percent: click for more, right-click for less
+	local PRESETS = { 0, 5, 10, 15, 20, 25, 35, 50 }
+	local pct = FlatButton(f, 140, 24)
+	pct:SetPoint("TOPRIGHT", -10, -68)
+	pct:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+	local function ShowPct()
+		local v = db.minPercent or 0
+		pct:SetText(v > 0 and L["Min. profit %d%%"]:format(v) or L["Min. profit: any"])
+		pct:SetOn(v > 0)
+	end
+	pct:SetScript("OnClick", function(self, button)
+		local v, i = db.minPercent or 0, 1
+		for k, p in ipairs(PRESETS) do if p <= v then i = k end end
+		if button == "RightButton" then
+			i = PRESETS[i] == v and i - 1 or i
+			if i < 1 then i = 1 end
+		else
+			i = min(i + 1, #PRESETS)
+		end
+		db.minPercent = PRESETS[i]
+		ShowPct()
+		Refresh()
+		if GameTooltip:GetOwner() == self then self:GetScript("OnEnter")(self) end
+	end)
+	pct:SetScript("OnEnter", function(self)
+		GameTooltip:SetOwner(self, "ANCHOR_TOP")
+		GameTooltip:AddLine(L["Minimum profit in percent"])
+		GameTooltip:AddLine(L["Finds below this profit (in percent of the price) are hidden, also the ones already listed."], 1, 1, 1, true)
+		GameTooltip:AddLine(L["Click: more. Right-click: less."], 0.7, 0.7, 0.7)
+		GameTooltip:Show()
+	end)
+	pct:SetScript("OnLeave", function(self)
+		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
+	end)
+	ShowPct()
+	f.pct, f.ShowPct = pct, ShowPct
+
+	-- menu: everything that used to need a chat command
+	local menuBtn = FlatButton(f, 70, 20)
+	menuBtn:SetPoint("TOPRIGHT", -32, -5)
+	menuBtn:SetText(L["Menu"])
+	local menu = CreateFrame("Frame", nil, f, "BackdropTemplate")
+	Flat(menu, C.panel, C.gold)
+	menu:SetFrameStrata("DIALOG")
+	menu:SetPoint("TOPRIGHT", menuBtn, "BOTTOMRIGHT", 0, -2)
+	menu:Hide()
+	local entries = {
+		{ L["Statistics"], function() ns.ShowInfo(L["Statistics"], ns.StatsLines()) end },
+		{ L["Your disenchants"], function() ns.ShowInfo(L["Your disenchants"], ns.DeLines()) end },
+		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], ns.SalesLines and ns.SalesLines() or {}) end },
+		{ L["Export for the website"], function() ns.ShowExport() end },
+		{ L["Settings"], function()
+			if ns.category and Settings and Settings.OpenToCategory then Settings.OpenToCategory(ns.category:GetID()) end
+		end },
+	}
+	for i, e in ipairs(entries) do
+		local b = FlatButton(menu, 190, 24)
+		b:SetPoint("TOPLEFT", 6, -6 - (i - 1) * 28)
+		b:SetText(e[1])
+		b:SetScript("OnClick", function()
+			menu:Hide()
+			e[2]()
+		end)
+	end
+	menu:SetSize(202, 12 + #entries * 28 - 4)
+	menuBtn:SetScript("OnClick", function() menu:SetShown(not menu:IsShown()) end)
+	f:HookScript("OnHide", function() menu:Hide() end)
 
 	-- progress bar under the buttons
 	f.bar = CreateFrame("StatusBar", nil, f)
@@ -2049,6 +2230,9 @@ local function BuildUI()
 			GameTooltip:AddLine(" ")
 			if d.mode == "de" then
 				GameTooltip:AddLine(L["Disenchanting brings about %s (estimate)"]:format(Money(d.vendor or 0)), 0.88, 0.66, 0.23)
+				local n = ns.DeLearnedCount(d.link or d.id)
+				GameTooltip:AddLine(n and L["Based on your own %d disenchants of this item."]:format(n)
+					or L["Based on the general disenchant table (your own results count from 3 disenchants)."], 0.7, 0.7, 0.7, true)
 			end
 			if d.count and (d.mode or "vendor") ~= "vendor" then
 				GameTooltip:AddLine(L["Below that: %d×, total profit %s"]:format(d.count, Money(d.profit or 0)), 0.25, 1, 0.25)
@@ -2119,6 +2303,54 @@ local function BuildUI()
 
 	f:Hide()
 	ui = f
+end
+
+-- A simple text window (statistics, your disenchants, your auctions).
+local info
+function ns.ShowInfo(titleText, lines)
+	if not info then
+		info = CreateFrame("Frame", "VendorFloorInfoFrame", UIParent, "BackdropTemplate")
+		info:SetSize(480, 380)
+		info:SetPoint("CENTER")
+		info:SetFrameStrata("DIALOG")
+		Flat(info, C.bg, C.line)
+		info:SetMovable(true)
+		info:EnableMouse(true)
+		info:RegisterForDrag("LeftButton")
+		info:SetScript("OnDragStart", info.StartMoving)
+		info:SetScript("OnDragStop", info.StopMovingOrSizing)
+		info.title = info:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+		info.title:SetPoint("TOPLEFT", 12, -9)
+		info.title:SetTextColor(unpack(C.gold))
+		local close = FlatButton(info, 22, 20)
+		close:SetPoint("TOPRIGHT", -6, -5)
+		close:SetText("x")
+		close:SetScript("OnClick", function() info:Hide() end)
+		local sf = CreateFrame("ScrollFrame", nil, info, "UIPanelScrollFrameTemplate")
+		sf:SetPoint("TOPLEFT", 12, -38)
+		sf:SetPoint("BOTTOMRIGHT", -30, 12)
+		local content = CreateFrame("Frame", nil, sf)
+		content:SetSize(430, 10)
+		sf:SetScrollChild(content)
+		info.text = content:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+		info.text:SetPoint("TOPLEFT")
+		info.text:SetWidth(430)
+		info.text:SetJustifyH("LEFT")
+		info.text:SetSpacing(4)
+		info.content = content
+		tinsert(UISpecialFrames, "VendorFloorInfoFrame")
+	end
+	info.title:SetText(titleText)
+	info.text:SetText(table.concat(lines, "\n"))
+	info.content:SetHeight(info.text:GetStringHeight() + 10)
+	info:Show()
+end
+
+function ns.StatsLines()
+	local lines = {}
+	if ns.TotalLine then lines[#lines + 1] = ns.TotalLine() end
+	if ns.LedgerLine then lines[#lines + 1] = ns.LedgerLine() end
+	return lines
 end
 
 local function ShowWindow()
@@ -2231,15 +2463,15 @@ function handlers.ADDON_LOADED(name)
 	if not ok then Print(tostring(err)) end
 end
 
--- The finds of the last full scan (up to an hour old), so the tabs are not empty until the
--- next full scan is allowed. Each is checked against the live auctions when clicked.
+-- The finds as last seen (full scan, quick scans and checks; up to an hour old), so the tabs
+-- are not empty until the next full scan is allowed. Each is checked again when clicked.
 local function RestoreFinds()
 	local last = db.lastFinds
 	if not (last and last.list and time() - (last.at or 0) < 3600) then return end
 	local age = time() - last.at
 	local n = 0
 	for _, g in ipairs(last.list) do
-		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or (g.mode == "de" and g.variants)) then
+		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or g.mode == "de") then
 			local d = {}
 			for field, value in pairs(g) do d[field] = value end
 			d.fullAt, d.stale = GetTime() - age, false
@@ -2450,6 +2682,7 @@ SlashCmdList.VENDORFLOOR = function(msg)
 	elseif cmd == "percent" and tonumber(arg) then
 		db.minPercent = max(floor(tonumber(arg)), 0)
 		Print(L["Minimum profit in percent: %d%%"]:format(db.minPercent))
+		if ui then ui.ShowPct() Refresh() end
 	elseif cmd == "slot" and ParseMoney(arg) then
 		db.minSlot = ParseMoney(arg)
 		db.minSlotSilver = floor(db.minSlot / 100)
@@ -2465,19 +2698,7 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		db.deDebug = not db.deDebug
 		Print("disenchant debug: " .. (db.deDebug and "on" or "off"))
 	elseif cmd == "de" then
-		local list = {}
-		for key, e in pairs(db.deLearn or {}) do
-			local id = tonumber(key:match("^i(%d+)$"))
-			if id then list[#list + 1] = { id = id, e = e } end
-		end
-		table.sort(list, function(a, b) return a.e.n > b.e.n end)
-		if #list == 0 then Print(L["No disenchants recorded yet."]) end
-		for i = 1, min(#list, 15) do
-			local x = list[i]
-			local v = LearnedValue(x.e)
-			Print(L["%s: %d× disenchanted, about %s each"]:format(select(2, GetItemInfo(x.id)) or x.id, x.e.n,
-				v and Money(v * AH_CUT) or "?"))
-		end
+		for _, line in ipairs(ns.DeLines(15)) do Print(line) end
 	elseif cmd == "quick" then
 		if not StartQuick() then Print(L["The watch list needs at least 5 items. They come from finds below vendor price."]) end
 	elseif cmd == "debug" then
