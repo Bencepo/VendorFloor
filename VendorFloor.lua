@@ -2735,3 +2735,10 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Help()
 	end
 end
+
+-- For the automated tests (tests/*_spec.lua, run with busted outside the game); unused in the game.
+ns.test = {
+	Init = function() handlers.ADDON_LOADED(ADDON) end,
+	ParseMoney = ParseMoney, ListingMedian = ListingMedian, ListingLow = ListingLow, Worth = Worth,
+	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
+}

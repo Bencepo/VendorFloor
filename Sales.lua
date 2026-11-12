@@ -66,10 +66,17 @@ local function Pattern(fmt)
 end
 local SOLD, EXPIRED = Pattern(ERR_AUCTION_SOLD_S), Pattern(ERR_AUCTION_EXPIRED_S)
 
+-- The oldest posted auction of this name, preferring one without a buyer yet: a sold
+-- auction stays listed until it ends, but a new buyer or an expiry belongs to the next one.
 local function Oldest(db, name)
+	local first, firstI
 	for i, o in ipairs(db.open or {}) do
-		if o.name == name then return o, i end
+		if o.name == name then
+			if not o.hit then return o, i end
+			first, firstI = first or o, firstI or i
+		end
 	end
+	return first, firstI
 end
 
 local function Purge(db)
@@ -160,3 +167,6 @@ end
 function ns.PrintSales()
 	for _, line in ipairs(ns.SalesLines(15)) do ns.Print(line) end
 end
+
+-- For the automated tests; unused in the game.
+ns.salesTest = { Pattern = Pattern, OnPost = OnPost, OnSystem = OnSystem }
