@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.3-beta
+
+- Minimum profit in percent right in the window: click for more, right-click for less. It also hides finds that are already listed.
+- New Menu button: statistics, your disenchants, your auctions, export and settings, without chat commands.
+- Wands made by enchanters are no longer offered as disenchant finds; an item the game refuses to disenchant is remembered and hidden too.
+- The tooltip of a disenchant find says whether its value comes from your own disenchants or from the general table.
+
 ## 0.6.2-beta
 
 - VendorFloor learns from your own disenchants: it records what each item gave you, and after 3 disenchants of an item (or 5 of the same kind and item level) it values finds by your real results instead of the general table.

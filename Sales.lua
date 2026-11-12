@@ -138,21 +138,25 @@ local function Duration(sec)
 	return ("%.1f h"):format(sec / 3600)
 end
 
-function ns.PrintSales()
+function ns.SalesLines(limit)
 	local db = DB()
-	local list = {}
+	local list, lines = {}, {}
 	for id, e in pairs(db and db.sales or {}) do list[#list + 1] = { id = id, e = e } end
 	table.sort(list, function(a, b) return a.e.posts > b.e.posts end)
 	if #list == 0 then
-		ns.Print(L["No own auctions recorded yet. They are recorded from now on when you post."])
-		return
+		return { L["No own auctions recorded yet. They are recorded from now on when you post."] }
 	end
-	for i = 1, min(#list, 15) do
+	for i = 1, min(#list, limit or #list) do
 		local x, e = list[i], list[i].e
 		local ended = e.firstN + e.expired
-		ns.Print(L["%s: posted %d×, sold %d of %d ended, first buyer after %s, last price %s"]:format(
+		lines[#lines + 1] = L["%s: posted %d×, sold %d of %d ended, first buyer after %s, last price %s"]:format(
 			select(2, GetItemInfo(x.id)) or x.id, e.posts, e.firstN, ended,
 			e.firstN > 0 and Duration(e.firstSum / e.firstN) or "–",
-			e.price and ns.Money(e.price) or "–"))
+			e.price and ns.Money(e.price) or "–")
 	end
+	return lines
+end
+
+function ns.PrintSales()
+	for _, line in ipairs(ns.SalesLines(15)) do ns.Print(line) end
 end
