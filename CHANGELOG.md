@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- Disenchant basket: items bought on the disenchant tab go into a basket. At the mailbox a "Disenchant basket" button appears below "Collect purchases": each click disenchants the next item, no cursor, no searching the bags. It also works on a key (Key Bindings > AddOns > VendorFloor), anywhere, not only at the mailbox. Every disenchant is still one click or key press. In combat the button does nothing.
+- Vendor purchases that land in the reagent bag (profession bag) when collected from the mail are now sold at the merchant like the rest.
+- An auction the auction house refuses to sell ("Internal auction error") is no longer offered again and again: each auction is bid on once, then the next one is checked.
+
 ## 0.7.0
 
 - First release out of beta.

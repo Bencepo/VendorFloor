@@ -256,3 +256,12 @@ L["Purchase sent: %s ×%d for %s (disenchanting brings about %s)."] = "Kauf gese
 L["Quote: %d× for %s, disenchanting brings about %s."] = "Angebot: %d× für %s, Entzaubern bringt etwa %s."
 L["Bought: %s ×%d for %s (disenchanting brings about %s)."] = "Gekauft: %s ×%d für %s (Entzaubern bringt etwa %s)."
 L["DE ~"] = "DE ~"
+
+-- Disenchant basket
+L["Disenchant"] = "Entzaubern"
+L["Disenchant basket (%d)"] = "Entzauber-Korb (%d)"
+L["Disenchants the next item you bought on the disenchant tab: one click per item."] = "Entzaubert den nächsten Gegenstand, den du im Entzaubern-Reiter gekauft hast: ein Klick pro Gegenstand."
+L["Key: %s"] = "Taste: %s"
+L["Tip: set a key for it under Key Bindings > AddOns > VendorFloor."] = "Tipp: unter Tastaturbelegung > AddOns > VendorFloor eine Taste dafür festlegen."
+L["Disenchant next basket item"] = "Nächsten Gegenstand im Entzauber-Korb entzaubern"
+L["Purchase failed (%s). This auction is skipped."] = "Kauf fehlgeschlagen (%s). Diese Auktion wird übersprungen."

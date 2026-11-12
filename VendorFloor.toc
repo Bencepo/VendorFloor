@@ -19,6 +19,7 @@ Libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 Locales.lua
 VendorFloor.lua
 Trade.lua
+Basket.lua
 Craft.lua
 Sales.lua
 Export.lua

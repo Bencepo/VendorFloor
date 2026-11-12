@@ -11,6 +11,12 @@ local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 local floor, min, max = math.floor, math.min, math.max
 
 local MAX_SELL = 80        -- stacks sold per click at most
+
+-- Character bags plus the reagent bag (profession bag), where reagents from the mail land.
+local BAGS = { 0, 1, 2, 3, 4 }
+local REAGENT_BAG = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
+if REAGENT_BAG and REAGENT_BAG > 4 then BAGS[#BAGS + 1] = REAGENT_BAG end
+ns.BAGS = BAGS
 local TAKE_INTERVAL = 0.4  -- seconds between two items taken from the mail
 
 local session = { start = time(), buys = 0, spent = 0, value = 0, sold = 0, soldCost = 0 }
@@ -84,6 +90,9 @@ local function RecordOther(itemID, qty, cost)
 	-- to be collected from the mail: units per item until they are taken out
 	db.debought = db.debought or {}
 	db.debought[itemID] = (db.debought[itemID] or 0) + qty
+	-- the disenchant basket: units bought for disenchanting and not disenchanted yet
+	db.deBasket = db.deBasket or {}
+	db.deBasket[itemID] = (db.deBasket[itemID] or 0) + qty
 	db.detotal = db.detotal or { buys = 0, spent = 0 }
 	Add(db.detotal, "buys", 1)
 	Add(db.detotal, "spent", cost or 0)
@@ -321,7 +330,7 @@ local function SellableUnits()
 	local left, n = {}, 0
 	if not db then return 0 end
 	for itemID, b in pairs(db.bought) do left[itemID] = b.units end
-	for bag = 0, 4 do
+	for _, bag in ipairs(BAGS) do
 		for slot = 1, NumSlots(bag) do
 			local itemID, count, locked = ContainerItem(bag, slot)
 			if itemID and left[itemID] and not locked and count <= left[itemID] and (SellPrice(itemID) or 0) > 0 then
@@ -343,7 +352,7 @@ local function CountBought()
 	local db = DB()
 	local c = {}
 	if not db then return c end
-	for bag = 0, 4 do
+	for _, bag in ipairs(BAGS) do
 		for slot = 1, NumSlots(bag) do
 			local itemID, count = ContainerItem(bag, slot)
 			if itemID and db.bought[itemID] then c[itemID] = (c[itemID] or 0) + (count or 1) end
@@ -375,7 +384,7 @@ local function Sell()
 	local stacks, units, income, profit = 0, 0, 0, 0
 	local left = {}
 	for itemID, b in pairs(db.bought) do left[itemID] = b.units end
-	for bag = 0, 4 do
+	for _, bag in ipairs(BAGS) do
 		for slot = 1, NumSlots(bag) do
 			if stacks >= MAX_SELL then break end
 			local itemID, count, locked = ContainerItem(bag, slot)

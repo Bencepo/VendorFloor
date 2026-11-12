@@ -55,6 +55,7 @@ local pendingInfo = {}        -- itemID -> browse results whose item data is sti
 local noOffer = {}            -- deal key -> { price, at }: checked, no buyout below vendor price (e.g. bid-only)
 local NO_OFFER_KEEP = 30 * 60  -- seconds such a key is skipped while its browse price stays the same
 local pendingBuys = {}        -- auctionID -> item purchase waiting for confirmation
+local triedBids = {}          -- auctionID -> true: bought already, or the auction house refused it
 local scan = { active = false, seen = 0, round = 0 }
 local full = { active = false } -- the full scan (every auction at once)
 local buy = {}                -- state of the find being checked or bought
@@ -681,7 +682,8 @@ local function ItemOffer(d)
 	local best, count, profit = nil, 0, 0
 	for i = 1, AH.GetNumItemSearchResults(d.key) do
 		local info = AH.GetItemSearchResultInfo(d.key, i)
-		if info and info.auctionID and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem then
+		if info and info.auctionID and info.buyoutAmount and info.buyoutAmount > 0 and not info.containsOwnerItem
+			and not triedBids[info.auctionID] then
 			local quantity = Units(info.itemLink or d.id, info.quantity)
 			-- vendor finds compare each auction with its own vendor price, the other tabs with the find's value
 			local vendor = (d.mode or "vendor") == "vendor" and info.itemLink and VendorPrice(info.itemLink) or d.vendor
@@ -804,6 +806,9 @@ local function Action()
 			return
 		end
 		AH.PlaceBid(buy.auctionID, buy.buyout)
+		-- an auction is bid on once: if it is still listed afterwards, the purchase failed
+		-- ("Internal auction error") and the next check moves on instead of offering it again
+		triedBids[buy.auctionID] = true
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
 			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
 		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
@@ -1884,8 +1889,8 @@ ns.Flat = Flat
 
 -- A flat button. kind "primary": gold with dark text (the main action).
 -- :SetOn(true) shows it switched on (gold border and text), e.g. while a scan runs.
-local function FlatButton(parent, width, height, kind)
-	local b = CreateFrame("Button", nil, parent, "BackdropTemplate")
+local function FlatButton(parent, width, height, kind, name, template)
+	local b = CreateFrame("Button", name, parent, template and (template .. ", BackdropTemplate") or "BackdropTemplate")
 	b:SetSize(width or 80, height or 22)
 	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 	fs:SetPoint("CENTER", 0, 0)
@@ -2462,6 +2467,11 @@ function handlers.ADDON_LOADED(name)
 	db.total = db.total or { buys = 0, spent = 0, value = 0 }
 	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
 	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
+	if db.deBasket == nil then
+		-- the disenchant basket starts with the disenchant purchases still in the mail
+		db.deBasket = {}
+		for itemID, n in pairs(db.debought or {}) do db.deBasket[itemID] = n end
+	end
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
 	if db.tab ~= "vendor" and db.tab ~= "de" and db.tab ~= "craft" then db.tab = "vendor" end
 	ns.db = db
@@ -2608,6 +2618,18 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	RemoveDeal(d)
 	ResetBuy(L["Bought."])
+end
+
+-- An item purchase the auction house refused ("Internal auction error" and the like).
+local AUCTION_ERRORS = {}
+for _, key in ipairs({ "ERR_AUCTION_DATABASE_ERROR", "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
+	"ERR_AUCTION_BID_OWN", "ERR_NOT_ENOUGH_MONEY" }) do
+	if _G[key] then AUCTION_ERRORS[_G[key]] = true end
+end
+function handlers.UI_ERROR_MESSAGE(_, msg)
+	if buy.state == "bought" and msg and AUCTION_ERRORS[msg] then
+		ResetBuy(L["Purchase failed (%s). This auction is skipped."]:format(msg))
+	end
 end
 
 function handlers.COMMODITY_PURCHASE_FAILED()
