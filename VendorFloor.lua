@@ -79,6 +79,7 @@ end
 local function Print(msg)
 	DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
 end
+ns.Print = Print
 
 local function Money(copper)
 	copper = floor(copper or 0)
@@ -1004,6 +1005,11 @@ local function MatValue(itemID, live)
 		local med = MarketValue(pk)
 		value = med and med * 0.9
 	end
+	-- your own sales: the price that really sold, and how much of what you post sells at all
+	local sold = ns.SoldPrice and ns.SoldPrice(itemID)
+	if sold and (not value or sold < value) then value = sold end
+	local rate = ns.SellRate and ns.SellRate(itemID)
+	if value and rate then value = value * max(rate, 0.3) end
 	matCache[itemID] = value or false
 	return value
 end
@@ -2330,6 +2336,7 @@ local function Help()
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
 		L["/vfloor de – your recorded disenchant results"],
+		L["/vfloor sales – how fast your own auctions sell"],
 		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
 		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
 		L["/vfloor quick – quick round over the watch list"],
@@ -2384,6 +2391,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))
 	elseif cmd == "craft" then
 		ns.PrintCraft()
+	elseif cmd == "sales" then
+		ns.PrintSales()
 	elseif cmd == "de" then
 		local list = {}
 		for key, e in pairs(db.deLearn or {}) do

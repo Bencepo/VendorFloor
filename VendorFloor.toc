@@ -19,4 +19,5 @@ Locales.lua
 VendorFloor.lua
 Trade.lua
 Craft.lua
+Sales.lua
 Export.lua

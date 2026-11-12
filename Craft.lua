@@ -113,6 +113,10 @@ local function ProductValue(itemID)
 		local med = ns.MarketValue(pk)
 		market = med and med * 0.9
 	end
+	local sold = ns.SoldPrice and ns.SoldPrice(itemID)
+	if sold and (not market or sold < market) then market = sold end
+	local rate = ns.SellRate and ns.SellRate(itemID)
+	if market and rate then market = market * max(rate, 0.3) end
 	local sell = select(11, GetItemInfo(itemID)) or 0
 	local ah = market and market * AH_CUT or nil
 	if ah and ah >= sell then return ah, "ah" end
