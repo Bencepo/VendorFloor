@@ -1065,48 +1065,98 @@ local function AddLearned(key, mats)
 end
 
 -- The disenchanted item is the one missing from the bags when the materials show up.
+local function DeDebug(fmt, ...)
+	if db and db.deDebug then print("|cffe0a83aVendorFloor DE|r " .. fmt:format(...)) end
+end
+
+local function IsGear(id)
+	local _, _, quality, _, _, _, _, _, _, _, _, classID = GetItemInfo(id)
+	return (quality == 2 or quality == 3 or quality == 4) and (classID == 2 or classID == 4)
+end
+
+-- The disenchanted item: the gear item locked in the bags while the loot is open, or the
+-- one missing from the bags compared with before the cast.
+local function FindTarget(before, mats)
+	local CC = C_Container
+	for bag = 0, 4 do
+		for slot = 1, (CC and CC.GetContainerNumSlots and CC.GetContainerNumSlots(bag) or 0) do
+			local info = CC.GetContainerItemInfo(bag, slot)
+			if info and info.isLocked and info.itemID and IsGear(info.itemID) then return info.itemID, "locked" end
+		end
+	end
+	if not before then return nil end
+	local now = BagCounts()
+	for id, count in pairs(before) do
+		if (now[id] or 0) < count and not mats[id] and IsGear(id) then return id, "gone" end
+	end
+end
+
+local deLoot -- loot of a disenchant whose item is not known yet: { mats, before, at }
+
+local function Learn(id, mats, how)
+	local itemKey, kindKey = LearnKeys(id)
+	AddLearned(itemKey, mats)
+	AddLearned(kindKey, mats)
+	deLoot = nil
+	DeDebug("recorded %s (%s)", select(2, GetItemInfo(id)) or id, how)
+end
+
 local function RecordDisenchant()
 	local before = deCast and deCast.bags
 	deCast = nil
-	if not before or not GetNumLootItems then return end
+	local n = GetNumLootItems and GetNumLootItems() or 0
 	local mats, any = {}, false
-	for i = 1, GetNumLootItems() do
-		local link = GetLootSlotLink(i)
-		local id = ItemID(link)
+	for i = 1, n do
+		local id = ItemID(GetLootSlotLink(i))
 		local _, _, qty = GetLootSlotInfo(i)
 		if id then
+			if not DE_MATS[id] then
+				DeDebug("loot is not from disenchanting (%s)", id)
+				return
+			end
 			mats[id] = (mats[id] or 0) + (qty or 1)
 			any = true
 		end
 	end
-	if not any then return end
-	for id in pairs(mats) do
-		if not DE_MATS[id] then return end -- not disenchant loot
+	if not any then
+		DeDebug("loot window without items (%d slots)", n)
+		return
 	end
-	local now, gone = BagCounts(), nil
-	for id, count in pairs(before) do
-		if (now[id] or 0) < count and not mats[id] then
-			local _, _, quality, _, _, _, _, _, _, _, _, classID = GetItemInfo(id)
-			if (quality == 2 or quality == 3 or quality == 4) and (classID == 2 or classID == 4) then
-				gone = id
-				break
-			end
-		end
+	local id, how = FindTarget(before, mats)
+	if id then
+		Learn(id, mats, how)
+	else
+		deLoot = { mats = mats, before = before, at = GetTime() }
+		DeDebug("materials seen, waiting for the item to leave the bags (snapshot %s)", before and "yes" or "no")
 	end
-	if not gone then return end
-	local itemKey, kindKey = LearnKeys(gone)
-	AddLearned(itemKey, mats)
-	AddLearned(kindKey, mats)
+end
+
+-- After the loot is taken the item is gone from the bags.
+local function RetryPending()
+	if not deLoot then return end
+	if GetTime() - deLoot.at > 5 then
+		DeDebug("gave up: disenchanted item not found")
+		deLoot = nil
+		return
+	end
+	local id, how = FindTarget(deLoot.before, deLoot.mats)
+	if id then Learn(id, deLoot.mats, how) end
 end
 
 local deEvents = CreateFrame("Frame")
-for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY" }) do
+for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY",
+	"LOOT_OPENED", "LOOT_CLOSED", "BAG_UPDATE_DELAYED" }) do
 	pcall(deEvents.RegisterEvent, deEvents, event)
 end
 -- UNIT_SPELLCAST_SENT: unit, target, castGUID, spellID; FAILED/INTERRUPTED: unit, castGUID, spellID
 deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
-	if event == "LOOT_READY" then
-		if deCast and GetTime() - deCast.at < 15 then RecordDisenchant() end
+	if event == "LOOT_READY" or event == "LOOT_OPENED" then
+		if deLoot then return end
+		local fresh = deCast and GetTime() - deCast.at < 15
+		DeDebug("%s, cast before: %s", event, fresh and tostring(deCast.spell) or "none")
+		if fresh or event == "LOOT_READY" then RecordDisenchant() end
+	elseif event == "LOOT_CLOSED" or event == "BAG_UPDATE_DELAYED" then
+		RetryPending()
 	elseif unit == "player" then
 		if event == "UNIT_SPELLCAST_SENT" then
 			deCast = { at = GetTime(), bags = BagCounts(), spell = a4 }
@@ -2411,6 +2461,9 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		ns.PrintCraft()
 	elseif cmd == "sales" then
 		ns.PrintSales()
+	elseif cmd == "de" and arg == "debug" then
+		db.deDebug = not db.deDebug
+		Print("disenchant debug: " .. (db.deDebug and "on" or "off"))
 	elseif cmd == "de" then
 		local list = {}
 		for key, e in pairs(db.deLearn or {}) do
