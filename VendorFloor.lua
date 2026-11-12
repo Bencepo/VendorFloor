@@ -1022,6 +1022,13 @@ end
 ---------------------------------------------------------------------------
 
 local DE_SPELL = 13262
+
+-- Item ID of an ID or link (GetItemInfoInstant is not a global on every client)
+local function ItemID(item)
+	if type(item) == "number" then return item end
+	if type(item) ~= "string" then return nil end
+	return tonumber(item:match("item:(%d+)")) or tonumber(item)
+end
 local LEARN_ITEM, LEARN_KIND = 3, 5 -- disenchants needed before the results count
 local deCast
 
@@ -1061,7 +1068,7 @@ local function RecordDisenchant()
 	local mats, any = {}, false
 	for i = 1, GetNumLootItems() do
 		local link = GetLootSlotLink(i)
-		local id = link and GetItemInfoInstant(link)
+		local id = ItemID(link)
 		local _, _, qty = GetLootSlotInfo(i)
 		if id then
 			mats[id] = (mats[id] or 0) + (qty or 1)
@@ -1129,7 +1136,8 @@ end
 local function DisenchantValue(item, live)
 	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
 	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
-	local learned = Learned(GetItemInfoInstant(item))
+	local id = ItemID(item)
+	local learned = id and Learned(id)
 	if learned then
 		local v = LearnedValue(learned, live)
 		if v then return v * AH_CUT end
