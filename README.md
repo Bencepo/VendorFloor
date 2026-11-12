@@ -55,6 +55,10 @@ Add a new version heading at the top of `CHANGELOG.md` (for example `## 0.2.1-be
 The release workflow checks the code with luacheck, tags the commit as `v0.2.1-beta`, builds the zip and uploads it to CurseForge.
 `-beta` and `-alpha` versions are uploaded as beta and alpha files.
 
+## AI disclosure
+
+The code was written with the help of an AI assistant (Claude). Bencepo designed the features, tests everything in game and maintains the addon.
+
 ## License
 
 Copyright (c) 2026 Bencepo. All rights reserved. See [LICENSE](LICENSE).
