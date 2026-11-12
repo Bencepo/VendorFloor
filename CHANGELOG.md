@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.2-beta
+
+- VendorFloor learns from your own disenchants: it records what each item gave you, and after 3 disenchants of an item (or 5 of the same kind and item level) it values finds by your real results instead of the general table.
+- New command /vfloor de shows your recorded disenchant results.
+- VendorFloor records your own auctions (also when posted with Auctionator): how long until a buyer is found, the price that sold and how many expire. Disenchant materials and crafted items are valued at the price that really sold and by the share that sells. /vfloor sales shows it.
+
 ## 0.6.1-beta
 
 - Much faster buying of gear finds (disenchant tab, gear in the vendor tab): a purchase check that gets no answer gives up after 5 instead of 15 seconds, tries the plain item key right away, and remembers per item which key works.

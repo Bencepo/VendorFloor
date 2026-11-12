@@ -79,6 +79,7 @@ end
 local function Print(msg)
 	DEFAULT_CHAT_FRAME:AddMessage(PREFIX .. msg)
 end
+ns.Print = Print
 
 local function Money(copper)
 	copper = floor(copper or 0)
@@ -1004,8 +1005,189 @@ local function MatValue(itemID, live)
 		local med = MarketValue(pk)
 		value = med and med * 0.9
 	end
+	-- your own sales: the price that really sold, and how much of what you post sells at all
+	local sold = ns.SoldPrice and ns.SoldPrice(itemID)
+	if sold and (not value or sold < value) then value = sold end
+	local rate = ns.SellRate and ns.SellRate(itemID)
+	if value and rate then value = value * max(rate, 0.3) end
 	matCache[itemID] = value or false
 	return value
+end
+
+---------------------------------------------------------------------------
+-- Learned disenchant results: every disenchant the player does is recorded (item and
+-- materials), and once there are enough of them they replace the table above.
+-- db.deLearn[key] = { n = disenchants, m = { [material itemID] = units } }
+-- keys: "i<itemID>" per item, "b<quality>:<classID>:<item level>" per kind of item.
+---------------------------------------------------------------------------
+
+-- Item ID of an ID or link (GetItemInfoInstant is not a global on every client)
+local function ItemID(item)
+	if type(item) == "number" then return item end
+	if type(item) ~= "string" then return nil end
+	return tonumber(item:match("item:(%d+)")) or tonumber(item)
+end
+local LEARN_ITEM, LEARN_KIND = 3, 5 -- disenchants needed before the results count
+local deCast
+-- Every disenchant material: loot made only of these after an item left the bags is a disenchant.
+-- (Forever may use its own spell ID for Disenchant, so the spell is not checked.)
+local DE_MATS = { [20725] = true, [22445] = true, [22446] = true, [22447] = true, [22448] = true, [22449] = true, [22450] = true }
+for _, t in ipairs({ DUST, ESS, SHARD }) do
+	for _, id in pairs(t) do DE_MATS[id] = true end
+end
+
+local function BagCounts()
+	local counts = {}
+	local CC = C_Container
+	for bag = 0, 4 do
+		local slots = CC and CC.GetContainerNumSlots and CC.GetContainerNumSlots(bag) or 0
+		for slot = 1, slots do
+			local info = CC.GetContainerItemInfo(bag, slot)
+			if info and info.itemID then counts[info.itemID] = (counts[info.itemID] or 0) + (info.stackCount or 1) end
+		end
+	end
+	return counts
+end
+
+local function LearnKeys(itemID)
+	local _, _, quality, itemLevel, _, _, _, _, _, _, _, classID = GetItemInfo(itemID)
+	if not quality then return "i" .. itemID end
+	return "i" .. itemID, ("b%d:%d:%d"):format(quality, classID or 0, itemLevel or 0)
+end
+
+local function AddLearned(key, mats)
+	if not key then return end
+	db.deLearn = db.deLearn or {}
+	local e = db.deLearn[key] or { n = 0, m = {} }
+	e.n = e.n + 1
+	for id, qty in pairs(mats) do e.m[id] = (e.m[id] or 0) + qty end
+	db.deLearn[key] = e
+end
+
+-- The disenchanted item is the one missing from the bags when the materials show up.
+local function DeDebug(fmt, ...)
+	if db and db.deDebug then print("|cffe0a83aVendorFloor DE|r " .. fmt:format(...)) end
+end
+
+local function DeGear(id)
+	local _, _, quality, _, _, _, _, _, _, _, _, classID = GetItemInfo(id)
+	return (quality == 2 or quality == 3 or quality == 4) and (classID == 2 or classID == 4)
+end
+
+-- The disenchanted item: the gear item locked in the bags while the loot is open, or the
+-- one missing from the bags compared with before the cast.
+local function FindTarget(before, mats)
+	local CC = C_Container
+	for bag = 0, 4 do
+		for slot = 1, (CC and CC.GetContainerNumSlots and CC.GetContainerNumSlots(bag) or 0) do
+			local info = CC.GetContainerItemInfo(bag, slot)
+			if info and info.isLocked and info.itemID and DeGear(info.itemID) then return info.itemID, "locked" end
+		end
+	end
+	if not before then return nil end
+	local now = BagCounts()
+	for id, count in pairs(before) do
+		if (now[id] or 0) < count and not mats[id] and DeGear(id) then return id, "gone" end
+	end
+end
+
+local deLoot -- loot of a disenchant whose item is not known yet: { mats, before, at }
+
+local function Learn(id, mats, how)
+	local itemKey, kindKey = LearnKeys(id)
+	AddLearned(itemKey, mats)
+	AddLearned(kindKey, mats)
+	deLoot = nil
+	DeDebug("recorded %s (%s)", select(2, GetItemInfo(id)) or id, how)
+end
+
+local function RecordDisenchant()
+	local before = deCast and deCast.bags
+	deCast = nil
+	local n = GetNumLootItems and GetNumLootItems() or 0
+	local mats, any = {}, false
+	for i = 1, n do
+		local id = ItemID(GetLootSlotLink(i))
+		local _, _, qty = GetLootSlotInfo(i)
+		if id then
+			if not DE_MATS[id] then
+				DeDebug("loot is not from disenchanting (%s)", id)
+				return
+			end
+			mats[id] = (mats[id] or 0) + (qty or 1)
+			any = true
+		end
+	end
+	if not any then
+		DeDebug("loot window without items (%d slots)", n)
+		return
+	end
+	local id, how = FindTarget(before, mats)
+	if id then
+		Learn(id, mats, how)
+	else
+		deLoot = { mats = mats, before = before, at = GetTime() }
+		DeDebug("materials seen, waiting for the item to leave the bags (snapshot %s)", before and "yes" or "no")
+	end
+end
+
+-- After the loot is taken the item is gone from the bags.
+local function RetryPending()
+	if not deLoot then return end
+	if GetTime() - deLoot.at > 5 then
+		DeDebug("gave up: disenchanted item not found")
+		deLoot = nil
+		return
+	end
+	local id, how = FindTarget(deLoot.before, deLoot.mats)
+	if id then Learn(id, deLoot.mats, how) end
+end
+
+local deEvents = CreateFrame("Frame")
+for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_FAILED", "UNIT_SPELLCAST_INTERRUPTED", "LOOT_READY",
+	"LOOT_OPENED", "LOOT_CLOSED", "BAG_UPDATE_DELAYED" }) do
+	pcall(deEvents.RegisterEvent, deEvents, event)
+end
+-- UNIT_SPELLCAST_SENT: unit, target, castGUID, spellID; FAILED/INTERRUPTED: unit, castGUID, spellID
+deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
+	if event == "LOOT_READY" or event == "LOOT_OPENED" then
+		if deLoot then return end
+		local fresh = deCast and GetTime() - deCast.at < 15
+		DeDebug("%s, cast before: %s", event, fresh and tostring(deCast.spell) or "none")
+		if fresh or event == "LOOT_READY" then RecordDisenchant() end
+	elseif event == "LOOT_CLOSED" or event == "BAG_UPDATE_DELAYED" then
+		RetryPending()
+	elseif unit == "player" then
+		if event == "UNIT_SPELLCAST_SENT" then
+			deCast = { at = GetTime(), bags = BagCounts(), spell = a4 }
+		elseif deCast and a3 == deCast.spell then
+			deCast = nil
+		end
+	end
+end)
+
+-- Average materials per disenchant from the player's own results, or nil if there are too few.
+local function Learned(itemID)
+	if not db.deLearn then return nil end
+	local itemKey, kindKey = LearnKeys(itemID)
+	local e = db.deLearn[itemKey]
+	if not (e and e.n >= LEARN_ITEM) then
+		e = kindKey and db.deLearn[kindKey]
+		if not (e and e.n >= LEARN_KIND) then return nil end
+	end
+	return e
+end
+
+local function LearnedValue(e, live)
+	local value, priced = 0, false
+	for id, qty in pairs(e.m) do
+		local price = MatValue(id, live)
+		if price then
+			value = value + qty / e.n * price
+			priced = true
+		end
+	end
+	return priced and value or nil
 end
 
 -- What disenchanting one of these items brings (after the auction house cut), or nil.
@@ -1014,6 +1196,12 @@ end
 local function DisenchantValue(item, live)
 	local _, _, quality, _, minLevel, _, _, _, _, _, _, classID = GetItemInfo(item)
 	if not (quality and (classID == 2 or classID == 4)) or (quality ~= 2 and quality ~= 3) then return nil end
+	local id = ItemID(item)
+	local learned = id and Learned(id)
+	if learned then
+		local v = LearnedValue(learned, live)
+		if v then return v * AH_CUT end
+	end
 	local level = max(minLevel or 1, 1)
 	local row
 	for _, r in ipairs(DE_ROWS) do
@@ -2215,6 +2403,8 @@ local function Help()
 		L["/vfloor ignore list | clear – show or clear the ignore list"],
 		L["/vfloor full – start a full scan (every 15 minutes)"],
 		L["/vfloor stats – totals since install"],
+		L["/vfloor de – your recorded disenchant results"],
+		L["/vfloor sales – how fast your own auctions sell"],
 		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
 		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
 		L["/vfloor quick – quick round over the watch list"],
@@ -2269,6 +2459,25 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		Print(L["Taskbar flash: %s"]:format(db.flash and L["on"] or L["off"]))
 	elseif cmd == "craft" then
 		ns.PrintCraft()
+	elseif cmd == "sales" then
+		ns.PrintSales()
+	elseif cmd == "de" and arg == "debug" then
+		db.deDebug = not db.deDebug
+		Print("disenchant debug: " .. (db.deDebug and "on" or "off"))
+	elseif cmd == "de" then
+		local list = {}
+		for key, e in pairs(db.deLearn or {}) do
+			local id = tonumber(key:match("^i(%d+)$"))
+			if id then list[#list + 1] = { id = id, e = e } end
+		end
+		table.sort(list, function(a, b) return a.e.n > b.e.n end)
+		if #list == 0 then Print(L["No disenchants recorded yet."]) end
+		for i = 1, min(#list, 15) do
+			local x = list[i]
+			local v = LearnedValue(x.e)
+			Print(L["%s: %d× disenchanted, about %s each"]:format(select(2, GetItemInfo(x.id)) or x.id, x.e.n,
+				v and Money(v * AH_CUT) or "?"))
+		end
 	elseif cmd == "quick" then
 		if not StartQuick() then Print(L["The watch list needs at least 5 items. They come from finds below vendor price."]) end
 	elseif cmd == "debug" then
