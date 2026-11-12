@@ -55,8 +55,13 @@ function M.Load(addon, files, setup)
 	end })
 	local ns = {}
 	for _, file in ipairs(files) do
-		local chunk = assert(loadfile(file))
-		setfenv(chunk, env)
+		local chunk
+		if setfenv then -- Lua 5.1, like the game
+			chunk = assert(loadfile(file))
+			setfenv(chunk, env)
+		else
+			chunk = assert(loadfile(file, "t", env))
+		end
 		chunk(addon, ns)
 	end
 	return ns, env
