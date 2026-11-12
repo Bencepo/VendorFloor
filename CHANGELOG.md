@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0
+
+- First release out of beta.
+- While a full scan runs, the window says what is happening and that the first finds appear in about a minute, instead of an empty list.
+- The progress bar shows "loading item data" in the second half of a full scan instead of "waiting for the auction house".
+- "1 find" and "1 craft with profit" instead of "1 finds" and "1 crafts"; no stray comma before the profession list.
+- The disenchant tab explains where its values come from (WoW Forever tables and your own results).
+- New addon description in the addon list and in addon managers.
+
 ## 0.6.4-beta
 
 - Now also on Wago Addons.

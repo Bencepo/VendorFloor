@@ -33,7 +33,9 @@ local function ScanRecipes()
 	local prof = "?"
 	if T.GetBaseProfessionInfo then
 		local info = T.GetBaseProfessionInfo()
-		if type(info) == "table" and info.professionName then prof = info.professionName end
+		if type(info) == "table" then
+			prof = (info.professionName ~= "" and info.professionName) or (info.parentProfessionName ~= "" and info.parentProfessionName) or prof
+		end
 	end
 	local list = {}
 	for _, id in ipairs(ids) do
@@ -166,7 +168,9 @@ function ns.CraftProfessions()
 	local db = DB()
 	local mine = db and db.recipes and db.recipes[CharKey()]
 	local names = {}
-	for prof in pairs(mine or {}) do names[#names + 1] = prof end
+	for prof in pairs(mine or {}) do
+		if prof ~= "" and prof ~= "?" then names[#names + 1] = prof end
+	end
 	table.sort(names)
 	return names
 end

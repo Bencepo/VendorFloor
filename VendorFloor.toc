@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: VendorFloor
-## Notes: Finds auctions listed below vendor price and buys them on click or key press. Small window next to the auction house, works alongside Auctionator. /vfloor
-## Notes-deDE: Findet Auktionen unter Händlerpreis und kauft sie per Klick oder Taste. Eigenes kleines Fenster neben dem Auktionshaus, läuft neben Auctionator. /vfloor
+## Notes: Auction house sniper: finds auctions below vendor price, below disenchant value and profitable crafts. One-click buy, collect and sell. Works next to Auctionator.
+## Notes-deDE: Auktionshaus-Sniper: findet Auktionen unter Händlerpreis, unter Entzauberwert und profitable Rezepte. Kaufen, abholen und verkaufen mit je einem Klick. Läuft neben Auctionator.
 ## Author: Bencepo
 ## Version: @project-version@
 ## X-License: All Rights Reserved

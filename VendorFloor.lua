@@ -1661,7 +1661,7 @@ end
 
 local TAB_HINT = {
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
-	de = "Green and blue weapons and armor below what disenchanting them brings (Classic disenchant tables, materials at their usual price). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
+	de = "Green and blue weapons and armor below what disenchanting them brings (WoW Forever disenchant tables and your own results, materials at the cheapest listings). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
 	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
 
@@ -1688,7 +1688,9 @@ local function RefreshCraft()
 		end
 	end
 	local profs = ns.CraftProfessions and ns.CraftProfessions() or {}
-	ui.summary:SetText(#list > 0 and L["%d crafts with profit · %s"]:format(#list, table.concat(profs, ", ")) or "")
+	local profText = table.concat(profs, ", ")
+	ui.summary:SetText(#list == 0 and "" or profText == "" and L[#list == 1 and "1 craft with profit" or "%d crafts with profit"]:format(#list)
+		or L[#list == 1 and "1 craft with profit · %s" or "%d crafts with profit · %s"]:format(#list, profText))
 	ui.count:SetText(#list > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #list), #list) or "")
 	if miss > 0 and not craft.active then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
 	ui.action:SetText(L["Read recipes: open a profession window"])
@@ -1713,7 +1715,8 @@ Refresh = function()
 		tab:SetOn(db.tab == mode)
 	end
 	ui.empty:SetShown(#view == 0)
-	ui.empty:SetText(L[TAB_HINT[db.tab] or TAB_HINT.vendor])
+	ui.empty:SetText(full.active and L["Full scan running: every auction is read at once. The first finds appear in about a minute."]
+		or L[TAB_HINT[db.tab] or TAB_HINT.vendor])
 	for i = 1, ROWS do
 		local row, d = ui.rows[i], view[i + offset]
 		row.deal, row.craft = d, nil
@@ -1749,7 +1752,9 @@ Refresh = function()
 		ui.bar:SetValue(fraction)
 		local label
 		if full.active then
-			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100)) or L["Full scan: waiting for the auction house"]
+			label = full.phase == "reading" and L["Full scan %d%%"]:format(floor(fraction * 100))
+				or full.phase == "loading" and L["Full scan: loading item data"]
+				or L["Full scan: waiting for the auction house"]
 		elseif craft.active then
 			label = L["Prices %d of %d (%d%%)"]:format(craft.i, #craft.list, floor(fraction * 100))
 		elseif checking and ((scan.checked or 0) + #queue) > 0 then
@@ -1771,7 +1776,8 @@ Refresh = function()
 		local n = d.count or 1
 		cost, profit = cost + (d.price or 0) * n, profit + (d.profit or 0)
 	end
-	ui.summary:SetText(#view > 0 and L["%d finds · cost %s · profit %s"]:format(#view, Money(cost), Money(profit)) or "")
+	ui.summary:SetText(#view > 0 and (#view == 1 and L["1 find · cost %s · profit %s"]:format(Money(cost), Money(profit))
+		or L["%d finds · cost %s · profit %s"]:format(#view, Money(cost), Money(profit))) or "")
 	ui.loop:SetChecked(db.loop)
 	ui.count:SetText(#view > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #view), #view) or "")
 
