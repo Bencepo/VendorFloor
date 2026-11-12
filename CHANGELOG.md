@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Own auctions: a buyer or an expiry is counted for the oldest auction without a buyer yet, so expired auctions are no longer missed after a sale.
+- Automated tests (busted) for prices, minimum profit, disenchant values and own auctions run with every change.
+
 ## 0.6.3-beta
 
 - Minimum profit in percent right in the window: click for more, right-click for less. It also hides finds that are already listed.
