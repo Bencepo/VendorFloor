@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1
+
+- Removed fallbacks for old clients (bags, addon info) and the spare minimap button that was only used without LibDBIcon.
+- Code check with LuaLS and the WoW API annotations runs with every change.
+
 ## 0.8.0
 
 - Disenchant basket: items bought on the disenchant tab go into a basket. At the mailbox a "Disenchant basket" button appears below "Collect purchases": each click disenchants the next item, no cursor, no searching the bags. It also works on a key (Key Bindings > AddOns > VendorFloor), anywhere, not only at the mailbox. Every disenchant is still one click or key press. In combat the button does nothing.
