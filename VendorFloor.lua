@@ -1021,8 +1021,6 @@ end
 -- keys: "i<itemID>" per item, "b<quality>:<classID>:<item level>" per kind of item.
 ---------------------------------------------------------------------------
 
-local DE_SPELL = 13262
-
 -- Item ID of an ID or link (GetItemInfoInstant is not a global on every client)
 local function ItemID(item)
 	if type(item) == "number" then return item end
@@ -1031,6 +1029,12 @@ local function ItemID(item)
 end
 local LEARN_ITEM, LEARN_KIND = 3, 5 -- disenchants needed before the results count
 local deCast
+-- Every disenchant material: loot made only of these after an item left the bags is a disenchant.
+-- (Forever may use its own spell ID for Disenchant, so the spell is not checked.)
+local DE_MATS = { [20725] = true, [22445] = true, [22446] = true, [22447] = true, [22448] = true, [22449] = true, [22450] = true }
+for _, t in ipairs({ DUST, ESS, SHARD }) do
+	for _, id in pairs(t) do DE_MATS[id] = true end
+end
 
 local function BagCounts()
 	local counts = {}
@@ -1076,11 +1080,17 @@ local function RecordDisenchant()
 		end
 	end
 	if not any then return end
+	for id in pairs(mats) do
+		if not DE_MATS[id] then return end -- not disenchant loot
+	end
 	local now, gone = BagCounts(), nil
 	for id, count in pairs(before) do
 		if (now[id] or 0) < count and not mats[id] then
-			gone = id
-			break
+			local _, _, quality, _, _, _, _, _, _, _, _, classID = GetItemInfo(id)
+			if (quality == 2 or quality == 3 or quality == 4) and (classID == 2 or classID == 4) then
+				gone = id
+				break
+			end
 		end
 	end
 	if not gone then return end
@@ -1099,8 +1109,8 @@ deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
 		if deCast and GetTime() - deCast.at < 15 then RecordDisenchant() end
 	elseif unit == "player" then
 		if event == "UNIT_SPELLCAST_SENT" then
-			if a4 == DE_SPELL then deCast = { at = GetTime(), bags = BagCounts() } end
-		elseif deCast and a3 == DE_SPELL then
+			deCast = { at = GetTime(), bags = BagCounts(), spell = a4 }
+		elseif deCast and a3 == deCast.spell then
 			deCast = nil
 		end
 	end
