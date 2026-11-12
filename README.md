@@ -1,58 +1,68 @@
 # VendorFloor
 
-Finds World of Warcraft: Forever auction house listings priced below what a vendor pays and lets you buy them with one click. Runs as a small standalone window beside the auction house and works alongside Auctionator.
+Auction house sniper for WoW Forever. Finds auctions that are worth more than they cost: below vendor price, below disenchant value, or the reagents for a profitable craft. It runs in its own small window next to Auctionator, and every purchase is your own click.
 
 ## Features
 
-- **Full scan**: reads every auction at once (allowed every 15 minutes) and lists everything with a buyout below vendor value, complete and without checking each item.
-- **Scan**: reads the auction house item list between full scans and checks each candidate, best profit first.
-- **Buy-it-now only**: an auction is only listed if it has a buyout price. Bid-only auctions are ignored.
-- **Minimum profit per unit**: set how far below the vendor price an auction must be, for example `50k`, `5s` or `1g 20s`.
-- **One-click buying**: click a find to check its live auctions, then press Buy. Nothing is ever bought automatically.
-- **Key binding**: "Buy next find" (Options > Keybindings > AddOns) or `/vfloor buy` checks and buys the best find, one step per press.
-- **Stackable goods**: checked before listing, so each row shows the units really below vendor price and the total profit.
-- **Ignore list**: right-click a find to hide that item for good.
-- **Collect and sell**: a button at the mailbox collects the items VendorFloor bought, a button at a merchant sells them (never more than it bought).
-- **Ledger**: buys, spending, sales, real profit, profit per hour and what is still to sell. Progress bar and a summary of the whole list.
-- **Settings** under Options > AddOns > VendorFloor.
+- **Vendor finds**: auctions listed below what a merchant pays. Buy, collect from the mail and sell at a merchant, each with one button.
+- **Disenchant finds**: green and blue gear below what disenchanting it brings, from the Forever disenchant tables and, after 3 disenchants of an item, from your own results.
+- **Disenchant basket**: enchanters get a small basket window when disenchant purchases arrive in the bags. Each click, or one key, disenchants the next item.
+- **Crafting profits**: which of your learned recipes make a profit right now, with reagents from the cheapest source.
+- **Realistic values**: materials count at the cheapest listings and at what your own auctions really sold for, not at an optimistic average.
+- **Minimum profit** in copper, in percent and per bag slot, right in the window or in the settings.
+- **Ledger**: spent, sold and real profit per session, day and item, including sales made by junk-seller addons.
+- **Continuous mode, alerts and key bindings**: rescans on its own, announces new finds with an optional sound and taskbar flash; "Buy next find" and the disenchant basket work on a key.
+- **Minimap button and addon menu**, settings under Options > AddOns > VendorFloor.
 - **English and German**: follows the game client's language.
-- **Continuous mode**: rescans automatically after each round.
-- **Alerts**: new finds are announced in chat, with an optional sound.
-- **Safe stackable purchases**: a quote is only accepted if the total is still below vendor value.
-- **Standalone**: no libraries and no dependencies.
 
 ## Usage
 
-1. Open the auction house. The VendorFloor window appears beside it.
-2. Press **Full scan** (every 15 minutes) or **Scan**. Finds of a scan are checked for a buyout one by one.
-3. Click a find to check its live auctions, then press **Buy**.
+1. Open the auction house: the VendorFloor window opens next to it.
+2. Pick a tab (Vendor, Disenchant, Crafting) and press **Scan**, or switch on **Continuous**.
+3. Click a find to check it against the live auctions, then press **Buy**.
 4. At the mailbox press **Collect purchases**, at a merchant **Sell purchases**.
+5. Menu (top right): statistics, your disenchants, your auctions, export and settings.
+
+A full scan reads every auction at once (the auction house allows this every 15 minutes) and fills the tabs. In between, quick rounds and per-tab scans check the items that were cheap before.
+
+## Web page
+
+Menu > Export, then paste it at https://bencepo.github.io/vendorfloor for profit per day, your best items and time to sale. The page runs in the browser and uploads nothing. Its source is `web/index.html`, published from the public repo `Bencepo/bencepo.github.io` (folder `vendorfloor/`).
+
+## Works with LevelTrail
+
+With LevelTrail installed, the auction house profit shows up next to the leveling run, per day and per play session. LevelTrail reads it through `VendorFloor_Ledger()`.
+
+## Chat commands
+
+Everything is also available in the window and the settings. For those who prefer commands:
 
 | Command | Effect |
 | --- | --- |
 | `/vfloor` | Show or hide the window |
 | `/vfloor profit <amount>` | Minimum profit per unit, e.g. `50k`, `5s`, `1g 20s` |
+| `/vfloor percent <n>` | Minimum profit in percent |
+| `/vfloor slot <amount>` | Minimum profit per bag slot |
 | `/vfloor interval <seconds>` | Pause between two continuous rounds |
-| `/vfloor sound` | Toggle the alert sound |
+| `/vfloor sound` / `flash` | Toggle the alert sound / taskbar flash |
 | `/vfloor buy` | Check and buy the next find (same as the key binding) |
+| `/vfloor full` / `quick` | Start a full scan / a quick round |
+| `/vfloor craft` / `de` / `sales` | Best crafts / disenchant results / sales in chat |
 | `/vfloor ignore list` / `clear` | Show or clear the ignore list |
-| `/vfloor full` | Start a full scan |
-| `/vfloor stats` | Totals since install |
+| `/vfloor stats` / `export` | Totals since install / ledger export |
 | `/vfloor forget` | Forget the purchases still to sell |
-| `/vfloor options` | Open the settings |
-| `/vfloor reset` | Reset the window position |
-
-The minimum profit can also be set in the window's input field, top right.
+| `/vfloor minimap` | Hide or show the minimap button |
+| `/vfloor options` / `reset` | Open the settings / reset the window position |
 
 ## Notes
 
 - Stop the scan before running an Auctionator search. Both addons share the auction house's query channel.
-- Status: beta, built for WoW Forever 1.60.1.
+- Built for WoW Forever 1.60.1. Libraries: LibStub, CallbackHandler, LibDataBroker, LibDBIcon (bundled).
 
 ## Releasing
 
-Add a new version heading at the top of `CHANGELOG.md` (for example `## 0.2.1-beta`) and push to `main`.
-The release workflow checks the code with luacheck, tags the commit as `v0.2.1-beta`, builds the zip and uploads it to CurseForge.
+Add a new version heading at the top of `CHANGELOG.md` (for example `## 0.9.0`) and push to `main`.
+The release workflow checks the code with luacheck, tags the commit, builds the zip and uploads it to CurseForge and Wago.
 `-beta` and `-alpha` versions are uploaded as beta and alpha files.
 
 ## AI disclosure
