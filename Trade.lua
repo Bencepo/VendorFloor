@@ -7,7 +7,7 @@
 
 local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
-local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetItemInfo = ns.GetItemInfo
 local floor, min, max = math.floor, math.min, math.max
 
 local MAX_SELL = 80        -- stacks sold per click at most
@@ -209,8 +209,7 @@ local ATTACHMENTS = ATTACHMENTS_MAX_RECEIVE or 16
 local function FreeSlots()
 	local free = 0
 	for bag = 0, 4 do
-		local n = C_Container and C_Container.GetContainerNumFreeSlots and C_Container.GetContainerNumFreeSlots(bag)
-			or (GetContainerNumFreeSlots and GetContainerNumFreeSlots(bag)) or 0
+		local n = C_Container.GetContainerNumFreeSlots(bag) or 0
 		free = free + (n or 0)
 	end
 	return free
@@ -277,7 +276,7 @@ driver:SetScript("OnUpdate", function(self)
 		return
 	end
 	local i, a = NextMailItem()
-	if not i then
+	if not (i and a) then
 		self:Hide()
 		StopCollecting(L["Collected %d items."]:format(taken))
 		return
@@ -304,23 +303,17 @@ end
 ---------------------------------------------------------------------------
 
 local function ContainerItem(bag, slot)
-	if C_Container and C_Container.GetContainerItemInfo then
-		local info = C_Container.GetContainerItemInfo(bag, slot)
-		if info then return info.itemID, info.stackCount or 1, info.isLocked end
-		return nil
-	end
-	local _, count, locked, _, _, _, _, _, _, itemID = GetContainerItemInfo(bag, slot)
-	return itemID, count, locked
+	local info = C_Container.GetContainerItemInfo(bag, slot)
+	if info then return info.itemID, info.stackCount or 1, info.isLocked end
+	return nil
 end
 
 local function NumSlots(bag)
-	if C_Container and C_Container.GetContainerNumSlots then return C_Container.GetContainerNumSlots(bag) end
-	return GetContainerNumSlots and GetContainerNumSlots(bag) or 0
+	return C_Container.GetContainerNumSlots(bag) or 0
 end
 
 local function UseItem(bag, slot)
-	if C_Container and C_Container.UseContainerItem then return C_Container.UseContainerItem(bag, slot) end
-	return UseContainerItem(bag, slot)
+	return C_Container.UseContainerItem(bag, slot)
 end
 
 -- Units in the bags that may be sold: a stack only when it is not bigger than what

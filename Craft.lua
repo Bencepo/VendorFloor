@@ -10,7 +10,7 @@
 
 local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
-local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
+local GetItemInfo = ns.GetItemInfo
 local max = math.max
 local AH_CUT = 0.95
 
@@ -73,9 +73,12 @@ end
 
 local function ScanMerchant()
 	local db = DB()
+	-- GetMerchantItemInfo is the merchant API of this client (C_MerchantFrame is retail only).
+	---@diagnostic disable-next-line: deprecated
 	if not (db and GetMerchantNumItems and GetMerchantItemInfo and GetMerchantItemID) then return end
 	db.vendorBuy = db.vendorBuy or {}
 	for i = 1, GetMerchantNumItems() do
+		---@diagnostic disable-next-line: deprecated
 		local _, _, price, quantity, numAvailable, _, _, extendedCost = GetMerchantItemInfo(i)
 		local itemID = GetMerchantItemID(i)
 		-- only unlimited items for gold
@@ -126,7 +129,12 @@ local function ProductValue(itemID)
 	return nil
 end
 
+-- Craft results, best first; results.char marks the character they belong to.
 local results, missing = {}, 0
+
+---@param a table
+---@param b table
+local function byProfit(a, b) return a.profit > b.profit end
 
 -- All recipes of this character with a positive profit, best first.
 function ns.CraftResults()
@@ -160,7 +168,7 @@ function ns.CraftResults()
 			end
 		end
 	end
-	table.sort(results, function(a, b) return a.profit > b.profit end)
+	table.sort(results, byProfit)
 	return results, missing
 end
 

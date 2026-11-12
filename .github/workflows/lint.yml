@@ -53,3 +53,47 @@ jobs:
           img=ghcr.io/lunarmodules/busted:v2.2.0
           docker image inspect $img >/dev/null 2>&1 || img=ghcr.io/lunarmodules/busted:latest
           docker run --rm -v "$PWD:/data" -w /data $img --output=utfTerminal
+
+  # The audit WoW addon sites run: LuaLS with Ketho's WoW API annotations (vscode-wow-api).
+  # Settings and the Classic-only globals the annotations do not know come from .luarc.json.
+  # Any diagnostic fails the job.
+  luals:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install LuaLS and the WoW API annotations
+        timeout-minutes: 5
+        run: |
+          v=3.19.2
+          mkdir -p "$RUNNER_TEMP/luals"
+          curl -fsSL "https://github.com/LuaLS/lua-language-server/releases/download/$v/lua-language-server-$v-linux-x64.tar.gz" | tar -xz -C "$RUNNER_TEMP/luals"
+          git clone -q --depth 1 https://github.com/Ketho/vscode-wow-api "$RUNNER_TEMP/wow-api"
+
+      - name: Run LuaLS
+        run: |
+          python3 - <<'PY'
+          import json, os
+          t = os.environ["RUNNER_TEMP"]
+          cfg = {k: v for k, v in json.load(open(".luarc.json")).items() if not k.startswith("$")}
+          cfg["workspace.library"] = [t + "/wow-api/Annotations/Core"]
+          cfg["runtime.builtin"] = {k: "disable" for k in ["basic", "debug", "io", "math", "os", "package", "string", "table", "utf8"]}
+          json.dump(cfg, open(t + "/luarc.json", "w"))
+          PY
+          "$RUNNER_TEMP/luals/bin/lua-language-server" --check="$PWD" --configpath="$RUNNER_TEMP/luarc.json" \
+            --checklevel=Hint --check_out_path="$RUNNER_TEMP/luals.json" --logpath="$RUNNER_TEMP/log"
+          python3 - <<'PY'
+          import json, os, sys
+          p = os.environ["RUNNER_TEMP"] + "/luals.json"
+          d = json.load(open(p)) if os.path.exists(p) else {}
+          n = 0
+          for uri, diags in (d.items() if isinstance(d, dict) else []):
+              f = os.path.relpath(uri.replace("file://", ""))
+              for x in diags:
+                  n += 1
+                  ln = x["range"]["start"]["line"] + 1
+                  msg = x["message"].replace("\n", " ")
+                  print(f"::warning file={f},line={ln}::{x['code']}: {msg}")
+          print(f"::notice title=LuaLS::{n} diagnostics")
+          sys.exit(1 if n else 0)
+          PY
