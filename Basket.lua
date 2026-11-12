@@ -114,17 +114,78 @@ local function Aim(self, _, down)
 	self:SetAttribute("macrotext", ("/cast %s\n/use %d %d"):format(SpellName(), target.bag, target.slot))
 end
 
+-- Can this character disenchant? (Enchanting learned, Disenchant in the spell book)
+local ENCHANTING_SKILL_LINE = 333
+local function KnowsDisenchant()
+	if IsPlayerSpell and IsPlayerSpell(DISENCHANT) then return true end
+	if IsSpellKnown and IsSpellKnown(DISENCHANT) then return true end
+	if GetProfessions and GetProfessionInfo then
+		for _, index in pairs({ GetProfessions() }) do
+			if index and select(7, GetProfessionInfo(index)) == ENCHANTING_SKILL_LINE then return true end
+		end
+	end
+	-- a lookup by name only finds spells in the spell book (Forever may use its own spell ID)
+	local name = SpellName()
+	if C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(name) then return true end
+	if GetSpellInfo and GetSpellInfo(name) then return true end
+	return false
+end
+
+-- The basket window: shown when new basket items arrive in the bags, or when opened by hand
+-- (menu entry or key binding). Hidden again when it is empty, unless opened by hand, or with x.
+local holder
+local state = { manual = false, auto = false, last = 0 }
+
+local function SavePosition()
+	local db = DB()
+	if not (db and holder) then return end
+	local point, _, relPoint, x, y = holder:GetPoint(1)
+	db.basketPos = { point, relPoint, x, y }
+end
+
 local function Create()
 	if button then return button end
+	holder = CreateFrame("Frame", "VendorFloorBasketFrame", UIParent, "BackdropTemplate")
+	holder:SetSize(190, 56)
+	holder:SetFrameStrata("MEDIUM")
+	holder:SetClampedToScreen(true)
+	holder:SetMovable(true)
+	holder:EnableMouse(true)
+	holder:RegisterForDrag("LeftButton")
+	holder:SetScript("OnDragStart", function(self) if not InCombatLockdown() then self:StartMoving() end end)
+	holder:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() SavePosition() end)
+	if ns.Flat then ns.Flat(holder) end
+	local pos = DB() and DB().basketPos
+	if pos then
+		holder:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
+	else
+		holder:SetPoint("CENTER", UIParent, "CENTER", 320, 80)
+	end
+	local title = holder:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	title:SetPoint("TOPLEFT", 8, -6)
+	title:SetText(L["Disenchant basket"])
+	local close = CreateFrame("Button", nil, holder)
+	close:SetSize(16, 16)
+	close:SetPoint("TOPRIGHT", -4, -3)
+	local x = close:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	x:SetPoint("CENTER")
+	x:SetText("x")
+	close:SetFontString(x)
+	close:SetScript("OnClick", function()
+		state.manual, state.auto = false, false
+		ns.UpdateBasket()
+	end)
+
 	local make = ns.FlatButton
 	if make then
-		button = make(UIParent, 170, 24, nil, BUTTON_NAME, "SecureActionButtonTemplate")
+		button = make(holder, 174, 24, "primary", BUTTON_NAME, "SecureActionButtonTemplate")
 	else
-		button = CreateFrame("Button", BUTTON_NAME, UIParent, "SecureActionButtonTemplate, UIPanelButtonTemplate")
-		button:SetSize(170, 24)
+		button = CreateFrame("Button", BUTTON_NAME, holder, "SecureActionButtonTemplate, UIPanelButtonTemplate")
+		button:SetSize(174, 24)
 	end
+	button:SetPoint("BOTTOM", 0, 8)
 	button:RegisterForClicks("AnyUp", "AnyDown")
-	button:SetText(L["Disenchant basket (%d)"]:format(0))
+	button:SetText(L["Disenchant (%d)"]:format(0))
 	button:SetScript("PreClick", Aim)
 	button:SetScript("PostClick", function() C_Timer.After(0, Clear) end)
 	button:HookScript("OnEnter", function(self)
@@ -150,27 +211,39 @@ local function Create()
 		GameTooltip:Show()
 	end)
 	button:HookScript("OnLeave", function(self) if GameTooltip:GetOwner() == self then GameTooltip:Hide() end end)
-	button:Hide()
+	holder:Hide()
 	return button
 end
 
 function ns.UpdateBasket()
 	if not button or InCombatLockdown() then return end
 	local n = #Contents()
-	button:SetText(L["Disenchant basket (%d)"]:format(n))
+	if n > state.last then state.auto = true end -- new basket items arrived in the bags
+	if n == 0 then state.auto = false end
+	state.last = n
+	button:SetText(L["Disenchant (%d)"]:format(n))
 	button:SetEnabled(n > 0)
-	if MailFrame and MailFrame:IsShown() and (n > 0 or (ns.db and ns.db.deBasket and next(ns.db.deBasket))) then
-		button:ClearAllPoints()
-		button:SetPoint("TOPLEFT", MailFrame, "TOPRIGHT", 4, -58)
-		button:Show()
+	holder:SetShown(KnowsDisenchant() and (state.manual or state.auto))
+end
+
+-- Menu entry: open or close the basket by hand.
+function ns.ToggleBasket()
+	if InCombatLockdown() then return end
+	Create()
+	if holder:IsShown() then
+		state.manual, state.auto = false, false
 	else
-		button:Hide()
+		state.manual = true
+		if not KnowsDisenchant() then
+			print("|cffd9a441VendorFloor|r: " .. L["This character cannot disenchant."])
+		end
 	end
+	ns.UpdateBasket()
 end
 
 local events = CreateFrame("Frame")
-for _, event in ipairs({ "PLAYER_LOGIN", "MAIL_SHOW", "MAIL_CLOSED", "MAIL_INBOX_UPDATE", "BAG_UPDATE_DELAYED",
-	"PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "LOOT_CLOSED" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "MAIL_CLOSED", "BAG_UPDATE_DELAYED", "PLAYER_REGEN_DISABLED",
+	"PLAYER_REGEN_ENABLED", "LOOT_CLOSED", "SPELLS_CHANGED", "SKILL_LINES_CHANGED" }) do
 	pcall(events.RegisterEvent, events, event)
 end
 events:SetScript("OnEvent", function(_, event)
@@ -178,6 +251,8 @@ events:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_LOGIN" then
 		Create()
 		if not InCombatLockdown() then Prune() end
+		state.last = #Contents() -- items already in the bags at login do not open the window
+		return
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		-- the bags may change in combat: no click may hit an item it was not aimed at
 		Clear()

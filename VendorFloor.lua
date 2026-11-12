@@ -2149,6 +2149,7 @@ local function BuildUI()
 		{ L["Your disenchants"], function() ns.ShowInfo(L["Your disenchants"], ns.DeLines()) end },
 		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], ns.SalesLines and ns.SalesLines() or {}) end },
 		{ L["Export for the website"], function() ns.ShowExport() end },
+		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
 		{ L["Settings"], function()
 			if ns.category and Settings and Settings.OpenToCategory then Settings.OpenToCategory(ns.category:GetID()) end
 		end },
