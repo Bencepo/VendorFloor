@@ -5,6 +5,8 @@
 - Minimum profit in percent right in the window: click for more, right-click for less. It also hides finds that are already listed.
 - New Menu button: statistics, your disenchants, your auctions, export and settings, without chat commands.
 - Wands made by enchanters are no longer offered as disenchant finds; an item the game refuses to disenchant is remembered and hidden too.
+- The saved finds follow every quick scan, check and purchase, not only the full scan: the next visit no longer starts with finds that are long gone, and new finds from quick scans are kept.
+- Every checked item updates its stored price (median and cheapest listings), so prices stay fresh between full scans.
 - The tooltip of a disenchant find says whether its value comes from your own disenchants or from the general table.
 
 ## 0.6.2-beta

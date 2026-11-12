@@ -200,6 +200,19 @@ local function NextVariant(d)
 	return true
 end
 
+-- The current finds are kept in the saved variables after every change (full scan, quick
+-- scan, check, purchase), so the next visit starts with what is really still there.
+local function SaveFinds()
+	if not (db and ahOpen) then return end
+	local keep = {}
+	for _, g in ipairs(order) do
+		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
+			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
+			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
+	end
+	db.lastFinds = { at = time(), list = keep }
+end
+
 local function RemoveDeal(d)
 	d.dropped = true
 	deals[d.k] = nil
@@ -207,6 +220,7 @@ local function RemoveDeal(d)
 		if order[i] == d then table.remove(order, i) end
 	end
 	if selected == d then selected = nil end
+	SaveFinds()
 end
 
 -- Best total profit first.
@@ -632,6 +646,7 @@ local function FinishCheck(d, offer)
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
+		SaveFinds()
 	else
 		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
 		if deals[d.k] then RemoveDeal(d) end
@@ -684,8 +699,35 @@ local function ItemOffer(d)
 	return { unit = best.unit, count = count, profit = profit, best = best }
 end
 
+-- The complete list of a checked item is a fresh price for it, like in a full scan.
+local function RecordCommodityPrices(d)
+	if not ns.RecordListing then return end
+	local a = {}
+	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
+		local info = AH.GetCommoditySearchResultInfo(d.id, i)
+		if info and info.unitPrice and info.quantity then
+			a[#a + 1] = { info.unitPrice, info.quantity, (info.numOwnerItems or 0) >= info.quantity or nil }
+		end
+	end
+	ns.RecordListing(d.plainKey or d.id, a)
+end
+
+local function RecordItemPrices(d)
+	if not ns.RecordListing then return end
+	local a = {}
+	for i = 1, AH.GetNumItemSearchResults(d.key) do
+		local info = AH.GetItemSearchResultInfo(d.key, i)
+		if info and info.buyoutAmount and info.buyoutAmount > 0 then
+			local q = max(info.quantity or 1, 1)
+			a[#a + 1] = { info.buyoutAmount / q, q, info.containsOwnerItem or nil }
+		end
+	end
+	ns.RecordListing(d.plainKey or d.id, a)
+end
+
 local function ReadCommodity()
 	local d = buy.deal
+	pcall(RecordCommodityPrices, d)
 	if buy.purpose == "check" then
 		FinishCheck(d, CommodityOffer(d))
 		return
@@ -703,6 +745,7 @@ end
 
 local function ReadItem()
 	local d = buy.deal
+	pcall(RecordItemPrices, d)
 	local offer = ItemOffer(d)
 	if buy.purpose == "check" then
 		FinishCheck(d, offer)
@@ -933,6 +976,21 @@ local function ListingLow(a)
 end
 
 -- Latest low price of a price key (from the last full scan or price check), or nil.
+local StorePrice
+
+-- Prices from a checked item's complete list of auctions (pk: price key or item ID).
+function ns.RecordListing(pk, a)
+	if type(pk) == "number" then pk = ns.PlainKey(pk) end
+	local med = pk and #a > 0 and ListingMedian(a)
+	if not med then return end
+	StorePrice(pk, med)
+	local low = ListingLow(a)
+	if low then
+		db.lows = db.lows or {}
+		db.lows[pk] = { floor(low + 0.5), time() }
+	end
+end
+
 local function StoreLow(pk, value)
 	db.lows = db.lows or {}
 	db.lows[pk] = { floor(value + 0.5), time() }
@@ -945,7 +1003,7 @@ local function LowValue(pk)
 end
 ns.LowValue = LowValue
 
-local function StorePrice(pk, value)
+function StorePrice(pk, value)
 	db.prices = db.prices or {}
 	local h = db.prices[pk] or {}
 	h[Today()] = floor(value + 0.5)
@@ -1358,14 +1416,8 @@ local function FinishFull(failed)
 	full.items = nil
 	ns.craftDirty = true
 	-- kept for the next visit: until the next full scan is allowed the finds come from here
-	local keep = {}
-	for _, g in pairs(found) do
-		keep[#keep + 1] = { k = g.k, key = g.key, plainKey = g.plainKey, id = g.id, vendor = g.vendor, price = g.price,
-			count = g.count, profit = g.profit, listed = g.listed, name = g.name, link = g.link, icon = g.icon,
-			mode = g.mode, commodity = g.commodity, variants = g.variants, vi = 1 }
-	end
-	db.lastFinds = { at = time(), list = keep }
 	SortDeals()
+	SaveFinds()
 	SetStatus(L["Full scan done: %d auctions. Vendor %d, disenchant %d finds."]:format(full.count or 0,
 		counts.vendor, counts.de))
 	if new > 0 then
@@ -2411,15 +2463,15 @@ function handlers.ADDON_LOADED(name)
 	if not ok then Print(tostring(err)) end
 end
 
--- The finds of the last full scan (up to an hour old), so the tabs are not empty until the
--- next full scan is allowed. Each is checked against the live auctions when clicked.
+-- The finds as last seen (full scan, quick scans and checks; up to an hour old), so the tabs
+-- are not empty until the next full scan is allowed. Each is checked again when clicked.
 local function RestoreFinds()
 	local last = db.lastFinds
 	if not (last and last.list and time() - (last.at or 0) < 3600) then return end
 	local age = time() - last.at
 	local n = 0
 	for _, g in ipairs(last.list) do
-		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or (g.mode == "de" and g.variants)) then
+		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or g.mode == "de") then
 			local d = {}
 			for field, value in pairs(g) do d[field] = value end
 			d.fullAt, d.stale = GetTime() - age, false
