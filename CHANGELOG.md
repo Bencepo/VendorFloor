@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.3
+
+- Full scans on a client with an empty item cache (a fresh install, or a client language you play for the first time: the cache is kept per language) found almost nothing, because most items had not loaded within 30 seconds. The scan now asks for each item once and keeps waiting as long as items keep arriving, up to 3 minutes.
+- Normal scans also pick up items whose data arrives later.
+
 ## 0.8.2
 
 - The disenchant basket is its own small window now, not a button on the mail window. It only appears for characters that can disenchant, and only when new disenchant purchases arrive in your bags, or when you open it by hand (Menu > Disenchant basket). It closes when it is empty or with its x, and you can drag it anywhere.

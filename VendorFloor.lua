@@ -1557,21 +1557,30 @@ local function FullTick(now)
 		for i = full.index, last do
 			if not FullRecord(i) then
 				full.pending[#full.pending + 1] = i
+				-- ask the client for each item once, not once per auction
 				local itemID = select(17, AH.GetReplicateItemInfo(i))
-				if itemID and C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
+				full.requested = full.requested or {}
+				if itemID and not full.requested[itemID] and C_Item and C_Item.RequestLoadItemDataByID then
+					full.requested[itemID] = true
+					C_Item.RequestLoadItemDataByID(itemID)
+				end
 			end
 		end
 		full.index = last + 1
 		SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
-		if full.index >= full.count then full.phase, full.loadT = "loading", now end
+		if full.index >= full.count then full.phase, full.loadT, full.progressT = "loading", now, now end
 	elseif full.phase == "loading" then
 		-- items the client had not loaded yet: up to 30 seconds more
+		-- A client with an empty item cache (fresh install, or a client language played for the
+		-- first time: the cache is per language) has to load almost every item. Keep waiting as
+		-- long as items keep arriving: up to 3 minutes, but stop after 20 seconds without progress.
 		local still = {}
 		for n, i in ipairs(full.pending) do
-			if n > FULL_PER_TICK or not FullRecord(i) then still[#still + 1] = i end
+			if n > FULL_PER_TICK * 5 or not FullRecord(i) then still[#still + 1] = i end
 		end
+		if #still < #full.pending then full.progressT = now end
 		full.pending = still
-		if still[1] and now - full.loadT < 30 then
+		if still[1] and now - full.loadT < 180 and now - (full.progressT or full.loadT) < 20 then
 			SetStatus(L["Full scan: loading item data (%d left) …"]:format(#still))
 		else
 			FinishFull()
@@ -2556,6 +2565,8 @@ function handlers.GET_ITEM_INFO_RECEIVED(id, success)
 		Refresh()
 	end
 end
+
+handlers.ITEM_DATA_LOAD_RESULT = handlers.GET_ITEM_INFO_RECEIVED
 
 function handlers.COMMODITY_SEARCH_RESULTS_UPDATED(id)
 	if buy.state == "verifying" and buy.deal and buy.deal.id == id then
