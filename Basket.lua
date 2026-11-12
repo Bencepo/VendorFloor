@@ -27,18 +27,13 @@ local function SpellName()
 end
 
 local function Slots(bag)
-	if C_Container and C_Container.GetContainerNumSlots then return C_Container.GetContainerNumSlots(bag) end
-	return GetContainerNumSlots and GetContainerNumSlots(bag) or 0
+	return C_Container.GetContainerNumSlots(bag) or 0
 end
 
 local function SlotInfo(bag, slot)
-	if C_Container and C_Container.GetContainerItemInfo then
-		local info = C_Container.GetContainerItemInfo(bag, slot)
-		if info then return info.itemID, info.stackCount or 1, info.isLocked, info.hyperlink end
-		return nil
-	end
-	local _, count, locked, _, _, _, link, _, _, itemID = GetContainerItemInfo(bag, slot)
-	return itemID, count, locked, link
+	local info = C_Container.GetContainerItemInfo(bag, slot)
+	if info then return info.itemID, info.stackCount or 1, info.isLocked, info.hyperlink end
+	return nil
 end
 
 local function Bags() return ns.BAGS or { 0, 1, 2, 3, 4 } end

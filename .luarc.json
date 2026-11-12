@@ -16,6 +16,7 @@
     "ERR_AUCTION_SOLD_S",
     "ERR_AUCTION_WON_S",
     "ERR_CANT_BE_DISENCHANTED",
+    "GetSpellInfo",
     "MailFrame",
     "MerchantFrame",
     "MinimalSliderWithSteppersMixin",
