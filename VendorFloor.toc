@@ -6,6 +6,7 @@
 ## Version: @project-version@
 ## X-License: All Rights Reserved
 ## X-Curse-Project-ID: 1797826
+## X-Wago-ID: v63QanGb
 ## SavedVariables: VendorFloorDB
 ## IconTexture: Interface\AddOns\VendorFloor\Icons\minimap
 ## AddonCompartmentFunc: VendorFloor_OnCompartmentClick
