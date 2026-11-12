@@ -38,3 +38,17 @@ jobs:
           echo "::notice title=luacheck::$(cat summary.txt) (exit $code)"
           if [ $code -ge 2 ]; then exit $code; fi
           exit 0
+
+  # Unit tests outside the game (busted, Lua 5.1 like WoW): tests/*_spec.lua
+  busted:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: leafo/gh-actions-lua@v11
+        with:
+          luaVersion: "5.1"
+      - uses: leafo/gh-actions-luarocks@v5
+      - name: Install busted
+        run: luarocks install busted
+      - name: Run tests
+        run: busted --output=utfTerminal

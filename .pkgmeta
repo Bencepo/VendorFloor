@@ -6,6 +6,8 @@ ignore:
   - "*.md"
   - .luacheckrc
   - web
+  - tests
+  - .busted
 
 manual-changelog:
   filename: CHANGELOG.md
