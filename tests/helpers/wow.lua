@@ -47,6 +47,8 @@ function M.Load(addon, files, setup)
 	env.ERR_AUCTION_SOLD_S = "A buyer has been found for your auction of %s."
 	env.ERR_AUCTION_EXPIRED_S = "Your auction of %s has expired."
 	env.ERR_CANT_BE_DISENCHANTED = "Item cannot be disenchanted"
+	env.ERR_AUCTION_WON_S = "You won an auction for %s"
+	env.INVTYPE_NON_EQUIP_IGNORE = "Non-equippable"
 	if setup then setup(env) end
 	setmetatable(env, { __index = function(_, k)
 		local v = _G[k]
