@@ -42,7 +42,7 @@ local function Bags() return ns.BAGS or { 0, 1, 2, 3, 4 } end
 local function Contents()
 	local db = DB()
 	local list = {}
-	if not (db and db.deBasket) then return list end
+	if not (db and db.deBasket and next(db.deBasket)) then return list end
 	local left = {}
 	for itemID, n in pairs(db.deBasket) do left[itemID] = n end
 	for _, bag in ipairs(Bags()) do
@@ -63,7 +63,7 @@ ns.BasketContents = Contents
 -- (with the button, by hand or by another addon), sold or traded.
 local function Prune()
 	local db = DB()
-	if not (db and db.deBasket) then return end
+	if not (db and db.deBasket and next(db.deBasket)) then return end
 	local inBags = {}
 	for _, bag in ipairs(Bags()) do
 		for slot = 1, Slots(bag) do

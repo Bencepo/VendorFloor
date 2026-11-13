@@ -344,7 +344,7 @@ local bagCounts, merchantOpen = nil, false
 local function CountBought()
 	local db = DB()
 	local c = {}
-	if not db then return c end
+	if not (db and next(db.bought)) then return c end
 	for _, bag in ipairs(BAGS) do
 		for slot = 1, NumSlots(bag) do
 			local itemID, count = ContainerItem(bag, slot)
@@ -454,11 +454,13 @@ events:SetScript("OnEvent", function(_, event)
 	elseif event == "MAIL_CLOSED" then
 		if collecting then StopCollecting() end
 		if mailButton then mailButton:Hide() end
-	elseif event == "BAG_UPDATE_DELAYED" or event == "PLAYER_ENTERING_WORLD" then
-		TrackBags()
+	elseif event == "BAG_UPDATE_DELAYED" then
+		-- sales are only counted at a merchant: no bag scan on every loot elsewhere
+		if merchantOpen then TrackBags() end
 	elseif event == "MERCHANT_SHOW" then
+		-- the bags as they are when the merchant opens are the starting point for sales
+		bagCounts = CountBought()
 		merchantOpen = true
-		TrackBags()
 		if not sellButton and MerchantFrame then
 			sellButton = MakeButton(MerchantFrame, Sell,
 				L["Sells the items VendorFloor bought, at most as many as it bought."], L["Sell purchases (%d)"]:format(0))
