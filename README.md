@@ -71,6 +71,8 @@ The release workflow checks the code with luacheck, tags the commit, builds the 
 
 All addons, live demos and the web pages: **https://bencepo.github.io**
 
+Like the addons? Support them on Ko-fi: **https://ko-fi.com/bencepo**
+
 - [LevelTrail](https://bencepo.github.io/leveltrail/): records your leveling run; the page shows splits, XP sources, deaths, records and a share image.
 - [ProcFlare](https://bencepo.github.io/procflare/): big Clearcasting alert and small icons for weapon, trinket and talent procs, with melee and caster sound packs.
 - [SwingCast](https://bencepo.github.io/swingcast/): spell icon, cast time, latency zone and a swing timer on the standard cast bar.
