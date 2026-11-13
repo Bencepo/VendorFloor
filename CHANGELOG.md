@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.6
+
+- Brighter icon that stays readable on the round minimap button.
+
 ## 0.8.5
 
 - New icon: a gold coin in a sniper reticle, for the minimap button and the addon list.
