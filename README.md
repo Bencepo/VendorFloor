@@ -2,6 +2,8 @@
 
 Auction house sniper for WoW Forever. Finds auctions that are worth more than they cost: below vendor price, below disenchant value, or the reagents for a profitable craft. It runs in its own small window next to Auctionator, and every purchase is your own click.
 
+**Website and live demo:** https://bencepo.github.io/vendorfloor/
+
 ## Features
 
 - **Vendor finds**: auctions listed below what a merchant pays. Buy, collect from the mail and sell at a merchant, each with one button.
@@ -64,6 +66,15 @@ Everything is also available in the window and the settings. For those who prefe
 Add a new version heading at the top of `CHANGELOG.md` (for example `## 0.9.0`) and push to `main`.
 The release workflow checks the code with luacheck, tags the commit, builds the zip and uploads it to CurseForge and Wago.
 `-beta` and `-alpha` versions are uploaded as beta and alpha files.
+
+## More addons by Bencepo
+
+All addons, live demos and the web pages: **https://bencepo.github.io**
+
+- [LevelTrail](https://bencepo.github.io/leveltrail/): records your leveling run; the page shows splits, XP sources, deaths, records and a share image.
+- [ProcFlare](https://bencepo.github.io/procflare/): big Clearcasting alert and small icons for weapon, trinket and talent procs, with melee and caster sound packs.
+- [SwingCast](https://bencepo.github.io/swingcast/): spell icon, cast time, latency zone and a swing timer on the standard cast bar.
+- [StatTrim](https://bencepo.github.io/stattrim/): hide, merge and reorder stats right inside the character window.
 
 ## AI disclosure
 

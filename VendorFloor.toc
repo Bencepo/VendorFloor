@@ -4,6 +4,7 @@
 ## Notes-deDE: Auktionshaus-Sniper: findet Auktionen unter Händlerpreis, unter Entzauberwert und profitable Rezepte. Kaufen, abholen und verkaufen mit je einem Klick. Läuft neben Auctionator.
 ## Author: Bencepo
 ## Version: @project-version@
+## X-Website: https://bencepo.github.io/vendorfloor/
 ## X-License: All Rights Reserved
 ## X-Curse-Project-ID: 1797826
 ## X-Wago-ID: v63QanGb
