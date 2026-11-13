@@ -65,6 +65,7 @@ local ahOpen = false
 local offset = 0
 local statusText = ""
 local ui
+local refreshSoon = false  -- the window is refreshed on the next tick
 
 local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady, StartCraftScan
 
@@ -1220,6 +1221,19 @@ for _, event in ipairs({ "UNIT_SPELLCAST_SENT", "UNIT_SPELLCAST_FAILED", "UNIT_S
 	"LOOT_OPENED", "LOOT_CLOSED", "BAG_UPDATE_DELAYED" }) do
 	pcall(deEvents.RegisterEvent, deEvents, event)
 end
+-- Only a Disenchant cast needs the bag snapshot, so other casts (combat!) skip the bag scan.
+-- Compared by name: Forever may use a spell ID of its own for it. When the cast cannot be
+-- told apart (no name, a hidden value), the snapshot is taken as before.
+local DE_SPELL_NAME = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(13262)
+local function IsDisenchantCast(spellID)
+	if InCombatLockdown() then return false end
+	if not (DE_SPELL_NAME and spellID) then return true end
+	if issecretvalue and issecretvalue(spellID) then return true end
+	local ok, name = pcall(C_Spell.GetSpellName, spellID)
+	if not ok or name == nil or (issecretvalue and issecretvalue(name)) then return true end
+	return name == DE_SPELL_NAME
+end
+
 -- UNIT_SPELLCAST_SENT: unit, target, castGUID, spellID; FAILED/INTERRUPTED: unit, castGUID, spellID
 deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
 	if event == "LOOT_READY" or event == "LOOT_OPENED" then
@@ -1231,7 +1245,7 @@ deEvents:SetScript("OnEvent", function(_, event, unit, _, a3, a4)
 		RetryPending()
 	elseif unit == "player" then
 		if event == "UNIT_SPELLCAST_SENT" then
-			deCast = { at = GetTime(), bags = BagCounts(), spell = a4 }
+			deCast = { at = GetTime(), bags = IsDisenchantCast(a4) and BagCounts() or nil, spell = a4 }
 		elseif deCast and a3 == deCast.spell then
 			deCast = nil
 		end
@@ -1595,6 +1609,10 @@ end
 
 local function Tick()
 	local now = GetTime()
+	if refreshSoon then
+		refreshSoon = false
+		Refresh()
+	end
 	if full.active then
 		FullTick(now)
 		return
@@ -1889,9 +1907,14 @@ local C = {
 }
 ns.C = C
 
+local FLAT_BACKDROP = { bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }
 local function Flat(frame, bg, border)
 	if not frame.SetBackdrop then Mixin(frame, BackdropTemplateMixin) end
-	frame:SetBackdrop({ bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 })
+	-- buttons restyle on every hover and state change: build the backdrop once, then only recolour
+	if not frame.vfFlat then
+		frame:SetBackdrop(FLAT_BACKDROP)
+		frame.vfFlat = true
+	end
 	frame:SetBackdropColor(unpack(bg or C.panel))
 	frame:SetBackdropBorderColor(unpack(border or C.line))
 end
@@ -2521,7 +2544,12 @@ end
 function handlers.AUCTION_HOUSE_CLOSED()
 	ahOpen = false
 	StopCraftScan()
-	full.active = false
+	-- the full scan's auction list can be large: let it go
+	full.active, full.items, full.pending, full.requested = false, nil, nil, nil
+	if buy.state == "quote_ok" or buy.state == "quoting" then CancelQuote() end
+	wipe(buy)
+	pendingSend, sentAt = nil, nil
+	scan.active, scan.nextAt = false, nil
 	if ui then ui:Hide() end
 	-- prices change while the auction house is closed: start the next visit empty
 	for i = #order, 1, -1 do RemoveDeal(order[i]) end
@@ -2562,7 +2590,7 @@ function handlers.GET_ITEM_INFO_RECEIVED(id, success)
 	pendingInfo[id] = nil
 	if success and VendorPrice(id) ~= nil then
 		for _, result in ipairs(results) do Evaluate(result) end
-		Refresh()
+		refreshSoon = true -- hundreds of items can arrive during a scan: one refresh per tick
 	end
 end
 

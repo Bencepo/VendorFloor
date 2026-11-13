@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.4
+
+- Less work outside the auction house: casting spells no longer reads the bags (only Disenchant does, and not in combat); looting no longer rescans the bags for the purchase tracker or an empty disenchant basket. Sales at a merchant are still counted.
+- The window redraws at most ten times a second while item data loads during a scan, and its buttons no longer rebuild their frame on every hover.
+- Closing the auction house now also ends a running scan, check or quote and frees the full scan's auction list.
+
 ## 0.8.3
 
 - Full scans on a client with an empty item cache (a fresh install, or a client language you play for the first time: the cache is kept per language) found almost nothing, because most items had not loaded within 30 seconds. The scan now asks for each item once and keeps waiting as long as items keep arriving, up to 3 minutes.
