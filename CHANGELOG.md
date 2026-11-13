@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.8.5
+
+- New icon: a gold coin in a sniper reticle, for the minimap button and the addon list.
+
 ## 0.8.4
 
 - Less work outside the auction house: casting spells no longer reads the bags (only Disenchant does, and not in combat); looting no longer rescans the bags for the purchase tracker or an empty disenchant basket. Sales at a merchant are still counted.
