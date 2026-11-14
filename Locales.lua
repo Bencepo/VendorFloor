@@ -164,7 +164,7 @@ L["Full scan: waiting for the auction house …"] = "Vollscan: warte auf das Auk
 L["Full scan: reading %d of %d auctions …"] = "Vollscan: lese %d von %d Auktionen …"
 L["Full scan: loading item data (%d left) …"] = "Vollscan: lade Gegenstandsdaten (noch %d) …"
 L["Full scan done: %d auctions read, %d finds below vendor price."] = "Vollscan fertig: %d Auktionen gelesen, %d Funde unter Händlerpreis."
-L["Full scan: the auction house did not answer. Try again in 15 minutes."] = "Vollscan: Das Auktionshaus hat nicht geantwortet. In 15 Minuten erneut versuchen."
+L["Full scan: the auction house did not answer. Another addon (e.g. Auctionator) may have used the full scan; VendorFloor reads its next one automatically. Try again in 15 minutes."] = "Vollscan: Das Auktionshaus hat nicht geantwortet. Vermutlich hat ein anderes Addon (z. B. Auctionator) den Vollscan schon genutzt; dessen nächsten liest VendorFloor automatisch mit. In 15 Minuten erneut versuchen."
 L["%d new finds below vendor price."] = "%d neue Funde unter Händlerpreis."
 
 -- Mail and merchant

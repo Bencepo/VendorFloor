@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1
+
+- Full scan works next to Auctionator again. The auction house allows one full scan every 15 minutes for everyone: when Auctionator (its full scan or autoscan) had just used it, the auction house ignored VendorFloor's request and the full scan waited 10 minutes for nothing. VendorFloor now reads the auction list of any full scan that arrives, also one Auctionator started, and gives up after 90 seconds instead of 10 minutes.
+- New "Report a bug" button in the settings window: shows the link to the issue page, ready to copy with Ctrl+C.
+
 ## 0.9.0
 
 - Settings in a window of their own instead of a page in the game's options: drag it anywhere, it stays open while you play and every change applies at once. Open it from the menu (Settings) or with `/vfloor options`; Options > AddOns > VendorFloor only points to it.

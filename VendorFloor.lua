@@ -27,7 +27,8 @@ local keyStyle = {}        -- itemID -> "plain" when gear is only found with the
 local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
 local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
-local FULL_WAIT = 10 * 60      -- seconds a full scan waits for the auction house to answer
+local FULL_WAIT = 90           -- seconds a full scan waits for the auction house to answer
+local FULL_REUSE = 15          -- after this many seconds without an answer, read a list already there
 local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
@@ -884,19 +885,34 @@ local function KeyFor(itemID, link)
 	return make(itemID, level or 0, suffix), plain
 end
 
+local function BeginFull(phase)
+	if buy.purpose == "check" then wipe(buy) end
+	pendingSend, sentAt = nil, nil
+	wipe(full)
+	full.active, full.phase, full.t0 = true, phase, GetTime()
+	full.items, full.pending, full.player = {}, {}, UnitName("player")
+	db.lastFull = time()
+end
+
 StartFull = function()
 	if not ahOpen then
 		Print(L["The auction house must be open."])
 		return
 	end
 	if full.active or scan.active or (buy.state and buy.purpose ~= "check") or not FullReady() then return end
-	if buy.purpose == "check" then wipe(buy) end
-	pendingSend, sentAt = nil, nil
-	wipe(full)
-	full.active, full.phase, full.t0 = true, "waiting", GetTime()
-	full.items, full.pending, full.player = {}, {}, UnitName("player")
-	db.lastFull = time()
+	BeginFull("waiting")
 	AH.ReplicateItems()
+	SetStatus(L["Full scan: waiting for the auction house …"])
+	Refresh()
+end
+
+-- A full scan started by another addon (Auctionator's full scan or autoscan) uses up the
+-- auction house's 15 minutes: the auction house then ignores ours. Its list is read instead.
+function ns.ReadForeignFull()
+	if not ahOpen or full.active or scan.active or (buy.state and buy.purpose ~= "check") then return end
+	if not FullReady() then return end -- the list of our own scan, arriving late
+	BeginFull("arriving")
+	full.count, full.stableAt = AH.GetNumReplicateItems(), GetTime()
 	SetStatus(L["Full scan: waiting for the auction house …"])
 	Refresh()
 end
@@ -1369,7 +1385,7 @@ end
 local function FinishFull(failed)
 	full.active = false
 	if failed then
-		SetStatus(L["Full scan: the auction house did not answer. Try again in 15 minutes."])
+		SetStatus(L["Full scan: the auction house did not answer. Another addon (e.g. Auctionator) may have used the full scan; VendorFloor reads its next one automatically. Try again in 15 minutes."])
 		Refresh()
 		return
 	end
@@ -1557,7 +1573,14 @@ end
 
 local function FullTick(now)
 	if full.phase == "waiting" then
-		if now - full.t0 > FULL_WAIT then FinishFull(true) end
+		-- no answer: the auction house may have ignored the request because another addon ran a
+		-- full scan within the last 15 minutes. Its list is still there: read that one.
+		local n = AH.GetNumReplicateItems()
+		if now - full.t0 > FULL_REUSE and n and n > 0 then
+			full.phase, full.count, full.stableAt = "arriving", n, now
+		elseif now - full.t0 > FULL_WAIT then
+			FinishFull(true)
+		end
 	elseif full.phase == "arriving" then
 		-- the list can arrive in parts: read it once it has stopped growing for two seconds
 		local n = AH.GetNumReplicateItems()
@@ -2426,8 +2449,9 @@ local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 290, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 300, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
+		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
 	local w = settingsWin
 	local function silver(v) return v .. " s" end
@@ -2463,7 +2487,7 @@ local function BuildSettings()
 			db.minSlot = v * 100
 		end, L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."], 190, silver)
 
-	w:Text(16, -236, L["Finer amounts and the other filters are set in the auction house window."], 488)
+	w:Text(16, -236, L["Finer amounts and the other filters are set in the auction house window."], 360)
 end
 
 function ns.ToggleSettings()
@@ -2574,6 +2598,8 @@ end
 function handlers.REPLICATE_ITEM_LIST_UPDATE()
 	if full.active and full.phase == "waiting" then
 		full.phase, full.count, full.stableAt = "arriving", AH.GetNumReplicateItems(), GetTime()
+	elseif not full.active and not craft.active then
+		ns.ReadForeignFull()
 	end
 end
 
