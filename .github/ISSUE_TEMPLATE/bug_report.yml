@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in VendorFloor does not work as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Short reports are fine, an error text helps the most.
+        No GitHub account? Leave a comment on [CurseForge](https://www.curseforge.com/wow/addons/vendorfloor#comments) instead.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Log in with a level 20 warrior
+        2. Type /vfloor
+        3. ...
+  - type: textarea
+    id: error
+    attributes:
+      label: Lua error text
+      description: Copy it from BugSack/BugGrabber, or turn errors on with `/console scriptErrors 1` and reproduce.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: VendorFloor version
+      description: Shown in the addon list or on the CurseForge file page.
+      placeholder: e.g. 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: character
+    attributes:
+      label: Class, level and realm type
+      placeholder: e.g. Druid 34, PvE
+  - type: textarea
+    id: addons
+    attributes:
+      label: Other addons
+      description: Especially ones that change the same part of the UI. Does the bug still happen with only VendorFloor enabled?

@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Comment on CurseForge
+    url: https://www.curseforge.com/wow/addons/vendorfloor#comments
+    about: No GitHub account? Questions and bug reports are welcome in the CurseForge comments too.
+  - name: Addon website
+    url: https://bencepo.github.io/
+    about: Guides, demos and the other addons by Bencepo.
