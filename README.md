@@ -14,7 +14,7 @@ Auction house sniper for WoW Forever. Finds auctions that are worth more than th
 - **Minimum profit** in copper, in percent and per bag slot, right in the window or in the settings.
 - **Ledger**: spent, sold and real profit per session, day and item, including sales made by junk-seller addons.
 - **Continuous mode, alerts and key bindings**: rescans on its own, announces new finds with an optional sound and taskbar flash; "Buy next find" and the disenchant basket work on a key.
-- **Minimap button and addon menu**, settings under Options > AddOns > VendorFloor.
+- **Minimap button and addon menu.** Settings in a window of their own (menu > Settings, or `/vfloor options`): drag it anywhere, it stays open while you play and changes apply at once.
 - **English and German**: follows the game client's language.
 
 ## Usage

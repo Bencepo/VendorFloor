@@ -2182,9 +2182,7 @@ local function BuildUI()
 		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], ns.SalesLines and ns.SalesLines() or {}) end },
 		{ L["Export for the website"], function() ns.ShowExport() end },
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
-		{ L["Settings"], function()
-			if ns.category and Settings and Settings.OpenToCategory then Settings.OpenToCategory(ns.category:GetID()) end
-		end },
+		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
 		local b = FlatButton(menu, 190, 24)
@@ -2417,69 +2415,72 @@ function ns.OpenTab(mode)
 end
 
 ---------------------------------------------------------------------------
--- Settings under Options > AddOns. No predicates or proxy getters: they would run
--- addon code inside Blizzard's options search.
+-- Settings: a window of its own (BencepoUI) that can be dragged anywhere and stays
+-- open while you play. Options > AddOns > VendorFloor only points to it. No
+-- predicates or proxy getters there: they would run addon code inside Blizzard's
+-- options search.
 ---------------------------------------------------------------------------
 
+local settingsWin
+local function BuildSettings()
+	local UI = _G.LibStub("BencepoUI-1.0")
+	settingsWin = UI:CreateWindow({
+		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
+		subtitle = ns.VERSION, width = 520, height = 290, theme = C, accent = C.gold,
+		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
+	})
+	local w = settingsWin
+	local function silver(v) return v .. " s" end
+	local function percent(v) return v .. " %" end
+
+	local X = 16
+	w:Header(X, -48, L["Alerts"])
+	w:Check(X, -72, L["Alert sound"], L["Play a sound when a new find appears."],
+		function() return db.sound end, function(v) db.sound = v end)
+	w:Check(X, -96, L["Flash the taskbar"], L["Flash the game's taskbar icon on new finds while the game is in the background."],
+		function() return db.flash end, function(v) db.flash = v end)
+	w:Header(X, -132, L["Scanning"])
+	w:Check(X, -156, L["Continuous mode"], L["Scan again automatically after each round."],
+		function() return db.loop end, function(v)
+			db.loop = v
+			if not v then scan.nextAt = nil end
+			if ui then ui.loop:SetChecked(v and true or false) end
+		end)
+	w:Slider(X, -186, L["Pause between rounds (seconds)"], 5, 120, 5, function() return db.interval end,
+		function(v) db.interval = v end, L["How long continuous mode waits before the next round."], 190,
+		function(v) return v .. " s" end)
+
+	X = 270
+	w:Header(X, -48, L["Profit"])
+	w:Slider(X, -72, L["Minimum profit per unit (silver)"], 0, 500, 1, function() return db.minProfitSilver end,
+		function(v) SetMinProfit(v * 100) end,
+		L["How far below the vendor price an auction must be. Finer amounts can be typed into the window."], 190, silver)
+	w:Slider(X, -112, L["Minimum profit in percent"], 0, 100, 5, function() return db.minPercent end,
+		function(v) db.minPercent = v end, L["Profit in percent of the price, for every tab. 0 turns it off."], 190, percent)
+	w:Slider(X, -152, L["Minimum profit per bag slot (silver)"], 0, 500, 5, function() return db.minSlotSilver or 0 end,
+		function(v)
+			db.minSlotSilver = v
+			db.minSlot = v * 100
+		end, L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."], 190, silver)
+
+	w:Text(16, -236, L["Finer amounts and the other filters are set in the auction house window."], 488)
+end
+
+function ns.ToggleSettings()
+	if not settingsWin then BuildSettings() end
+	settingsWin:Toggle()
+end
+
 local function RegisterSettings()
-	if not (Settings and Settings.RegisterVerticalLayoutCategory and Settings.RegisterAddOnSetting) then return end
-	local category = Settings.RegisterVerticalLayoutCategory("VendorFloor")
-
-	local sound = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_SOUND", "sound", db,
-		Settings.VarType.Boolean, L["Alert sound"], defaults.sound)
-	Settings.CreateCheckbox(category, sound, L["Play a sound when a new find appears."])
-
-	local loop = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_LOOP", "loop", db,
-		Settings.VarType.Boolean, L["Continuous mode"], defaults.loop)
-	Settings.CreateCheckbox(category, loop, L["Scan again automatically after each round."])
-	loop:SetValueChangedCallback(function(_, value)
-		if not value then scan.nextAt = nil end
-		if ui then ui.loop:SetChecked(value and true or false) end
-	end)
-
-	local interval = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_INTERVAL", "interval", db,
-		Settings.VarType.Number, L["Pause between rounds (seconds)"], defaults.interval)
-	local intervalOptions = Settings.CreateSliderOptions(5, 120, 5)
-	if intervalOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
-		intervalOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
+	if not (Settings and Settings.RegisterVerticalLayoutCategory and Settings.RegisterAddOnCategory) then return end
+	local category, layout = Settings.RegisterVerticalLayoutCategory("VendorFloor")
+	if layout and CreateSettingsButtonInitializer then
+		layout:AddInitializer(CreateSettingsButtonInitializer(L["VendorFloor has its own settings window"], L["Open"], function()
+			if SettingsPanel and SettingsPanel:IsShown() then HideUIPanel(SettingsPanel) end
+			if not settingsWin then BuildSettings() end
+			settingsWin:Show()
+		end, L["Opens the VendorFloor settings. The window can be dragged anywhere and stays open while you play."], true))
 	end
-	Settings.CreateSlider(category, interval, intervalOptions, L["How long continuous mode waits before the next round."])
-
-	local profit = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_MINPROFIT", "minProfitSilver", db,
-		Settings.VarType.Number, L["Minimum profit per unit (silver)"], defaults.minProfitSilver)
-	local profitOptions = Settings.CreateSliderOptions(0, 500, 1)
-	if profitOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
-		profitOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
-	end
-	Settings.CreateSlider(category, profit, profitOptions,
-		L["How far below the vendor price an auction must be. Finer amounts can be typed into the window."])
-	profit:SetValueChangedCallback(function(_, value)
-		SetMinProfit((tonumber(value) or 0) * 100)
-	end)
-
-	local percent = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_MINPERCENT", "minPercent", db,
-		Settings.VarType.Number, L["Minimum profit in percent"], defaults.minPercent)
-	local percentOptions = Settings.CreateSliderOptions(0, 100, 5)
-	if percentOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
-		percentOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
-	end
-	Settings.CreateSlider(category, percent, percentOptions,
-		L["Profit in percent of the price, for every tab. 0 turns it off."])
-
-	local slotSetting = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_MINSLOT", "minSlotSilver", db,
-		Settings.VarType.Number, L["Minimum profit per bag slot (silver)"], 0)
-	local slotOptions = Settings.CreateSliderOptions(0, 500, 5)
-	if slotOptions.SetLabelFormatter and MinimalSliderWithSteppersMixin then
-		slotOptions:SetLabelFormatter(MinimalSliderWithSteppersMixin.Label.Right)
-	end
-	Settings.CreateSlider(category, slotSetting, slotOptions,
-		L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."])
-	slotSetting:SetValueChangedCallback(function(_, value) db.minSlot = (tonumber(value) or 0) * 100 end)
-
-	local flash = Settings.RegisterAddOnSetting(category, "VENDORFLOOR_FLASH", "flash", db,
-		Settings.VarType.Boolean, L["Flash the taskbar"], defaults.flash)
-	Settings.CreateCheckbox(category, flash, L["Flash the game's taskbar icon on new finds while the game is in the background."])
-
 	Settings.RegisterAddOnCategory(category)
 	ns.category = category
 end
@@ -2787,10 +2788,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		db.point = nil
 		if ui and ui:IsShown() then PlaceWindow() end
 		Print(L["Window position reset."])
-	elseif cmd == "options" then
-		if ns.category and Settings and Settings.OpenToCategory then
-			Settings.OpenToCategory(ns.category:GetID())
-		end
+	elseif cmd == "options" or cmd == "settings" then
+		ns.ToggleSettings()
 	elseif cmd == "" then
 		if not ahOpen then
 			Print(L["The auction house must be open."])

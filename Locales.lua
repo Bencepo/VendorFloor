@@ -275,3 +275,13 @@ L["Purchase failed (%s). This auction is skipped."] = "Kauf fehlgeschlagen (%s).
 L["Disenchant basket"] = "Entzauber-Korb"
 L["Disenchant (%d)"] = "Entzaubern (%d)"
 L["This character cannot disenchant."] = "Dieser Charakter kann nicht entzaubern."
+
+-- Settings window
+L["drag to move, changes apply live"] = "zum Verschieben ziehen, Änderungen wirken sofort"
+L["Alerts"] = "Hinweise"
+L["Scanning"] = "Suche"
+L["Profit"] = "Gewinn"
+L["Finer amounts and the other filters are set in the auction house window."] = "Feinere Beträge und die übrigen Filter stellst du im Auktionshaus-Fenster ein."
+L["VendorFloor has its own settings window"] = "VendorFloor hat ein eigenes Einstellungsfenster"
+L["Open"] = "Öffnen"
+L["Opens the VendorFloor settings. The window can be dragged anywhere and stays open while you play."] = "Öffnet die Einstellungen von VendorFloor. Das Fenster lässt sich frei verschieben und bleibt beim Spielen offen."

@@ -11,6 +11,7 @@
   "diagnostics.globals": [
     "ATTACHMENTS_MAX_RECEIVE",
     "AuctionHouseFrame",
+    "CreateSettingsButtonInitializer",
     "DEFAULT_CHAT_FRAME",
     "ERR_AUCTION_EXPIRED_S",
     "ERR_AUCTION_SOLD_S",
@@ -23,6 +24,7 @@
     "ProfessionsFrame",
     "SOUNDKIT",
     "Settings",
+    "SettingsPanel",
     "SlashCmdList",
     "TradeSkillFrame",
     "UISpecialFrames"
