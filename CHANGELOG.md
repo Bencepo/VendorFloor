@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3
+
+- Full scan works again. The request went out while a search was still under way, and the auction house drops such a request without an answer. VendorFloor now sends it once the auction house is free and sends it again if it is dropped.
+- The full scan button can be clicked while a scan is running: the click stops the scan, continuous mode picks up again after the full scan.
+- When a full scan cannot start, the status line says why.
+
 ## 0.9.2
 
 - Full scan fixed for real: the auction house only answers a full scan started by a click. Continuous mode started it on its own, so the request was silently ignored and the scan hung on "waiting". Continuous mode now leaves the full scan to you: the button lights up when one is allowed. An unanswered full scan no longer blocks the button for 15 minutes.

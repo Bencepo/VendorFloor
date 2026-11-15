@@ -899,14 +899,35 @@ local function BeginFull(phase)
 	db.lastFull = time()
 end
 
+-- Ask the auction house for every auction (counts the tries: a dropped one is sent again).
+local function SendFull(now)
+	full.phase, full.t0, full.sends = "waiting", now, (full.sends or 0) + 1
+	AH.ReplicateItems()
+end
+
 StartFull = function()
 	if not ahOpen then
 		Print(L["The auction house must be open."])
 		return
 	end
-	if full.active or scan.active or (buy.state and buy.purpose ~= "check") or not FullReady() then return end
-	BeginFull("waiting")
-	AH.ReplicateItems()
+	if full.active then return end
+	if not FullReady() then
+		SetStatus(L["The full scan is available every 15 minutes."])
+		return
+	end
+	if buy.state and buy.purpose ~= "check" then
+		SetStatus(L["Full scan: finish the purchase first."])
+		return
+	end
+	-- the click wins over a running scan (continuous mode picks up again afterwards)
+	if scan.active then StopScan() end
+	wipe(queue)
+	wipe(queued)
+	-- The request is one of the auction house's throttled messages: sent while a search is
+	-- still under way it is dropped without an answer. Send it now if the line is free,
+	-- otherwise as soon as it is (FullTick).
+	BeginFull("sending")
+	if AH.IsThrottledMessageSystemReady() then SendFull(GetTime()) end
 	SetStatus(L["Full scan: waiting for the auction house …"])
 	Refresh()
 end
@@ -1581,7 +1602,10 @@ local function CraftTick(now)
 end
 
 local function FullTick(now)
-	if full.phase == "waiting" then
+	if full.phase == "sending" then
+		-- a search was still under way: wait for the line, at most 10 seconds
+		if AH.IsThrottledMessageSystemReady() or now - full.t0 > 10 then SendFull(now) end
+	elseif full.phase == "waiting" then
 		-- no answer: the auction house may have ignored the request because another addon ran a
 		-- full scan within the last 15 minutes. Its list is still there: read that one.
 		local n = AH.GetNumReplicateItems()
@@ -1896,7 +1920,7 @@ function ns.UpdateFullButton()
 		if ui.full.SetOn then ui.full:SetOn(false) end
 	elseif FullReady() then
 		ui.full:SetText(L["Full scan"])
-		ui.full:SetEnabled(not scan.active and not (buy.state and buy.purpose ~= "check"))
+		ui.full:SetEnabled(not (buy.state and buy.purpose ~= "check"))
 		-- ready: shown switched on, it has to be clicked (the auction house wants a click)
 		if ui.full.SetOn then ui.full:SetOn(true) end
 	else
@@ -2621,6 +2645,11 @@ function handlers.AUCTION_HOUSE_BROWSE_FAILURE()
 end
 
 function handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
+	-- the full scan request was dropped: send it again (three tries)
+	if full.active and full.phase == "waiting" and (full.sends or 0) < 3 and GetTime() - full.t0 < 10 then
+		full.phase, full.t0 = "sending", GetTime()
+		return
+	end
 	if lastSend and (scan.active or buy.state == "verifying") then pendingSend = lastSend end
 end
 
@@ -2816,6 +2845,9 @@ SlashCmdList.VENDORFLOOR = function(msg)
 			tostring(scan.active), scan.round or 0, scan.seen or 0, #queue, tostring(scan.checkTotal), tostring(buy.state),
 			tostring(buy.purpose), tostring(pendingSend ~= nil), tostring(AH.IsThrottledMessageSystemReady()),
 			tostring(full.active), tostring(full.phase), tostring(scan.nextAt and floor(scan.nextAt - GetTime())), tostring(ahOpen)))
+		Print(("full: sends=%s waiting=%ss replicate=%s lastFull=%ss ago"):format(tostring(full.sends),
+			tostring(full.t0 and floor(GetTime() - full.t0)), tostring(AH.GetNumReplicateItems and AH.GetNumReplicateItems()),
+			tostring(db.lastFull and time() - db.lastFull)))
 	elseif cmd == "minimap" then
 		Print(ns.ToggleMinimap() and L["Minimap button shown."] or L["Minimap button hidden."])
 	elseif cmd == "full" then
@@ -2850,5 +2882,5 @@ ns.test = {
 	ParseMoney = ParseMoney, ListingMedian = ListingMedian, ListingLow = ListingLow, Worth = Worth,
 	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
 	IsDisenchantCast = IsDisenchantCast, StartFull = function() StartFull() end, NextRound = function() NextRound() end,
-	FullTick = FullTick, Full = function() return full end, handlers = handlers,
+	FullTick = FullTick, Full = function() return full end, Scan = function() return scan end, handlers = handlers,
 }

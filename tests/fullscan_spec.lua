@@ -3,17 +3,17 @@ local wow = require("tests.helpers.wow")
 -- The full scan (every auction at once): continuous mode, a list from another addon,
 -- an unanswered request.
 describe("full scan", function()
-	local ns, env, T, db, replicated, requests
+	local ns, env, T, db, replicated, requests, ready
 
 	before_each(function()
-		replicated, requests = 0, 0
+		replicated, requests, ready = 0, 0, true
 		ns, env = wow.Load("VendorFloor", { "Locales.lua", "VendorFloor.lua" }, function(e)
 			e.VendorFloorDB = {}
 			e.C_AuctionHouse = {
 				MakeItemKey = function(id) return { itemID = id, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 } end,
 				ReplicateItems = function() requests = requests + 1 end,
 				GetNumReplicateItems = function() return replicated end,
-				IsThrottledMessageSystemReady = function() return true end,
+				IsThrottledMessageSystemReady = function() return ready end,
 			}
 		end)
 		T = ns.test
@@ -27,6 +27,37 @@ describe("full scan", function()
 		assert.is_true(T.Full().active)
 		assert.equal("waiting", T.Full().phase)
 		assert.equal(1, requests)
+	end)
+
+	it("the click wins over a running scan", function()
+		T.Scan().active = true
+		T.StartFull()
+		assert.equal(1, requests)
+		assert.is_false(T.Scan().active)
+		assert.is_true(T.Full().active)
+	end)
+
+	it("waits until a running search is answered", function()
+		ready = false
+		T.StartFull()
+		assert.equal(0, requests)
+		assert.equal("sending", T.Full().phase)
+		env.now = 1
+		T.FullTick(env.now)
+		assert.equal(0, requests)
+		ready = true
+		env.now = 2
+		T.FullTick(env.now)
+		assert.equal(1, requests)
+		assert.equal("waiting", T.Full().phase)
+	end)
+
+	it("sends a dropped request again", function()
+		T.StartFull()
+		T.handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
+		env.now = 1
+		T.FullTick(env.now)
+		assert.equal(2, requests)
 	end)
 
 	it("is never started by continuous mode", function()
