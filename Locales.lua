@@ -164,7 +164,7 @@ L["Full scan: waiting for the auction house …"] = "Vollscan: warte auf das Auk
 L["Full scan: reading %d of %d auctions …"] = "Vollscan: lese %d von %d Auktionen …"
 L["Full scan: loading item data (%d left) …"] = "Vollscan: lade Gegenstandsdaten (noch %d) …"
 L["Full scan done: %d auctions read, %d finds below vendor price."] = "Vollscan fertig: %d Auktionen gelesen, %d Funde unter Händlerpreis."
-L["Full scan: the auction house did not answer. Another addon (e.g. Auctionator) may have used the full scan; VendorFloor reads its next one automatically. Try again in 15 minutes."] = "Vollscan: Das Auktionshaus hat nicht geantwortet. Vermutlich hat ein anderes Addon (z. B. Auctionator) den Vollscan schon genutzt; dessen nächsten liest VendorFloor automatisch mit. In 15 Minuten erneut versuchen."
+L["Full scan: the auction house did not answer. Click \"Full scan\" to try again."] = "Vollscan: Das Auktionshaus hat nicht geantwortet. Klicke erneut auf \"Vollscan\"."
 L["%d new finds below vendor price."] = "%d neue Funde unter Händlerpreis."
 
 -- Mail and merchant
@@ -265,7 +265,6 @@ L["Bought: %s ×%d for %s (disenchanting brings about %s)."] = "Gekauft: %s ×%d
 L["DE ~"] = "DE ~"
 
 -- Disenchant basket
-L["Disenchant"] = "Entzaubern"
 L["Disenchant basket (%d)"] = "Entzauber-Korb (%d)"
 L["Disenchants the next item you bought on the disenchant tab: one click per item."] = "Entzaubert den nächsten Gegenstand, den du im Entzaubern-Reiter gekauft hast: ein Klick pro Gegenstand."
 L["Key: %s"] = "Taste: %s"
@@ -280,7 +279,6 @@ L["This character cannot disenchant."] = "Dieser Charakter kann nicht entzaubern
 L["drag to move, changes apply live"] = "zum Verschieben ziehen, Änderungen wirken sofort"
 L["Alerts"] = "Hinweise"
 L["Scanning"] = "Suche"
-L["Profit"] = "Gewinn"
 L["Finer amounts and the other filters are set in the auction house window."] = "Feinere Beträge und die übrigen Filter stellst du im Auktionshaus-Fenster ein."
 L["VendorFloor has its own settings window"] = "VendorFloor hat ein eigenes Einstellungsfenster"
 L["Open"] = "Öffnen"

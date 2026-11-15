@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.2
+
+- Full scan fixed for real: the auction house only answers a full scan started by a click. Continuous mode started it on its own, so the request was silently ignored and the scan hung on "waiting". Continuous mode now leaves the full scan to you: the button lights up when one is allowed. An unanswered full scan no longer blocks the button for 15 minutes.
+- Merchant sales are only counted for items you sell (right-click or drop on the merchant), not for items split, moved or destroyed while the merchant is open.
+- Mail collection also uses the free slots of the reagent bag.
+- Disenchant purchases are counted down correctly when collected from the mail.
+- Own-auction chat lines with positional placeholders (other client languages) are recognised.
+- Ledger page: losing days hang below the zero line in the share image; the "Fastest sellers" bars match their labels.
+- Several guards against missing game APIs and early calls.
+
 ## 0.9.1
 
 - Full scan works next to Auctionator again. The auction house allows one full scan every 15 minutes for everyone: when Auctionator (its full scan or autoscan) had just used it, the auction house ignored VendorFloor's request and the full scan waited 10 minutes for nothing. VendorFloor now reads the auction list of any full scan that arrives, also one Auctionator started, and gives up after 90 seconds instead of 10 minutes.

@@ -167,6 +167,7 @@ end
 
 function ns.TotalLine()
 	local db = DB()
+	if not (db and db.total) then return "" end
 	local t = db.total
 	local _, unsold = ns.Unsold()
 	local line = L["Total: %d buys, spent %s, sold %s, profit %s, still to sell %s"]:format(t.buys or 0,
@@ -208,7 +209,7 @@ local ATTACHMENTS = ATTACHMENTS_MAX_RECEIVE or 16
 
 local function FreeSlots()
 	local free = 0
-	for bag = 0, 4 do
+	for _, bag in ipairs(BAGS) do
 		local n = C_Container.GetContainerNumFreeSlots(bag) or 0
 		free = free + (n or 0)
 	end
@@ -283,7 +284,7 @@ driver:SetScript("OnUpdate", function(self)
 	end
 	local _, itemID, _, count = GetInboxItem(i, a)
 	local db = DB()
-	if itemID and db.debought and db.debought[itemID] and not db.bought[itemID] then
+	if itemID and db.debought and db.debought[itemID] then
 		local left = db.debought[itemID] - (count or 1)
 		db.debought[itemID] = left > 0 and left or nil
 	end
@@ -340,6 +341,31 @@ end
 -- The counts are kept up to date outside the merchant, so a sale right when the merchant
 -- opens is counted as well.
 local bagCounts, merchantOpen = nil, false
+-- Items handed to the merchant (right-click or dropped on the merchant window): only their
+-- count going down is a sale. Splitting, destroying or moving items is not.
+local handed = {}
+local cursorItem
+if C_Container and hooksecurefunc then
+	if C_Container.UseContainerItem then
+		hooksecurefunc(C_Container, "UseContainerItem", function(bag, slot)
+			if not merchantOpen then return end
+			local info = C_Container.GetContainerItemInfo(bag, slot)
+			if info and info.itemID then handed[info.itemID] = true end
+		end)
+	end
+	if C_Container.PickupContainerItem then
+		hooksecurefunc(C_Container, "PickupContainerItem", function(bag, slot)
+			local info = merchantOpen and C_Container.GetContainerItemInfo(bag, slot)
+			cursorItem = info and info.itemID or nil
+		end)
+	end
+end
+if hooksecurefunc and PickupMerchantItem then
+	hooksecurefunc("PickupMerchantItem", function()
+		if merchantOpen and cursorItem then handed[cursorItem] = true end
+		cursorItem = nil
+	end)
+end
 
 local function CountBought()
 	local db = DB()
@@ -360,7 +386,7 @@ local function TrackBags()
 		local sold = false
 		for itemID, before in pairs(bagCounts) do
 			local gone = before - (now[itemID] or 0)
-			local price = gone > 0 and SellPrice(itemID)
+			local price = gone > 0 and handed[itemID] and SellPrice(itemID)
 			if price and price > 0 then
 				ns.RecordSale(itemID, gone, price * gone)
 				sold = true
@@ -368,6 +394,7 @@ local function TrackBags()
 		end
 		if sold then now = CountBought() end
 	end
+	wipe(handed)
 	bagCounts = now
 end
 

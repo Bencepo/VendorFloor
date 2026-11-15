@@ -27,11 +27,12 @@ local function SpellName()
 end
 
 local function Slots(bag)
+	if not (C_Container and C_Container.GetContainerNumSlots) then return 0 end
 	return C_Container.GetContainerNumSlots(bag) or 0
 end
 
 local function SlotInfo(bag, slot)
-	local info = C_Container.GetContainerItemInfo(bag, slot)
+	local info = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
 	if info then return info.itemID, info.stackCount or 1, info.isLocked, info.hyperlink end
 	return nil
 end
@@ -141,7 +142,7 @@ local function SavePosition()
 	local db = DB()
 	if not (db and holder) then return end
 	local point, _, relPoint, x, y = holder:GetPoint(1)
-	db.basketPos = { point, relPoint, x, y }
+	if point then db.basketPos = { point, relPoint, x, y } end
 end
 
 local function Create()

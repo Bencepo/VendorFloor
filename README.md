@@ -64,7 +64,7 @@ Everything is also available in the window and the settings. For those who prefe
 ## Releasing
 
 Add a new version heading at the top of `CHANGELOG.md` (for example `## 0.9.0`) and push to `main`.
-The release workflow checks the code with luacheck, tags the commit, builds the zip and uploads it to CurseForge and Wago.
+The release workflow checks the code with luacheck and LuaLS (with the WoW API annotations), tags the commit, builds the zip and uploads it to CurseForge and Wago.
 `-beta` and `-alpha` versions are uploaded as beta and alpha files.
 
 ## Feedback and bug reports

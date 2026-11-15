@@ -61,7 +61,8 @@ end
 -- "A buyer has been found for your auction of %s." -> Lua pattern with one capture
 local function Pattern(fmt)
 	if type(fmt) ~= "string" then return nil end
-	local p = fmt:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%%%s", "(.+)")
+	-- "%s" and positional "%1$s" both become the capture
+	local p = fmt:gsub("([%(%)%.%%%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%%%%d+%%%$s", "(.+)"):gsub("%%%%s", "(.+)")
 	return "^" .. p .. "$"
 end
 local SOLD, EXPIRED = Pattern(ERR_AUCTION_SOLD_S), Pattern(ERR_AUCTION_EXPIRED_S)

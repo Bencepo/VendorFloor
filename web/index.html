@@ -242,8 +242,12 @@ function drawCard(d, K) {
     ctx.fillStyle = "#a89a80"; ctx.font = `600 16px ${F}`; ctx.fillText(t[0], x + 20, y + 38);
     ctx.fillStyle = "#f5d68a"; ctx.font = `800 ${t[1].length > 10 ? 26 : 40}px ${F}`; ctx.fillText(t[1], x + 20, y + 92); });
   const days = arr(d.days).slice(-30), cx = 60, cy = 390, cw = 1080, ch = 150;
-  if (days.length) { const pr = days.map(x => (+x.sold || 0) - (+x.soldCost || 0)), max = Math.max(1, ...pr.map(Math.abs)), bw = Math.min(60, cw / days.length);
-    pr.forEach((v, i) => { const h = Math.max(3, Math.abs(v) / max * ch); ctx.fillStyle = v < 0 ? "#e0705c" : "#5fb07a"; roundRect(ctx, cx + i * bw + bw * .15, cy + ch - h, bw * .7, h, 3); ctx.fill(); });
+  if (days.length) { const pr = days.map(x => (+x.sold || 0) - (+x.soldCost || 0)), bw = Math.min(60, cw / days.length);
+    // gains rise from the zero line, losses hang below it
+    const up = Math.max(0, ...pr), down = Math.max(0, ...pr.map(v => -v)), span = Math.max(1, up + down);
+    const zero = down ? cy + ch * up / span : cy + ch;
+    if (down) { ctx.fillStyle = "rgba(168,154,128,.4)"; ctx.fillRect(cx, zero - 1, cw, 2); }
+    pr.forEach((v, i) => { const h = Math.max(3, Math.abs(v) / (down ? span : Math.max(1, up)) * ch); ctx.fillStyle = v < 0 ? "#e0705c" : "#5fb07a"; roundRect(ctx, cx + i * bw + bw * .15, v < 0 ? zero : zero - h, bw * .7, h, 3); ctx.fill(); });
     ctx.fillStyle = "#a89a80"; ctx.font = `400 18px ${F}`; ctx.fillText(`Profit per day, last ${days.length} day${days.length === 1 ? "" : "s"}`, cx, cy + ch + 32); }
   ctx.fillStyle = "#e0b45a"; ctx.font = `700 22px ${F}`; ctx.textAlign = "right"; ctx.fillText("VendorFloor · bencepo.github.io", W - 60, H - 44); ctx.textAlign = "left";
   if (LOGO.complete && LOGO.naturalWidth) ctx.drawImage(LOGO, W - 140, 44, 84, 84);
@@ -269,7 +273,8 @@ function render() {
   const days = arr(d.days);
   const best = days.length ? days.reduce((a, x) => ((+x.sold || 0) - (+x.soldCost || 0) > (+a.sold || 0) - (+a.soldCost || 0) ? x : a)) : null;
   const slow = [...sold].filter(it => it.heldUnits).sort((a, b) => b.heldSec / b.heldUnits - a.heldSec / a.heldUnits).slice(0, 6);
-  const fast = [...sold].filter(it => it.heldUnits && it.profit > 0).sort((a, b) => b.profit / Math.max(.25, b.heldSec / 3600) - a.profit / Math.max(.25, a.heldSec / 3600)).slice(0, 6);
+  const rate = it => it.profit / Math.max(.25, it.heldSec / 3600);
+  const fast = [...sold].filter(it => it.heldUnits && it.profit > 0).sort((a, b) => rate(b) - rate(a)).slice(0, 6);
   $("view").innerHTML = `
   <div class="charhead"><div><h1 style="color:var(--gold)">${demo ? "Demo ledger" : esc((d.char && d.char.name) || "Your ledger")}</h1>
     <div class="sub">VendorFloor ${esc(d.version || "")} · export from ${esc(d.date || "")} · counts all characters on the account</div></div>
@@ -300,7 +305,7 @@ function render() {
   <div class="grid2">
     ${slow.length ? `<section class="card"><h2>Waiting longest in your bags</h2><div class="bars">${slow.map(it => barRow(esc(it.name || it.id), it.heldSec / it.heldUnits, slow[0].heldSec / slow[0].heldUnits, dur(it.heldSec / it.heldUnits), "#e0705c")).join("")}</div>
       <p class="small">Cheap but slow goods block bag space. Raise the minimum profit if these are not worth it.</p></section>` : `<section class="card"><h2>Waiting longest in your bags</h2><div class="empty">Shown once goods are sold.</div></section>`}
-    ${fast.length ? `<section class="card"><h2>Fastest sellers</h2><div class="bars">${fast.map(it => barRow(esc(it.name || it.id), it.profit / Math.max(1, it.heldSec / it.heldUnits / 3600), fast[0].profit / Math.max(1, fast[0].heldSec / fast[0].heldUnits / 3600), gold(it.profit / Math.max(.25, it.heldSec / 3600), true) + "/h", "#5fb07a")).join("")}</div>
+    ${fast.length ? `<section class="card"><h2>Fastest sellers</h2><div class="bars">${fast.map(it => barRow(esc(it.name || it.id), rate(it), rate(fast[0]), gold(rate(it), true) + "/h", "#5fb07a")).join("")}</div>
       <p class="small">Profit per hour of bag time: buy these whenever they show up.</p></section>` : ""}
   </div>
   <h2 class="secttl" id="s-share">Share</h2>

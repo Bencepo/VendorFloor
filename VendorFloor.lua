@@ -12,7 +12,7 @@ local L = ns.L or setmetatable({}, { __index = function(_, key) return key end }
 ns.COPPER = ns.COPPER or "c"
 local AH = C_AuctionHouse
 local GetItemInfo = ns.GetItemInfo
-local GetMetadata = C_AddOns.GetAddOnMetadata
+local GetMetadata = C_AddOns and C_AddOns.GetAddOnMetadata
 local floor, min, max = math.floor, math.min, math.max
 
 local VERSION = GetMetadata and GetMetadata(ADDON, "Version") or ""
@@ -145,7 +145,14 @@ local function Send(fn)
 	pendingSend, lastSend, pendingAt = fn, fn, GetTime()
 end
 
-local SORTS = { { sortOrder = Enum.AuctionHouseSortOrder.Price, reverseSort = false } }
+local PRICE_SORT = Enum and Enum.AuctionHouseSortOrder and Enum.AuctionHouseSortOrder.Price or 0
+-- Have the commodity results of this item arrived? (APIs missing on a client: no)
+local function CommodityReady(id)
+	if AH.HasFullCommoditySearchResults and AH.HasFullCommoditySearchResults(id) then return true end
+	return AH.GetCommoditySearchResultsQuantity and (AH.GetCommoditySearchResultsQuantity(id) or 0) > 0 or false
+end
+
+local SORTS = { { sortOrder = PRICE_SORT, reverseSort = false } }
 
 -- The item list to read. The disenchant tab reads only green and blue weapons and armor.
 local function BrowseQuery(mode)
@@ -519,16 +526,13 @@ local function StartQuick()
 	return true
 end
 
--- Continuous mode: a full scan whenever one is allowed, otherwise two quick rounds and
--- then one reading the whole item list.
--- Continuous mode follows the tab shown: a full scan whenever one is allowed (it fills
--- every tab), otherwise the vendor tab alternates quick rounds and the whole item list,
--- the disenchant tab reads gear only, the crafting tab checks the prices of its items.
+-- Continuous mode follows the tab shown: the vendor tab alternates quick rounds and the
+-- whole item list, the disenchant tab reads gear only, the crafting tab checks the prices
+-- of its items. It never starts a full scan: the auction house ignores a full scan that
+-- does not come from a click or a key, so the full scan button only lights up.
 NextRound = function()
 	scan.rounds = (scan.rounds or 0) + 1
-	if FullReady() then
-		StartFull()
-	elseif db.tab == "craft" then
+	if db.tab == "craft" then
 		if not StartCraftScan() then scan.nextAt = GetTime() + db.interval end
 	elseif db.tab == "de" then
 		StartScan()
@@ -665,7 +669,7 @@ end
 -- limit: the gold that may be spent (nil: no limit, for the check).
 local function CommodityOffer(d, limit)
 	local count, cost, first = 0, 0, nil
-	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
+	for i = 1, (AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(d.id) or 0) do
 		local info = AH.GetCommoditySearchResultInfo(d.id, i)
 		if not info or not info.unitPrice or not Worth(d.vendor, info.unitPrice) then break end
 		local n = (info.quantity or 0) - (info.numOwnerItems or 0)
@@ -708,7 +712,7 @@ end
 local function RecordCommodityPrices(d)
 	if not ns.RecordListing then return end
 	local a = {}
-	for i = 1, AH.GetNumCommoditySearchResults(d.id) do
+	for i = 1, (AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(d.id) or 0) do
 		local info = AH.GetCommoditySearchResultInfo(d.id, i)
 		if info and info.unitPrice and info.quantity then
 			a[#a + 1] = { info.unitPrice, info.quantity, (info.numOwnerItems or 0) >= info.quantity or nil }
@@ -786,7 +790,7 @@ end
 ResultsReady = function(d)
 	if not d then return false end
 	if d.commodity then
-		return AH.HasFullCommoditySearchResults(d.id) or (AH.GetCommoditySearchResultsQuantity(d.id) or 0) > 0
+		return CommodityReady(d.id)
 	end
 	return AH.HasSearchResults(d.key) and (AH.HasFullItemSearchResults(d.key) or (AH.GetItemSearchResultsQuantity(d.key) or 0) > 0)
 end
@@ -818,10 +822,10 @@ local function Action()
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
 	elseif state == "commodity_ready" then
-		AH.StartCommoditiesPurchase(d.id, buy.qty)
+		if AH.StartCommoditiesPurchase then AH.StartCommoditiesPurchase(d.id, buy.qty) end
 		buy.state, buy.t = "quoting", GetTime()
 	elseif state == "quote_ok" then
-		AH.ConfirmCommoditiesPurchase(d.id, buy.qty)
+		if AH.ConfirmCommoditiesPurchase then AH.ConfirmCommoditiesPurchase(d.id, buy.qty) end
 		buy.state, buy.t = "confirming", GetTime()
 	end
 	Refresh()
@@ -891,6 +895,7 @@ local function BeginFull(phase)
 	wipe(full)
 	full.active, full.phase, full.t0 = true, phase, GetTime()
 	full.items, full.pending, full.player = {}, {}, UnitName("player")
+	full.prevLast = db.lastFull
 	db.lastFull = time()
 end
 
@@ -1243,7 +1248,9 @@ end
 local DE_SPELL_NAME = C_Spell and C_Spell.GetSpellName and C_Spell.GetSpellName(13262)
 local function IsDisenchantCast(spellID)
 	if InCombatLockdown() then return false end
-	if not (DE_SPELL_NAME and spellID) then return true end
+	if not spellID then return false end
+	-- without spell names (no C_Spell) the spell ID of Disenchant decides
+	if not DE_SPELL_NAME then return spellID == 13262 end
 	if issecretvalue and issecretvalue(spellID) then return true end
 	local ok, name = pcall(C_Spell.GetSpellName, spellID)
 	if not ok or name == nil or (issecretvalue and issecretvalue(name)) then return true end
@@ -1385,7 +1392,9 @@ end
 local function FinishFull(failed)
 	full.active = false
 	if failed then
-		SetStatus(L["Full scan: the auction house did not answer. Another addon (e.g. Auctionator) may have used the full scan; VendorFloor reads its next one automatically. Try again in 15 minutes."])
+		-- an unanswered request did not use up the auction house's 15 minutes: allow a retry
+		db.lastFull = full.prevLast
+		SetStatus(L["Full scan: the auction house did not answer. Click \"Full scan\" to try again."])
 		Refresh()
 		return
 	end
@@ -1544,7 +1553,7 @@ end
 local function CraftTick(now)
 	if craft.cur then
 		local id, key = craft.cur, craft.key
-		local ready = AH.HasFullCommoditySearchResults(id) or (AH.GetCommoditySearchResultsQuantity(id) or 0) > 0
+		local ready = CommodityReady(id)
 			or (key and AH.HasSearchResults(key) and (AH.HasFullItemSearchResults(key) or (AH.GetItemSearchResultsQuantity(key) or 0) > 0))
 		if ready and now - craft.t > CRAFT_WAIT then
 			ReadCraftPrice(id)
@@ -1884,10 +1893,14 @@ function ns.UpdateFullButton()
 	if full.active then
 		ui.full:SetText(L["Full scan"])
 		ui.full:SetEnabled(false)
+		if ui.full.SetOn then ui.full:SetOn(false) end
 	elseif FullReady() then
 		ui.full:SetText(L["Full scan"])
 		ui.full:SetEnabled(not scan.active and not (buy.state and buy.purpose ~= "check"))
+		-- ready: shown switched on, it has to be clicked (the auction house wants a click)
+		if ui.full.SetOn then ui.full:SetOn(true) end
 	else
+		if ui.full.SetOn then ui.full:SetOn(false) end
 		local wait = FullWait()
 		ui.full:SetText(L["Full scan (%s)"]:format(("%d:%02d"):format(floor(wait / 60), wait % 60)))
 		ui.full:SetEnabled(false)
@@ -2836,4 +2849,6 @@ ns.test = {
 	Init = function() handlers.ADDON_LOADED(ADDON) end,
 	ParseMoney = ParseMoney, ListingMedian = ListingMedian, ListingLow = ListingLow, Worth = Worth,
 	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
+	IsDisenchantCast = IsDisenchantCast, StartFull = function() StartFull() end, NextRound = function() NextRound() end,
+	FullTick = FullTick, Full = function() return full end, handlers = handlers,
 }

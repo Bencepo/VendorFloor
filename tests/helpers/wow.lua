@@ -13,14 +13,16 @@ stub = setmetatable({}, {
 })
 M.stub = stub
 
--- items[id] = { name, quality, ilvl, minLevel, classID, sell, stack }
+-- items[id] = { name, quality, ilvl, minLevel, classID, subclassID, sell, stack, equipLoc }
+-- Returns the 17 values of the game's GetItemInfo, in its order.
 local function ItemInfo(items, item)
 	local id = type(item) == "number" and item or tonumber(tostring(item or ""):match("item:(%d+)"))
 	local it = id and items[id]
 	if not it then return nil end
 	local link = "|cff1eff00|Hitem:" .. id .. "::::::::|h[" .. it.name .. "]|h|r"
-	return it.name, link, it.quality or 1, it.ilvl or 1, it.minLevel or 1, "", "", it.stack or 1, "", 0,
-		it.sell or 0, it.classID or 15
+	return it.name, link, it.quality or 1, it.ilvl or 1, it.minLevel or 1, "", "", it.stack or 1,
+		it.equipLoc or "", 0, it.sell or 0, it.classID or 15, it.subclassID or 0, it.bindType or 0,
+		it.expansion or 0, it.setID, it.reagent or false
 end
 
 -- Loads the addon files (in order) into a fresh environment. Returns ns and the environment.
@@ -36,7 +38,9 @@ function M.Load(addon, files, setup)
 	}, { __index = function() return stub end })
 	env.GetLocale = function() return "enUS" end
 	env.time = os.time
-	env.GetTime = os.clock
+	-- test time: starts at 0 and only moves when a test sets env.now
+	env.now = 0
+	env.GetTime = function() return env.now end
 	env.wipe = function(t) for k in pairs(t) do t[k] = nil end return t end
 	env.tinsert, env.tremove = table.insert, table.remove
 	env.unpack = unpack or table.unpack
@@ -50,9 +54,14 @@ function M.Load(addon, files, setup)
 	env.ERR_AUCTION_WON_S = "You won an auction for %s"
 	env.INVTYPE_NON_EQUIP_IGNORE = "Non-equippable"
 	if setup then setup(env) end
+	-- Unknown globals (frames, Blizzard tables) are the stub, so loading works without a
+	-- full game API. Each one is recorded in env.missing: a test can check that the code
+	-- under test did not read a global it should have defined itself.
+	env.missing = {}
 	setmetatable(env, { __index = function(_, k)
 		local v = _G[k]
 		if v ~= nil then return v end
+		rawset(env.missing, k, true)
 		return stub
 	end })
 	local ns = {}

@@ -88,6 +88,14 @@ describe("VendorFloor", function()
 			assert.near(expected, ns.DisenchantValue(5000), 0.01)
 		end)
 
+		it("values green weapons and blue gear too", function()
+			env.items[5003] = { name = "Test Sword", quality = 2, ilvl = 18, minLevel = 13, classID = 2 }
+			env.items[5004] = { name = "Test Cloak", quality = 3, ilvl = 18, minLevel = 13, classID = 4 }
+			local weapon, blue = ns.DisenchantValue(5003), ns.DisenchantValue(5004)
+			assert.is_true(type(weapon) == "number" and weapon > 0)
+			assert.is_true(type(blue) == "number" and blue > 0)
+		end)
+
 		it("does not value items that cannot be disenchanted", function()
 			assert.is_nil(ns.DisenchantValue(11288)) -- enchanter's wand
 			assert.is_nil(ns.DisenchantValue(5002))  -- gray

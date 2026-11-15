@@ -195,12 +195,14 @@ local function MinimapTooltip(tip)
 end
 
 local function MinimapSettings()
+	if not ns.db then return nil end
 	ns.db.minimap = ns.db.minimap or {}
 	return ns.db.minimap
 end
 
 function ns.ToggleMinimap()
 	local st = MinimapSettings()
+	if not st then return false end
 	st.hide = not st.hide
 	if minimapButton then minimapButton:SetShown(not st.hide) end
 	return not st.hide
