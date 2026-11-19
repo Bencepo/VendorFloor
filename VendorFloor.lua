@@ -1160,6 +1160,7 @@ end
 
 -- Text for a bug report: the find, the state of the purchase and the purchase log.
 function ns.Diagnose(d)
+	d = d or {}
 	local t = {
 		("VendorFloor %s, client %s"):format(ns.VERSION or "?", (GetBuildInfo())),
 		("find: %s id=%s mode=%s commodity=%s"):format(tostring(d.name), tostring(d.id), tostring(d.mode), tostring(d.commodity)),
@@ -2008,6 +2009,19 @@ local function Tick()
 	end
 	if full.active then
 		FullTick(now)
+		return
+	end
+	-- Watchdog: checks waiting and nothing happened for 30 s. The state goes to the purchase
+	-- log, then whatever holds the queue is let go.
+	if queue[1] and not craft.active and now - (ns.logAt or now) > 30 and now - (ns.dogAt or 0) > 30 then
+		ns.dogAt = now
+		ns.Log("watchdog: queue stuck, state=%s pendingSend=%s sentAt=%s scan=%s", tostring(buy.state),
+			tostring(pendingSend ~= nil), sentAt and ("%.0f"):format(now - sentAt) or "-", tostring(scan.active))
+		if buy.state ~= "quote_ok" and buy.state ~= "confirming" then wipe(buy) end
+		if pendingSend and now - (pendingAt or now) > 10 then pendingSend = nil end
+		if scan.active and not pendingSend and (not sentAt or now - sentAt > 30) then
+			scan.active, sentAt = false, nil
+		end
 		return
 	end
 	if craft.active and not pendingSend then
@@ -2947,7 +2961,7 @@ local function BuildUI()
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
 		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
 		{ L["Ignore list"], function() if ns.ToggleIgnoreList then ns.ToggleIgnoreList() end end },
-		{ L["Purchase log"], function() if ns.ShowCopy then ns.ShowCopy(L["VendorFloor: purchase log"], table.concat(ns.log, "\n")) end end },
+		{ L["Purchase log"], function() if ns.ShowCopy then ns.ShowCopy(L["VendorFloor: purchase log"], ns.Diagnose(buy.deal)) end end },
 		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
