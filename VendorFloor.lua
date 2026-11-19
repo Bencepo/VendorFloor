@@ -738,7 +738,7 @@ Verify = function(d, purpose)
 	wipe(buy)
 	buy.state, buy.deal, buy.t, buy.purpose, buy.chain = "verifying", d, GetTime(), purpose, purpose == "buy" and chain or nil
 	tries = 0
-	ns.Log("search %s (%s, key %s:%s)", tostring(d.name), purpose, tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel))
+	ns.Log("search %s (%s, key %s:%s:%s)", tostring(d.name), purpose, tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel), tostring(d.key and d.key.itemSuffix))
 	Send(function() AH.SendSearchQuery(d.key, SORTS, true) end)
 	if purpose == "check" then
 		SetStatus(L["Checking: %s (%d left)"]:format(d.link or d.name or "?", #queue))
@@ -975,12 +975,20 @@ local BUSY = { quoting = true, confirming = true, bought = true, failed = true }
 -- Hot deals: a find checked a few seconds ago is bought on the first click, without a new
 -- search. The auction keeps its buyout, so the price cannot have risen; should it be sold
 -- by now, the next auction of the item is tried (PurchaseFailed).
-local function BuyNow(d)
+local function BuyNow(d, prepareOnly)
 	local b = d.best
 	if d.commodity or not b or not d.bestAt or GetTime() - d.bestAt > 15 or triedBids[b.auctionID] then return false end
 	wipe(buy)
 	buy.state, buy.deal, buy.t, buy.purpose = "item_ready", d, GetTime(), "buy"
 	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = b.auctionID, b.buyout, b.quantity, b.vendor, b.link
+	if prepareOnly then
+		-- ready to buy: the next click places the bid without another search
+		ns.Log("ready at once %s (checked %.1fs ago)", tostring(d.name), GetTime() - d.bestAt)
+		SetStatus(L[DeText(d, "%s ×%d for %s, vendor pays %s.")]:format(b.link or d.link or d.name, b.quantity,
+			Money(b.buyout), Money(b.vendor * b.quantity)))
+		Refresh()
+		return true
+	end
 	ns.Log("buy at once %s (checked %.1fs ago)", tostring(d.name), GetTime() - d.bestAt)
 	Action()
 	return buy.state == "bought"
@@ -995,7 +1003,7 @@ local function Select(d, click)
 		table.insert(queue, 1, buy.deal)
 		pendingSend, sentAt = nil, nil
 	end
-	if click and state ~= "quote_ok" and BuyNow(d) then
+	if state ~= "quote_ok" and BuyNow(d, not click) then
 		selected = d
 		return
 	end
@@ -1016,6 +1024,20 @@ function VendorFloor_BuyNext()
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	local d = (selected and deals[selected.k] and selected) or View()[1]
 	if d then Select(d, true) end
+end
+
+-- A confirmed purchase: more of this find below the vendor price? Else on to the next find.
+-- Runs on the confirmation itself, no fixed wait.
+function ns.AfterBuy()
+	local d = buy.deal
+	if not d then return end
+	local left = (d.count or 0) - (buy.qty or 1)
+	if not d.commodity and left <= 0 then
+		RemoveDeal(d)
+		ns.Gone(L["Bought."])
+	else
+		Verify(d, "buy")
+	end
 end
 
 -- A find has nothing left to buy. Right after a purchase the next find of the list is
@@ -1945,8 +1967,8 @@ local function Tick()
 		-- "Internal auction error" and no confirmation after it: this time it was real
 		ns.ShowError(ERR_AUCTION_DATABASE_ERROR)
 		ns.PurchaseFailed(ERR_AUCTION_DATABASE_ERROR)
-	elseif state == "bought" and now - buy.t > 1.5 and (buy.confirmed or not buy.dbErrorAt) then
-		Verify(buy.deal, "buy") -- more of it below the vendor price?
+	elseif state == "bought" and not buy.confirmed and not buy.dbErrorAt and now - buy.t > 2 then
+		Verify(buy.deal, "buy") -- no confirmation event: look whether it is still listed
 	elseif (state == "quoting" or state == "confirming") and now - buy.t > 12 then
 		CancelQuote()
 		ResetBuy(L["No answer from the auction house."])
@@ -3344,7 +3366,10 @@ handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 
 function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
 	ns.Log("purchase completed %s", tostring(auctionID))
-	if buy.state == "bought" and buy.auctionID == auctionID then buy.confirmed = true end
+	if buy.state == "bought" and buy.auctionID == auctionID then
+		buy.confirmed = true
+		C_Timer.After(0.2, function() if buy.state == "bought" and buy.confirmed and buy.auctionID == auctionID then ns.AfterBuy() end end)
+	end
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
