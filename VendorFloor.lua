@@ -366,22 +366,51 @@ end
 -- Hot items: what your purchases really earned, per item, with the auction keys bought
 -- (gear differs by item level and suffix). Quick rounds check these first.
 -- db.hot[itemID] = { profit = copper, buys, last = time, keys = { "level:suffix", ... } }
-function ns.LearnBuy(itemID, key, cost, value, mode)
-	if not itemID or mode == "wish" then return end
+local function HotEntry(itemID, key, mode)
 	db.hot = db.hot or {}
 	local h = db.hot[itemID] or { profit = 0, buys = 0, keys = {} }
-	h.profit, h.buys, h.last = h.profit + max((value or 0) - (cost or 0), 0), h.buys + 1, time()
+	h.last, h.mode = time(), mode or h.mode
 	if key then
 		local ks = (key.itemLevel or 0) .. ":" .. (key.itemSuffix or 0)
 		local known = false
 		for _, k in ipairs(h.keys) do known = known or k == ks end
 		if not known then
 			table.insert(h.keys, 1, ks)
-			h.keys[4] = nil -- the three variants bought last
+			h.keys[4] = nil -- the three variants seen last
 		end
 	end
-	h.mode = mode
 	db.hot[itemID] = h
+	return h
+end
+
+function ns.LearnBuy(itemID, key, cost, value, mode)
+	if not itemID or mode == "wish" then return end
+	local h = HotEntry(itemID, key, mode)
+	h.profit, h.buys = h.profit + max((value or 0) - (cost or 0), 0), h.buys + 1
+end
+
+-- Finds teach more than purchases: an item found often, and above all one whose find is
+-- gone again within two minutes (someone else bought it), is where the big profits are.
+-- kind "found": a new find; "gone": a find vanished without your purchase.
+function ns.LearnFind(d, kind)
+	if not (d and d.id) or d.mode == "wish" then return end
+	local h = HotEntry(d.id, d.key, d.mode or "vendor")
+	if kind == "found" then
+		h.finds = (h.finds or 0) + 1
+		h.findProfit = (h.findProfit or 0) + max(d.profit or ((d.vendor or 0) - (d.price or 0)), 0)
+	elseif kind == "gone" and d.foundAt and GetTime() - d.foundAt < 120 then
+		h.fast = (h.fast or 0) + 1
+	end
+end
+
+-- Weight of a hot item: what you earned (gold, purchases), how often it was found and what
+-- the finds were worth, and most of all how often a find was gone within two minutes.
+-- It fades over 30 days without news.
+function ns.HotScore(h)
+	local age = (time() - (h.last or 0)) / 86400
+	if age > 30 then return 0 end
+	local gold = (h.profit or 0) / 10000 * 2 + (h.findProfit or 0) / 10000
+	return (gold + (h.buys or 0) + (h.finds or 0) * 0.5 + (h.fast or 0) * 3) * (1 - age / 30)
 end
 
 -- Once: the hot items are seeded from the ledger kept for the website (db.items: buys,
@@ -408,13 +437,6 @@ function ns.SeedHot()
 				keys = variants[id2] or {}, mode = "vendor" }
 		end
 	end
-end
-
--- Weight of a hot item: profit in gold and number of purchases, fading over 30 days.
-function ns.HotScore(h)
-	local age = (time() - (h.last or 0)) / 86400
-	if age > 30 then return 0 end
-	return (h.profit / 10000 * 2 + h.buys) * (1 - age / 30)
 end
 
 -- Sound and taskbar flash for new finds: once per round, at most once a minute.
@@ -453,6 +475,8 @@ local function Confirm(d, quiet)
 	local mode = d.mode or "vendor"
 	if mode == "vendor" then Watch(d.id) end
 	newFinds[mode] = (newFinds[mode] or 0) + 1
+	d.foundAt = GetTime()
+	if ns.LearnFind then ns.LearnFind(d, "found") end
 end
 
 -- Every candidate is checked against its real auctions before it is listed: an item
@@ -851,7 +875,10 @@ local function FinishCheck(d, offer)
 		SaveFinds()
 	else
 		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
-		if deals[d.k] then RemoveDeal(d) end
+		if deals[d.k] then
+			ns.LearnFind(d, "gone")
+			RemoveDeal(d)
+		end
 	end
 	queued[d.k] = nil
 	wipe(buy)
@@ -939,6 +966,7 @@ local function ReadCommodity()
 	end
 	local offer = CommodityOffer(d, ns.Budget(GetMoney()))
 	if not offer then
+		if not buy.chain then ns.LearnFind(d, "gone") end
 		RemoveDeal(d)
 		ns.Gone(L["Nothing below vendor price any more (or not enough gold)."])
 		return
@@ -970,6 +998,7 @@ local function ReadItem()
 			Verify(d, "buy")
 			return
 		end
+		if not buy.chain then ns.LearnFind(d, "gone") end
 		RemoveDeal(d)
 		ns.Gone(L["Nothing below vendor price any more."])
 		return
@@ -2032,7 +2061,10 @@ local function Tick()
 			d.key, d.triedPlain = d.plainKey, true
 			Verify(d, "buy")
 		else
-			if d then RemoveDeal(d) end
+			if d then
+				if not buy.chain then ns.LearnFind(d, "gone") end
+				RemoveDeal(d)
+			end
 			ns.Gone(L["Nothing below vendor price any more."])
 		end
 	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
