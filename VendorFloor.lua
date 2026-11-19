@@ -61,6 +61,7 @@ local pendingBuys = {}        -- auctionID -> item purchase waiting for confirma
 local triedBids = {}          -- auctionID -> true: bought already, or the auction house refused it
 local scan = { active = false, seen = 0, round = 0 }
 local full = { active = false } -- the full scan (every auction at once)
+local craft = {} -- price check of the crafting tab
 local buy = {}                -- state of the find being checked or bought
 local selected
 local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
@@ -654,7 +655,7 @@ StartScan = function()
 		return
 	end
 	if buy.state or full.active then return end
-	scan.active, scan.seen, scan.nextAt = true, 0, nil
+	scan.active, scan.seen, scan.nextAt, scan.lastAt = true, 0, nil, GetTime()
 	scan.mode = db.tab == "de" and "de" or "vendor"
 	scan.round = scan.round + 1
 	tries = 0
@@ -1837,7 +1838,6 @@ end
 -- recipes, their current median price goes into the price history.
 ---------------------------------------------------------------------------
 
-local craft = {}
 local CRAFT_WAIT, CRAFT_TIMEOUT = 0.6, 3
 
 local function CraftItems()
@@ -2036,6 +2036,14 @@ local function Tick()
 			pendingSend, sentAt = nil, now
 			fn()
 		end
+		return
+	end
+	-- A purchase search sent during a scan replaces the browse query: no more pages come.
+	-- The scan ends there, the waiting checks go on and the next round starts after them.
+	if scan.active and not buy.state and now - (scan.lastAt or now) > 8 then
+		ns.Log("scan ended: no more pages for %.0f s (%d auctions read)", now - scan.lastAt, scan.seen or 0)
+		StopScan()
+		if not queue[1] and db.loop then scan.nextAt = now + db.interval end
 		return
 	end
 	if scan.active and sentAt and now - sentAt > SEND_TIMEOUT then
@@ -3443,12 +3451,14 @@ end
 
 function handlers.AUCTION_HOUSE_BROWSE_RESULTS_UPDATED()
 	if not scan.active then return end
+	scan.lastAt = GetTime()
 	Process(AH.GetBrowseResults())
 	ContinueScan()
 end
 
 function handlers.AUCTION_HOUSE_BROWSE_RESULTS_ADDED(added)
 	if not scan.active then return end
+	scan.lastAt = GetTime()
 	Process(added)
 	ContinueScan()
 end
