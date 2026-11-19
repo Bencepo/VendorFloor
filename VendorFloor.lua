@@ -879,6 +879,8 @@ local function ReadItem()
 	local d = buy.deal
 	pcall(RecordItemPrices, d)
 	local offer = ItemOffer(d)
+	-- the cheapest auction of a check is kept: a click within a few seconds buys it at once
+	if offer then d.best, d.bestAt = offer.best, GetTime() else d.best = nil end
 	if buy.purpose == "check" then
 		FinishCheck(d, offer)
 		return
@@ -970,7 +972,21 @@ end
 
 local BUSY = { quoting = true, confirming = true, bought = true, failed = true }
 
-local function Select(d)
+-- Hot deals: a find checked a few seconds ago is bought on the first click, without a new
+-- search. The auction keeps its buyout, so the price cannot have risen; should it be sold
+-- by now, the next auction of the item is tried (PurchaseFailed).
+local function BuyNow(d)
+	local b = d.best
+	if d.commodity or not b or not d.bestAt or GetTime() - d.bestAt > 15 or triedBids[b.auctionID] then return false end
+	wipe(buy)
+	buy.state, buy.deal, buy.t, buy.purpose = "item_ready", d, GetTime(), "buy"
+	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = b.auctionID, b.buyout, b.quantity, b.vendor, b.link
+	ns.Log("buy at once %s (checked %.1fs ago)", tostring(d.name), GetTime() - d.bestAt)
+	Action()
+	return buy.state == "bought"
+end
+
+local function Select(d, click)
 	local state = buy.state
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	if state == "quote_ok" then CancelQuote() end
@@ -978,6 +994,10 @@ local function Select(d)
 		-- interrupt the round's check: that find is checked again afterwards
 		table.insert(queue, 1, buy.deal)
 		pendingSend, sentAt = nil, nil
+	end
+	if click and state ~= "quote_ok" and BuyNow(d) then
+		selected = d
+		return
 	end
 	selected = d
 	Verify(d, "buy")
@@ -995,7 +1015,7 @@ function VendorFloor_BuyNext()
 	end
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	local d = (selected and deals[selected.k] and selected) or View()[1]
-	if d then Select(d) end
+	if d then Select(d, true) end
 end
 
 -- A find has nothing left to buy. Right after a purchase the next find of the list is
@@ -2850,7 +2870,7 @@ local function BuildUI()
 		row:SetScript("OnClick", function(self, button)
 			if not self.deal then return end
 			if button ~= "RightButton" then
-				Select(self.deal)
+				Select(self.deal, true)
 				return
 			end
 			local d = self.deal
