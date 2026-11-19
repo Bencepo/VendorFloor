@@ -3,12 +3,13 @@
 ## 1.0.3
 
 - "Internal auction error" no longer stops a purchase. WoW Forever's auction house sends it with purchases that go through: VendorFloor now waits two seconds for the confirmation, takes the red line off the screen, and counts the purchase as failed only if no confirmation comes.
-- A purchase the auction house really refuses is not the end: VendorFloor tries the next auction of the same item.
+- A purchase the auction house really refuses (e.g. the auction was sold a moment before) is not the end: VendorFloor tries the next auction of the same item at once.
 - Hot deals: a find checked in the last 15 seconds is bought on the first click, without searching again. The auction keeps its price, so you never pay more; if it was sold meanwhile, the next auction of the item is tried.
 - Faster buying: VendorFloor goes on the moment the auction house confirms a purchase instead of waiting. A single auction bought needs no new search, and the next find is ready at once when it was checked in the last 15 seconds: one click per purchase.
 - Finds that turn out gone are skipped on the way.
 - An empty answer from the auction house is asked once more before a find counts as gone.
 - Alt+click on a find: a bug report to copy, with the find, the purchase state and the purchase log.
+- Quick rounds learn from your purchases: items that earned you the most (profit and number of buys, fading over 30 days) are checked first, gear included, in the exact variants you bought before.
 - Menu > Purchase log: what happened during the last purchases, ready to copy into a bug report (Report a bug in the settings).
 
 ## 1.0.2
