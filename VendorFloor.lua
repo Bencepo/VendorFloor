@@ -792,7 +792,8 @@ end
 ResetBuy = function(msg)
 	wipe(buy)
 	if msg then SetStatus(msg) end
-	if db.loop and ahOpen and ui and ui:IsShown() and not queue[1] then scan.nextAt = GetTime() + 5 end
+	-- after buying, scanning goes on almost at once
+	if db.loop and ahOpen and ui and ui:IsShown() and not queue[1] then scan.nextAt = GetTime() + 1 end
 	Refresh()
 end
 
@@ -3228,7 +3229,7 @@ local function BuildSettings()
 			if not v then scan.nextAt = nil end
 			if ui then ui.loop:SetChecked(v and true or false) end
 		end)
-	w:Slider(X, -186, L["Pause between rounds (seconds)"], 5, 120, 5, function() return db.interval end,
+	w:Slider(X, -186, L["Pause between rounds (seconds)"], 1, 120, 1, function() return db.interval end,
 		function(v) db.interval = v end, L["How long continuous mode waits before the next round."], 190,
 		function(v) return v .. " s" end)
 
@@ -3576,7 +3577,7 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		SetMinProfit(money)
 		Print(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
 	elseif cmd == "interval" and num then
-		db.interval = max(floor(num), 5)
+		db.interval = max(floor(num), 1)
 		Print(L["Pause between rounds: %d seconds"]:format(db.interval))
 	elseif cmd == "sound" then
 		db.sound = not db.sound
