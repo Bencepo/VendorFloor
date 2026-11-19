@@ -11,6 +11,9 @@
   "diagnostics.globals": [
     "ATTACHMENTS_MAX_RECEIVE",
     "AuctionHouseFrame",
+    "AuctionHouseFrameBuyTab",
+    "ChatEdit_InsertLink",
+    "ChatFrameUtil",
     "CreateSettingsButtonInitializer",
     "DEFAULT_CHAT_FRAME",
     "ERR_AUCTION_EXPIRED_S",
@@ -18,15 +21,22 @@
     "ERR_AUCTION_WON_S",
     "ERR_CANT_BE_DISENCHANTED",
     "GetSpellInfo",
+    "ItemRefTooltip",
     "MailFrame",
     "MerchantFrame",
     "MinimalSliderWithSteppersMixin",
+    "NO",
+    "PanelTemplates_TabResize",
     "ProfessionsFrame",
-    "SOUNDKIT",
     "Settings",
     "SettingsPanel",
     "SlashCmdList",
+    "SOUNDKIT",
+    "StaticPopup_Show",
+    "StaticPopupDialogs",
+    "TooltipDataProcessor",
     "TradeSkillFrame",
-    "UISpecialFrames"
+    "UISpecialFrames",
+    "YES"
   ]
 }

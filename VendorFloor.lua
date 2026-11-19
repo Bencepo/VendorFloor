@@ -1867,7 +1867,7 @@ function ns.RowColumns(row, price, value, profit, qty)
 	row.qty:SetText(qty)
 end
 
-local HEADERS = {
+ns.HEADERS = {
 	vendor = { L["Price"], L["Vendor price"], L["Profit"], L["Qty"] },
 	de = { L["Price"], L["Disenchant value"], L["Profit"], L["Qty"] },
 	craft = { L["Reagents"], L["Sells for"], L["Profit"], L["Via"] },
@@ -1888,7 +1888,7 @@ function ns.UpdateScroll(total)
 end
 
 -- Sorting by a column header (click: sort, again: reverse). Unsorted: best profit first.
-local SORT_FIELDS = {
+ns.SORT_FIELDS = {
 	name = function(x) return (x.name or ""):lower() end,
 	price = function(x) return x.price or x.cost or 0 end,
 	value = function(x) return x.vendor or x.revenue or 0 end,
@@ -1897,7 +1897,7 @@ local SORT_FIELDS = {
 }
 function ns.SortList(list)
 	local s = db and db.sort
-	local get = s and SORT_FIELDS[s.key]
+	local get = s and ns.SORT_FIELDS[s.key]
 	if not get then return end
 	table.sort(list, function(a, b)
 		local x, y = get(a), get(b)
@@ -1919,7 +1919,7 @@ function ns.SortBy(key)
 end
 
 function ns.ListHeader(tab)
-	local h, t = ui and ui.hdr, HEADERS[tab] or HEADERS.vendor
+	local h, t = ui and ui.hdr, ns.HEADERS[tab] or ns.HEADERS.vendor
 	if not h then return end
 	for key, cell in pairs(ui.hdrCells) do
 		local on = db.sort and db.sort.key == key
@@ -2211,10 +2211,12 @@ function AHT.CreateTab()
 		ui:SetParent(AuctionHouseFrame)
 		if not lib:DoesIDExist(AHT.ID) then lib:CreateTab(AHT.ID, ui, "VendorFloor", "VendorFloor") end
 		AHT.tab = lib:GetButton(AHT.ID)
+		---@diagnostic disable-next-line: undefined-field, param-type-mismatch
 		AHT.tab:HookScript("OnClick", function()
 			db.hidden = false
 			ns.ShowWindow()
 		end)
+		---@diagnostic disable-next-line: undefined-field, param-type-mismatch
 		AHT.tab:HookScript("OnShow", AHT.SizeTab)
 	end
 	AHT.SizeTab()
@@ -2225,7 +2227,7 @@ end
 -- Unset, it follows Auctionator's setting when Auctionator is installed.
 function AHT.SmallTab()
 	if db.smallTab ~= nil then return db.smallTab end
-	local A = _G.Auctionator
+	local A = _G["Auctionator"]
 	local ok, small = pcall(function() return A.Config.Get(A.Config.Options.SMALL_TABS) end)
 	return ok and small and true or false
 end
@@ -2377,6 +2379,7 @@ local function BuildUI()
 	-- it fills the window like Blizzard's own tabs: buttons on top, categories on the
 	-- left, the result list with column headers on the right, the buy button bottom right.
 	local body = CreateFrame("Frame", nil, f)
+	---@diagnostic disable-next-line: undefined-field, param-type-mismatch
 	body:SetAllPoints(f)
 	body:SetScript("OnSizeChanged", function()
 		AHT.Layout(f)
@@ -3274,13 +3277,13 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 end
 
 -- An item purchase the auction house refused ("Internal auction error" and the like).
-local AUCTION_ERRORS = {}
+ns.AUCTION_ERRORS = {}
 for _, key in ipairs({ "ERR_AUCTION_DATABASE_ERROR", "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
 	"ERR_AUCTION_BID_OWN", "ERR_NOT_ENOUGH_MONEY" }) do
-	if _G[key] then AUCTION_ERRORS[_G[key]] = true end
+	if _G[key] then ns.AUCTION_ERRORS[_G[key]] = true end
 end
 function handlers.UI_ERROR_MESSAGE(_, msg)
-	if buy.state == "bought" and msg and AUCTION_ERRORS[msg] then
+	if buy.state == "bought" and msg and ns.AUCTION_ERRORS[msg] then
 		ResetBuy(L["Purchase failed (%s). This auction is skipped."]:format(msg))
 	end
 end
