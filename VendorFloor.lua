@@ -1937,16 +1937,19 @@ local function StopAll(msg)
 	StopScan(msg)
 end
 
--- Inside the auction house window VendorFloor is a tab of its own, next to Blizzard's
--- tabs (and those of other addons). Its panel lies over the content area; Blizzard's
--- frames are neither hidden nor changed, so nothing of theirs gets tainted.
+-- Inside the auction house window VendorFloor is a tab of its own, added with LibAHTab
+-- (the library Auctionator uses as well): tabs of all addons share one row and Blizzard's
+-- tab list stays untouched, which would otherwise taint the bags. Selecting the tab
+-- hides Blizzard's content; VendorFloor's panel fills the window.
 -- (one table: the main chunk of this file is close to Lua's limit of 200 locals)
 local AHT = {
-	inset = { 4, -60, -4, 28 },  -- left, top, right, bottom inside the auction house window
-	tab = nil,                   -- our tab button below the auction house window
-	hooked = {},                 -- tab buttons of the window whose clicks are hooked
-	hookedFrame = false,
+	ID = "VendorFloor",
+	inset = { 4, -24, -4, 27 },  -- left, top, right, bottom inside the auction house window
+	tab = nil,                   -- our tab button (LibAHTab)
+	hooked = {},                 -- other tab buttons whose clicks are hooked
 	maxRows = 24,                -- rows built; a tall auction house window shows more of them
+	dialog = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+		tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } },
 }
 
 function AHT.Layout(f)
@@ -1956,20 +1959,27 @@ function AHT.Layout(f)
 	for i = ROWS + 1, AHT.maxRows do f.rows[i]:Hide() end
 end
 
+function AHT.Lib()
+	return _G.LibStub and _G.LibStub("LibAHTab-1-0", true)
+end
+
 function AHT.Embedded()
-	return AuctionHouseFrame ~= nil and AuctionHouseFrame:IsShown()
+	return AuctionHouseFrame ~= nil and AuctionHouseFrame:IsShown() and AHT.Lib() ~= nil
 end
 
 local function PlaceWindow()
 	ui:ClearAllPoints()
+	local standalone = { ui.title, ui.version, ui.head, ui.close }
 	if AHT.Embedded() then
+		-- the auction house window draws frame, title and background: only the content here
 		ui.embedded = true
 		ui:SetParent(AuctionHouseFrame)
-		ui:SetFrameStrata("HIGH")
-		ui:SetFrameLevel(AuctionHouseFrame:GetFrameLevel() + 30)
+		ui:SetFrameStrata(AuctionHouseFrame:GetFrameStrata())
+		ui:SetFrameLevel(AuctionHouseFrame:GetFrameLevel() + 5)
 		ui:SetPoint("TOPLEFT", AuctionHouseFrame, "TOPLEFT", AHT.inset[1], AHT.inset[2])
 		ui:SetPoint("BOTTOMRIGHT", AuctionHouseFrame, "BOTTOMRIGHT", AHT.inset[3], AHT.inset[4])
-		ui.close:Hide()
+		ui:SetBackdrop(nil)
+		for _, r in ipairs(standalone) do r:Hide() end
 	else
 		-- away from the auction house (the crafting button of a profession window): a window of its own
 		ui.embedded = false
@@ -1981,98 +1991,41 @@ local function PlaceWindow()
 		else
 			ui:SetPoint("CENTER", UIParent, "CENTER", 300, 0)
 		end
-		ui.close:Show()
+		ui:SetBackdrop(AHT.dialog)
+		for _, r in ipairs(standalone) do r:Show() end
 	end
 	AHT.Layout()
 end
 
-function AHT.SetTabSelected(tab, on)
-	if on then
-		if PanelTemplates_SelectTab then PanelTemplates_SelectTab(tab) end
-	elseif PanelTemplates_DeselectTab then
-		PanelTemplates_DeselectTab(tab)
-	end
-end
-
--- Blizzard's tab that is really selected gets its look back.
-function AHT.RestoreBlizzardTabs()
-	local tabs = AuctionHouseFrame and AuctionHouseFrame.Tabs
-	if not tabs then return end
-	local sel = PanelTemplates_GetSelectedTab and PanelTemplates_GetSelectedTab(AuctionHouseFrame)
-	for _, tab in ipairs(tabs) do
-		if tab ~= AHT.tab then pcall(AHT.SetTabSelected, tab, tab:GetID() == sel) end
-	end
-	if AHT.tab then pcall(AHT.SetTabSelected, AHT.tab, false) end
-end
-
--- Another tab was chosen: our panel steps aside.
-function AHT.LeaveTab()
-	if ui and ui.embedded and ui:IsShown() then
-		db.hidden = true
-		ui:Hide()
-	end
-	AHT.RestoreBlizzardTabs()
-end
-
--- Our tab sits right of the last tab of the window, also of tabs other addons added.
-function AHT.AnchorTab()
-	if not AHT.tab then return end
-	local last, right
-	for _, tab in ipairs(AuctionHouseFrame.Tabs or {}) do
-		if tab ~= AHT.tab and tab:IsShown() then
-			local r = tab:GetRight()
-			if r and (not right or r > right) then last, right = tab, r end
-			if not AHT.hooked[tab] then
+-- Clicks on any other tab (Blizzard's or another addon's) leave VendorFloor: the next
+-- visit opens there again.
+function AHT.HookOthers()
+	local lib = AHT.Lib()
+	local own = lib and lib.internalState and lib.internalState.Tabs or {}
+	for _, list in ipairs({ AuctionHouseFrame.Tabs or {}, own }) do
+		for _, tab in ipairs(list) do
+			if tab ~= AHT.tab and not AHT.hooked[tab] then
 				AHT.hooked[tab] = true
-				tab:HookScript("OnClick", AHT.LeaveTab)
+				tab:HookScript("OnClick", function() db.hidden = true end)
 			end
 		end
 	end
-	AHT.tab:ClearAllPoints()
-	if last then
-		AHT.tab:SetPoint("LEFT", last, "RIGHT", -15, 0)
-	else
-		AHT.tab:SetPoint("TOPLEFT", AuctionHouseFrame, "BOTTOMLEFT", 20, 2)
-	end
 end
 
+-- Our tab, once per session (the auction house window lives on after closing).
 function AHT.CreateTab()
-	if AHT.tab or not AuctionHouseFrame then return end
-	local tab
-	for _, template in ipairs({ "AuctionHouseFrameTabTemplate", "PanelTabButtonTemplate" }) do
-		local ok, b = pcall(CreateFrame, "Button", "VendorFloorAuctionTab", AuctionHouseFrame, template)
-		if ok and b then tab = b break end
+	local lib = AHT.Lib()
+	if not lib or not AuctionHouseFrame or not ui then return end
+	if not AHT.tab then
+		ui:SetParent(AuctionHouseFrame)
+		if not lib:DoesIDExist(AHT.ID) then lib:CreateTab(AHT.ID, ui, "VendorFloor", "VendorFloor") end
+		AHT.tab = lib:GetButton(AHT.ID)
+		AHT.tab:HookScript("OnClick", function()
+			db.hidden = false
+			ns.ShowWindow()
+		end)
 	end
-	if not tab then
-		tab = ns.FlatButton(AuctionHouseFrame, 110, 28)
-		tab.flat = true
-	end
-	tab:SetText("VendorFloor")
-	if not tab.flat and PanelTemplates_TabResize then pcall(PanelTemplates_TabResize, tab, 0) end
-	tab:SetScript("OnClick", function()
-		if PlaySound and SOUNDKIT then PlaySound(SOUNDKIT.IG_CHARACTER_INFO_TAB) end
-		db.hidden = false
-		ns.ShowWindow()
-	end)
-	AHT.tab = tab
-	if not AHT.hookedFrame then
-		AHT.hookedFrame = true
-		-- Blizzard's tabs and those of other addons switch the window through SetDisplayMode
-		if AuctionHouseFrame.SetDisplayMode then
-			hooksecurefunc(AuctionHouseFrame, "SetDisplayMode", AHT.LeaveTab)
-		end
-		AuctionHouseFrame:HookScript("OnShow", function() C_Timer.After(0, AHT.AnchorTab) end)
-	end
-	AHT.AnchorTab()
-end
-
--- Shows our panel as the selected tab of the auction house window.
-function AHT.SelectTab()
-	if not AHT.tab then return end
-	for _, tab in ipairs(AuctionHouseFrame.Tabs or {}) do
-		if tab ~= AHT.tab then pcall(AHT.SetTabSelected, tab, false) end
-	end
-	if AHT.tab.flat then AHT.tab:SetOn(true) else pcall(AHT.SetTabSelected, AHT.tab, true) end
+	AHT.HookOthers()
 end
 
 ---------------------------------------------------------------------------
@@ -2109,6 +2062,18 @@ ns.Flat = Flat
 -- A flat button. kind "primary": gold with dark text (the main action).
 -- :SetOn(true) shows it switched on (gold border and text), e.g. while a scan runs.
 local function FlatButton(parent, width, height, kind, name, template)
+	if ns.blizzardSkin then
+		-- Blizzard's red button; "on" (scan running, tab shown) keeps its highlight lit
+		local b = CreateFrame("Button", name, parent, template and (template .. ", UIPanelButtonTemplate") or "UIPanelButtonTemplate")
+		b:SetSize(width or 80, height or 22)
+		b.kind, b.on = kind, false
+		function b:Restyle() end
+		function b:SetOn(on)
+			self.on = on and true or false
+			if self.on then self:LockHighlight() else self:UnlockHighlight() end
+		end
+		return b
+	end
 	local b = CreateFrame("Button", name, parent, template and (template .. ", BackdropTemplate") or "BackdropTemplate")
 	b:SetSize(width or 80, height or 22)
 	local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
@@ -2169,6 +2134,7 @@ end
 
 local function BuildUI()
 	if ui then return end
+	ns.blizzardSkin = true -- buttons of the main window look like the auction house's own
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
 	f:SetSize(580, 222 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
@@ -2176,7 +2142,6 @@ local function BuildUI()
 		AHT.Layout(self)
 		if ui and ui:IsShown() then Refresh() end
 	end)
-	Flat(f, C.bg, C.line)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -2212,6 +2177,14 @@ local function BuildUI()
 	head:SetHeight(1)
 	head:SetPoint("TOPLEFT", 1, -30)
 	head:SetPoint("TOPRIGHT", -1, -30)
+	f.title, f.version, f.head = title, version, head
+	-- dark inset behind the list, like the auction house's result lists
+	local okInset, inset = pcall(CreateFrame, "Frame", nil, f, "InsetFrameTemplate")
+	if okInset and inset then
+		inset:SetPoint("TOPLEFT", 4, -92)
+		inset:SetPoint("BOTTOMRIGHT", -4, 100)
+		inset:SetFrameLevel(f:GetFrameLevel())
+	end
 
 	local close = FlatButton(f, 22, 20)
 	close:SetPoint("TOPRIGHT", -6, -5)
@@ -2263,14 +2236,10 @@ local function BuildUI()
 	f.count:SetPoint("TOPRIGHT", -110, -10)
 
 	-- Minimum profit per unit: how far below the vendor price an auction must be
-	local profit = CreateFrame("EditBox", nil, f, "BackdropTemplate")
-	Flat(profit, C.well, C.line)
+	local profit = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
 	profit:SetFontObject("GameFontHighlight")
-	profit:SetTextInsets(6, 6, 0, 0)
-	profit:SetSize(84, 24)
-	profit:SetPoint("TOPRIGHT", -10, -38)
-	profit:HookScript("OnEditFocusGained", function(self) self:SetBackdropBorderColor(unpack(C.gold)) end)
-	profit:HookScript("OnEditFocusLost", function(self) self:SetBackdropBorderColor(unpack(C.line)) end)
+	profit:SetSize(80, 22)
+	profit:SetPoint("TOPRIGHT", -12, -39)
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
@@ -2536,6 +2505,7 @@ local function BuildUI()
 		Tick()
 	end)
 
+	ns.blizzardSkin = false
 	f:Hide()
 	ui = f
 end
@@ -2593,8 +2563,7 @@ local function ShowWindow()
 	if AHT.Embedded() then AHT.CreateTab() end
 	PlaceWindow()
 	if statusText == "" then SetStatus(L["Ready. \"Scan\" reads the auction house item list."]) end
-	ui:Show()
-	if ui.embedded then AHT.SelectTab() end
+	if ui.embedded and AHT.tab then AHT.Lib():SetSelected(AHT.ID) else ui:Show() end
 	Refresh()
 end
 ns.ShowWindow = ShowWindow
@@ -2736,13 +2705,14 @@ function handlers.AUCTION_HOUSE_SHOW()
 	ahOpen = true
 	pcall(RestoreFinds)
 	-- the auction house opens on the tab used last; wait for Blizzard to set up its own tab first
-	C_Timer.After(0, function()
+	local function Open()
 		if not ahOpen or not AHT.Embedded() then return end
 		BuildUI()
 		AHT.CreateTab()
-		AHT.AnchorTab()
-		if db.hidden then AHT.RestoreBlizzardTabs() else ShowWindow() end
-	end)
+		if not db.hidden and not ui:IsShown() then ShowWindow() end
+	end
+	C_Timer.After(0, Open)
+	C_Timer.After(0.3, Open) -- once more, should the auction house switch to its own tab late
 end
 
 function handlers.AUCTION_HOUSE_CLOSED()
@@ -3008,7 +2978,8 @@ SlashCmdList.VENDORFLOOR = function(msg)
 			Print(L["The auction house must be open."])
 		elseif ui and ui:IsShown() then
 			if ui.embedded then
-				AHT.LeaveTab()
+				db.hidden = true
+				if AuctionHouseFrameBuyTab then AuctionHouseFrameBuyTab:Click() else ui:Hide() end
 			else
 				db.hidden = true
 				ui:Hide()
