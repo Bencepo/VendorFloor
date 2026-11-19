@@ -40,44 +40,55 @@ end
 ---------------------------------------------------------------------------
 
 local index, indexAt = {}, 0
-local MAX_SUGGEST = 8
+local MAX_SUGGEST, MIN_CHARS = 8, 3
+local building -- ids still to add while the index is built, a slice per frame
 
-local function AddToIndex(id, seen)
-	if not id or seen[id] then return end
-	seen[id] = true
-	local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(id)
-	if name then
-		index[#index + 1] = { id = id, name = name, lower = name:lower(), link = link, icon = icon }
-	elseif C_Item and C_Item.RequestLoadItemDataByID then
-		C_Item.RequestLoadItemDataByID(id) -- known by the next keystroke
-	end
-end
-
-local function BuildIndex()
-	if GetTime() - indexAt < 2 then return end
-	indexAt = GetTime()
-	wipe(index)
-	local db, seen = DB(), {}
+-- Built once and kept for a few minutes, a slice per frame: thousands of auction prices
+-- at once made the game stutter while typing.
+local function BuildIndex(onDone)
+	if building or (#index > 0 and GetTime() - indexAt < 300) then return end
+	local db, seen, ids = DB(), {}, {}
+	local function add(id) id = tonumber(id) if id and not seen[id] then seen[id] = true ids[#ids + 1] = id end end
 	if db then
-		for pk in pairs(db.lows or {}) do AddToIndex(tonumber(tostring(pk):match("(%d+):")), seen) end
 		for _, t in ipairs({ db.wishlist, db.ignore, db.bought, db.debought, db.deBasket }) do
-			for id in pairs(t or {}) do AddToIndex(tonumber(id), seen) end
+			for id in pairs(t or {}) do add(id) end
 		end
 	end
 	local slots = C_Container and C_Container.GetContainerNumSlots
 	if slots then
 		for _, bag in ipairs(ns.BAGS or { 0, 1, 2, 3, 4 }) do
-			for slot = 1, slots(bag) or 0 do
-				AddToIndex(C_Container.GetContainerItemID(bag, slot), seen)
-			end
+			for slot = 1, slots(bag) or 0 do add(C_Container.GetContainerItemID(bag, slot)) end
 		end
 	end
+	if db then for pk in pairs(db.lows or {}) do add(tostring(pk):match("(%d+):")) end end
+	wipe(index)
+	building = { ids = ids, at = 1, requests = 0 }
+	local ticker
+	ticker = C_Timer.NewTicker(0, function()
+		local b = building
+		for i = b.at, min(b.at + 199, #b.ids) do
+			local id = b.ids[i]
+			local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(id)
+			if name then
+				index[#index + 1] = { id = id, name = name, lower = name:lower(), link = link, icon = icon }
+			elseif b.requests < 30 and C_Item and C_Item.RequestLoadItemDataByID then
+				b.requests = b.requests + 1
+				C_Item.RequestLoadItemDataByID(id)
+			end
+		end
+		b.at = b.at + 200
+		if b.at > #b.ids then
+			ticker:Cancel()
+			building, indexAt = nil, GetTime()
+			if onDone then onDone() end
+		end
+	end)
 end
 
 -- Matches for the typed text: names starting with it first, then names containing it.
 local function Matches(text)
 	text = strtrim(text or ""):lower()
-	if #text < 2 or text:find("|H") then return {} end
+	if #text < MIN_CHARS or text:find("|H") then return {} end
 	local first, inner = {}, {}
 	for _, it in ipairs(index) do
 		local at = it.lower:find(text, 1, true)
@@ -137,7 +148,6 @@ local function Suggest(box)
 		return true
 	end
 	function list:Update()
-		BuildIndex()
 		self.items = Matches(box:GetText())
 		for i, b in ipairs(self.rows) do
 			local it = self.items[i]
@@ -153,7 +163,14 @@ local function Suggest(box)
 		self:SetShown(#self.items > 0 and box:HasFocus())
 		self:Select(1)
 	end
-	box:HookScript("OnTextChanged", function(_, user) if user and not box.picking then list:Update() end end)
+	-- matches once typing pauses, not on every key
+	box:HookScript("OnTextChanged", function(_, user)
+		if not user or box.picking then return end
+		list.pending = (list.pending or 0) + 1
+		local n = list.pending
+		C_Timer.After(0.2, function() if n == list.pending then list:Update() end end)
+	end)
+	box:HookScript("OnEditFocusGained", function() BuildIndex(function() if box:HasFocus() then list:Update() end end) end)
 	box:HookScript("OnEditFocusLost", function() C_Timer.After(0.2, function() list:Hide() end) end)
 	box:HookScript("OnTabPressed", function() if list:IsShown() then list:Take() end end)
 	box:HookScript("OnArrowPressed", function(_, key)

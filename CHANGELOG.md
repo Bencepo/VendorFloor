@@ -7,7 +7,7 @@
 - Column headers in Blizzard's style; click one to sort by name, price, value, profit or quantity, click again to reverse. The buy button follows the order shown.
 - The menu opens as Blizzard's context menu and no longer slides under the list.
 - Watchlist: a fourth list for items you want at or below a price of your own, optionally up to a number of units (done, it leaves the list). Add items in Menu > Watchlist or "Edit watchlist" (shift-click an item into the field). "Scan" on this list searches each watched item; normal and full scans fill it too. Watchlist purchases are collected from the mail but never sold to a merchant.
-- Name suggestions while typing in the watchlist and ignore list: items VendorFloor has seen in the auction house, your purchases and your bags. Up/Down to choose, Tab or Enter to take one.
+- Name suggestions while typing (from the third letter) in the watchlist and ignore list: items VendorFloor has seen in the auction house, your purchases and your bags. Up/Down to choose, Tab or Enter to take one. The list is built in small steps so the game does not stutter.
 - Ignore list as a window (Menu > Ignore list): every hidden item with a button to show it again, or all at once; items can be hidden by name there too. No chat command needed any more.
 - Scroll bar on the result list.
 - Spending limit per session and bag slots to keep free (settings, both off by default). Purchases still in the mail count as taken slots until you visit the mailbox.
