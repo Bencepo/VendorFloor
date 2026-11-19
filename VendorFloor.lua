@@ -384,6 +384,32 @@ function ns.LearnBuy(itemID, key, cost, value, mode)
 	db.hot[itemID] = h
 end
 
+-- Once: the hot items are seeded from the ledger kept for the website (db.items: buys,
+-- spent and vendor value per item), so the purchases made before this version count too.
+-- Gear variants come from the auction prices VendorFloor saw for that item (db.lows).
+function ns.SeedHot()
+	if db.hotSeeded then return end
+	db.hotSeeded = true
+	db.hot = db.hot or {}
+	local variants = {}
+	for pk in pairs(db.lows or {}) do
+		local id, level, suffix = tostring(pk):match("^(%d+):(%-?%d+):(%-?%d+)")
+		id = tonumber(id)
+		if id then
+			variants[id] = variants[id] or {}
+			if #variants[id] < 3 and (tonumber(level) or 0) > 0 then variants[id][#variants[id] + 1] = level .. ":" .. suffix end
+		end
+	end
+	local now = time()
+	for id, it in pairs(db.items or {}) do
+		local id2 = tonumber(id)
+		if id2 and (it.buys or 0) > 0 and not db.hot[id2] then
+			db.hot[id2] = { profit = max((it.value or 0) - (it.spent or 0), 0), buys = it.buys, last = now,
+				keys = variants[id2] or {}, mode = "vendor" }
+		end
+	end
+end
+
 -- Weight of a hot item: profit in gold and number of purchases, fading over 30 days.
 function ns.HotScore(h)
 	local age = (time() - (h.last or 0)) / 86400
@@ -3285,6 +3311,7 @@ function handlers.ADDON_LOADED(name)
 	db.total = db.total or { buys = 0, spent = 0, value = 0 }
 	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
 	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
+	pcall(ns.SeedHot)
 	if db.deBasket == nil then
 		-- the disenchant basket starts with the disenchant purchases still in the mail
 		db.deBasket = {}
