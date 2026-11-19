@@ -70,6 +70,7 @@ Like the addons? Support them on Ko-fi: **https://ko-fi.com/bencepo**
 - [ProcFlare](https://bencepo.github.io/procflare/): big Clearcasting alert and small icons for weapon, trinket and talent procs, with melee and caster sound packs.
 - [SwingCast](https://bencepo.github.io/swingcast/): spell icon, cast time, latency zone and a swing timer on the standard cast bar.
 - [StatTrim](https://bencepo.github.io/stattrim/): hide, merge and reorder stats right inside the character window.
+- [TransmogSweep](https://bencepo.github.io/transmogsweep/): every uncollected transmog appearance on the auction house, cheapest first; buy them top to bottom with one button.
 
 ## AI disclosure
 
