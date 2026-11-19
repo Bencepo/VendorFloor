@@ -49,6 +49,17 @@ function M.Load(addon, files, setup)
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.ERR_AUCTION_SOLD_S = "A buyer has been found for your auction of %s."
+	env.AUCTION_EXPIRED_MAIL_SUBJECT = "Auction expired: %s"
+	env.mails = {}
+	env.GetInboxNumItems = function() return #env.mails end
+	env.GetInboxHeaderInfo = function(i)
+		local m = env.mails[i]
+		return nil, nil, "Auction House", m.subject, m.money, 0, m.days
+	end
+	env.GetInboxInvoiceInfo = function(i)
+		local inv = env.mails[i].invoice
+		if inv then return unpack(inv) end
+	end
 	env.issecretvalue = function() return false end
 	env.ERR_AUCTION_EXPIRED_S = "Your auction of %s has expired."
 	env.ERR_CANT_BE_DISENCHANTED = "Item cannot be disenchanted"

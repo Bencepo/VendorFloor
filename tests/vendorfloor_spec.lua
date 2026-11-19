@@ -143,21 +143,20 @@ describe("VendorFloor", function()
 			env.items[2589] = { name = "Linen Cloth" }
 		end)
 
-		it("recognises the sold and expired chat lines", function()
-			local sold = "A buyer has been found for your auction of Linen Cloth."
-			assert.equal("Linen Cloth", sold:match(S.Pattern(env.ERR_AUCTION_SOLD_S)))
-			assert.is_nil(("Something else"):match(S.Pattern(env.ERR_AUCTION_SOLD_S)))
-		end)
-
-		it("learns the sold price and the share that sells", function()
+		it("counts sales and expiries from the mailbox once", function()
 			S.OnPost({ id = 2589 }, 20, 100)
 			S.OnPost({ id = 2589 }, 20, 110)
 			S.OnPost({ id = 2589 }, 20, 120)
-			S.OnSystem("A buyer has been found for your auction of Linen Cloth.")
+			env.mails = {
+				{ subject = "Auction successful: Linen Cloth", money = 1900, days = 29.9, invoice = { "seller", "Linen Cloth", "Buyer", 2000, 0, 0, 0, 0, 0, 0, 20 } },
+			}
+			S.ScanMail()
+			S.ScanMail() -- the same mail again: not counted twice
 			assert.equal(100, ns.SoldPrice(2589))
 			assert.is_nil(ns.SellRate(2589)) -- only one ended so far
-			S.OnSystem("Your auction of Linen Cloth has expired.")
-			S.OnSystem("Your auction of Linen Cloth has expired.")
+			env.mails[2] = { subject = "Auction expired: Linen Cloth", money = 0, days = 29.5 }
+			env.mails[3] = { subject = "Auction expired: Linen Cloth", money = 0, days = 29.4 }
+			S.ScanMail()
 			assert.near(1 / 3, ns.SellRate(2589), 0.001)
 		end)
 	end)
