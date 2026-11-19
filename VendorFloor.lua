@@ -1032,6 +1032,24 @@ function ns.Gone(msg)
 	end
 end
 
+-- Text for a bug report: the find, the state of the purchase and the purchase log.
+function ns.Diagnose(d)
+	local t = {
+		("VendorFloor %s, client %s"):format(ns.VERSION or "?", (GetBuildInfo())),
+		("find: %s id=%s mode=%s commodity=%s"):format(tostring(d.name), tostring(d.id), tostring(d.mode), tostring(d.commodity)),
+		("key: %s:%s:%s plainKey=%s triedPlain=%s"):format(tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel),
+			tostring(d.key and d.key.itemSuffix), tostring(d.plainKey ~= nil), tostring(d.triedPlain)),
+		("price=%s value=%s count=%s profit=%s"):format(tostring(d.price), tostring(d.vendor), tostring(d.count), tostring(d.profit)),
+		("best auction: %s @ %s, checked %s s ago"):format(tostring(d.best and d.best.auctionID), tostring(d.best and d.best.buyout),
+			d.bestAt and ("%.1f"):format(GetTime() - d.bestAt) or "-"),
+		("purchase: state=%s auction=%s confirmed=%s dbError=%s"):format(tostring(buy.state), tostring(buy.auctionID),
+			tostring(buy.confirmed), tostring(buy.dbErrorAt ~= nil)),
+		"", "purchase log:",
+	}
+	for _, line in ipairs(ns.log) do t[#t + 1] = line end
+	return table.concat(t, "\n")
+end
+
 -- A purchase the auction house refused: the next auction of the same item is tried.
 function ns.PurchaseFailed(msg)
 	local d = buy.deal
@@ -2869,6 +2887,11 @@ local function BuildUI()
 		row.name:SetWordWrap(false)
 		row:SetScript("OnClick", function(self, button)
 			if not self.deal then return end
+			if button ~= "RightButton" and IsAltKeyDown() then
+				-- Alt+click: everything about this find plus the purchase log, to copy into a bug report
+				ns.ShowCopy(L["VendorFloor: bug report"], ns.Diagnose(self.deal))
+				return
+			end
 			if button ~= "RightButton" then
 				Select(self.deal, true)
 				return
@@ -2926,7 +2949,7 @@ local function BuildUI()
 				GameTooltip:AddLine(L["Profit per unit %s, units not counted yet"]:format(Money(d.profit or 0)), 0.25, 1, 0.25)
 			end
 			GameTooltip:AddLine(L["Listed on the AH: %d"]:format(d.listed or 0), 0.7, 0.7, 0.7)
-			GameTooltip:AddLine(L["Click: check and buy. Right-click: hide or add to the watchlist."], 0.7, 0.7, 0.7, true)
+			GameTooltip:AddLine(L["Click: buy. Right-click: hide or add to the watchlist. Alt+click: bug report."], 0.7, 0.7, 0.7, true)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function(self)

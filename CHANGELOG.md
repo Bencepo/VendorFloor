@@ -7,6 +7,7 @@
 - Hot deals: a find checked in the last 15 seconds is bought on the first click, without searching again. The auction keeps its price, so you never pay more; if it was sold meanwhile, the next auction of the item is tried.
 - One click per purchase: once a find is bought out, the next find of the list is checked right away, so the next click buys it. Finds that turn out gone are skipped on the way.
 - An empty answer from the auction house is asked once more before a find counts as gone.
+- Alt+click on a find: a bug report to copy, with the find, the purchase state and the purchase log.
 - Menu > Purchase log: what happened during the last purchases, ready to copy into a bug report (Report a bug in the settings).
 
 ## 1.0.2
