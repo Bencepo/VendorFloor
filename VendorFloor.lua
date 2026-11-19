@@ -139,6 +139,7 @@ ns.log = {}
 function ns.Log(fmt, ...)
 	local ok, text = pcall(string.format, fmt, ...)
 	ns.log[#ns.log + 1] = ("%s  %s"):format(date("%H:%M:%S"), ok and text or fmt)
+	ns.logAt = GetTime()
 	if #ns.log > 80 then table.remove(ns.log, 1) end
 end
 
@@ -1167,8 +1168,12 @@ function ns.Diagnose(d)
 		("price=%s value=%s count=%s profit=%s"):format(tostring(d.price), tostring(d.vendor), tostring(d.count), tostring(d.profit)),
 		("best auction: %s @ %s, checked %s s ago"):format(tostring(d.best and d.best.auctionID), tostring(d.best and d.best.buyout),
 			d.bestAt and ("%.1f"):format(GetTime() - d.bestAt) or "-"),
-		("purchase: state=%s auction=%s confirmed=%s dbError=%s"):format(tostring(buy.state), tostring(buy.auctionID),
+		("purchase: state=%s purpose=%s since %s s, auction=%s confirmed=%s dbError=%s"):format(tostring(buy.state),
+			tostring(buy.purpose), buy.t and ("%.0f"):format(GetTime() - buy.t) or "-", tostring(buy.auctionID),
 			tostring(buy.confirmed), tostring(buy.dbErrorAt ~= nil)),
+		("scan: active=%s queue=%d checked=%s/%s pendingSend=%s full=%s craft=%s loop=%s nextAt=%s"):format(tostring(scan.active),
+			#queue, tostring(scan.checked), tostring(scan.checkTotal), tostring(pendingSend ~= nil), tostring(full.active),
+			tostring(craft.active), tostring(db.loop), scan.nextAt and ("%.0f"):format(scan.nextAt - GetTime()) or "-"),
 		"", "purchase log:",
 	}
 	for _, line in ipairs(ns.log) do t[#t + 1] = line end
@@ -2029,6 +2034,18 @@ local function Tick()
 		return
 	end
 	local state = buy.state
+	-- Watchdog: a find made ready to buy is let go after 20 s without a click, and anything
+	-- else that has not moved for 20 s is reset, so the checks of the round go on.
+	if state and queue[1] and not scan.active then
+		local waiting = state == "item_ready" or state == "commodity_ready"
+		if (waiting and now - (buy.t or now) > 20) or (not waiting and state ~= "quote_ok" and state ~= "confirming"
+			and now - (buy.t or now) > 20 and now - (ns.logAt or 0) > 20) then
+			ns.Log("watchdog: %s for %s let go after %.0f s", tostring(state), tostring(buy.deal and buy.deal.name), now - (buy.t or now))
+			wipe(buy)
+			pendingSend, sentAt = nil, nil
+			return
+		end
+	end
 	if not state and not scan.active and queue[1] then
 		local d = table.remove(queue, 1)
 		if not d.dropped then
