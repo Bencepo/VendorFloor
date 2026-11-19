@@ -240,6 +240,7 @@ function ns.ToggleWishlist()
 		itemBox = InputBox(wishWin, 170, L["Item (shift-click, name or ID)"])
 		itemBox:SetPoint("TOPLEFT", 22, -54)
 		local priceBox = InputBox(wishWin, 90, L["Max. price/unit"])
+		wishWin.priceBox = priceBox
 		priceBox:SetPoint("LEFT", itemBox, "RIGHT", 12, 0)
 		local qtyBox = InputBox(wishWin, 40, L["Units"])
 		qtyBox:SetPoint("LEFT", priceBox, "RIGHT", 12, 0)
@@ -284,4 +285,14 @@ function ns.ToggleWishlist()
 		for _, box in ipairs({ itemBox, priceBox, qtyBox }) do box:SetScript("OnEnterPressed", Add) end
 	end
 	wishWin:SetShown(not wishWin:IsShown())
+end
+
+-- From a find's right-click menu: the watchlist with the item and its price filled in.
+function ns.WishPrefill(itemID, price)
+	if not wishWin then ns.ToggleWishlist() end
+	wishWin:Show()
+	local _, link = GetItemInfo(itemID)
+	itemBox:SetText(link or tostring(itemID))
+	wishWin.priceBox:SetText(price and ns.PlainMoney and ns.PlainMoney(price) or "")
+	wishWin.priceBox:SetFocus()
 end

@@ -2771,7 +2771,25 @@ local function BuildUI()
 		row.name:SetWordWrap(false)
 		row:SetScript("OnClick", function(self, button)
 			if not self.deal then return end
-			if button == "RightButton" then Ignore(self.deal) else Select(self.deal) end
+			if button ~= "RightButton" then
+				Select(self.deal)
+				return
+			end
+			local d = self.deal
+			-- a small menu instead of hiding at once: a stray right-click hid items for good
+			if MenuUtil and MenuUtil.CreateContextMenu then
+				MenuUtil.CreateContextMenu(self, function(_, root)
+					root:CreateTitle(d.name or ("item:" .. d.id))
+					root:CreateButton(L["Hide this item"], function() Ignore(d) end)
+					if d.mode ~= "wish" then
+						root:CreateButton(L["Add to watchlist"], function() if ns.WishPrefill then ns.WishPrefill(d.id, d.price) end end)
+					end
+				end)
+			elseif IsShiftKeyDown() then
+				Ignore(d)
+			else
+				SetStatus(L["Shift + right-click hides an item."])
+			end
 		end)
 		row:SetScript("OnEnter", function(self)
 			local c = self.craft
@@ -2810,7 +2828,7 @@ local function BuildUI()
 				GameTooltip:AddLine(L["Profit per unit %s, units not counted yet"]:format(Money(d.profit or 0)), 0.25, 1, 0.25)
 			end
 			GameTooltip:AddLine(L["Listed on the AH: %d"]:format(d.listed or 0), 0.7, 0.7, 0.7)
-			GameTooltip:AddLine(L["Click: check and buy. Right-click: hide this item."], 0.7, 0.7, 0.7, true)
+			GameTooltip:AddLine(L["Click: check and buy. Right-click: hide or add to the watchlist."], 0.7, 0.7, 0.7, true)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function(self)
@@ -2944,11 +2962,20 @@ end
 ---------------------------------------------------------------------------
 
 local settingsWin
+
+StaticPopupDialogs["VENDORFLOOR_FORGET"] = {
+	text = L["Forget all purchases VendorFloor still counts as to sell? The ledger of past sales stays."],
+	button1 = YES, button2 = NO, timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+	OnAccept = function()
+		ns.ForgetPurchases()
+		Print(L["Tracked purchases cleared."])
+	end,
+}
 local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 380, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 410, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -3005,7 +3032,15 @@ local function BuildSettings()
 		function(v) db.keepSlots = v end, L["Stops buying when fewer bag slots would stay free. Purchases still in the mail count until you visit the mailbox. 0 turns it off."], 190,
 		function(v) return v > 0 and tostring(v) or L["off"] end)
 
-	w:Text(16, -340, L["Finer amounts and the other filters are set in the auction house window."], 480)
+	w:Check(270, -264, L["Minimap button"], L["Shows VendorFloor's button at the minimap. The addon menu next to the minimap has it either way."],
+		function() return not (db.minimap and db.minimap.hide) end, function(v)
+			if v == (db.minimap and db.minimap.hide or false) then ns.ToggleMinimap() end
+		end)
+	local forget = w:Button(L["Forget unsold purchases"], 200, function() StaticPopup_Show("VENDORFLOOR_FORGET") end,
+		L["Clears the purchases VendorFloor still counts as to sell, e.g. items you kept or sold elsewhere. Your ledger stays."])
+	forget:SetPoint("TOPLEFT", 270, -300)
+
+	w:Text(16, -350, L["Finer amounts and the other filters are set in the auction house window."], 480)
 end
 
 function ns.ToggleSettings()
@@ -3260,27 +3295,10 @@ BINDING_HEADER_VENDORFLOOR = "VendorFloor"
 BINDING_NAME_VENDORFLOOR_BUYNEXT = L["Buy next find"]
 
 local function Help()
-	Print(L["VendorFloor %s commands:"]:format(VERSION))
+	Print(L["VendorFloor %s: everything is in the auction house tab and its menu."]:format(VERSION))
 	for _, line in ipairs({
-		L["/vfloor – show or hide the window"],
+		L["/vfloor – show or hide VendorFloor at the auction house"],
 		L["/vfloor buy – check and buy the next find (also a key binding)"],
-		L["/vfloor profit <amount> – minimum profit per unit, e.g. 5s"],
-		L["/vfloor interval <seconds> – pause between rounds"],
-		L["/vfloor sound – alert sound on or off"],
-		L["/vfloor ignore list | clear – show or clear the ignore list"],
-		L["/vfloor full – start a full scan (every 15 minutes)"],
-		L["/vfloor stats – totals since install"],
-		L["/vfloor de – your recorded disenchant results"],
-		L["/vfloor sales – how fast your own auctions sell"],
-		L["/vfloor percent <n> – minimum profit in percent (0 = off)"],
-		L["/vfloor slot <amount> – minimum profit per bag slot, e.g. 10s (0 = off)"],
-		L["/vfloor quick – quick round over the watch list"],
-		L["/vfloor craft – crafts with profit in chat"],
-		L["/vfloor flash – taskbar flash on or off"],
-		L["/vfloor export – ledger to copy into bencepo.github.io/vendorfloor"],
-		L["/vfloor minimap – minimap button on or off"],
-		L["/vfloor forget – forget the purchases still to sell"],
-		L["/vfloor reset – reset the window position"],
 		L["/vfloor options – open the settings"],
 	}) do
 		DEFAULT_CHAT_FRAME:AddMessage("  " .. line)

@@ -10,6 +10,9 @@
 - Ignore list as a window (Menu > Ignore list): every hidden item with a button to show it again, or all at once. No chat command needed any more.
 - Scroll bar on the result list.
 - Spending limit per session and bag slots to keep free (settings, both off by default). Purchases still in the mail count as taken slots until you visit the mailbox.
+- Right-click on a find opens a small menu: hide the item, or add it to the watchlist with its price filled in. Before, a right-click hid the item at once.
+- Settings: minimap button on or off, and "Forget unsold purchases" (with a confirmation).
+- `/vfloor help` only lists the three commands left (`/vfloor`, `buy`, `options`); everything else is in the window. The old commands still work.
 - Optional: disenchant value, latest auction price and watchlist limit in item tooltips (settings, off by default).
 - New setting "Small tab": the VendorFloor tab only as wide as its text, so more addon tabs fit in one row. Until you set it, it follows Auctionator's "Small tabs".
 - The auction house opens on the tab you used last: leave it on VendorFloor and it is there right away next time.

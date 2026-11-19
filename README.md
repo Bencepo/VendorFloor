@@ -14,16 +14,16 @@ Auction house sniper for WoW Forever. Finds auctions that are worth more than th
 - **Minimum profit** in copper, in percent and per bag slot, right in the window or in the settings.
 - **Ledger**: spent, sold and real profit per session, day and item, including sales made by junk-seller addons.
 - **Continuous mode, alerts and key bindings**: rescans on its own, announces new finds with an optional sound and taskbar flash; "Buy next find" and the disenchant basket work on a key.
-- **Minimap button and addon menu.** Settings in a window of their own (menu > Settings, or `/vfloor options`): drag it anywhere, it stays open while you play and changes apply at once.
+- **Minimap button and addon menu.** Settings in a window of their own (menu > Settings): drag it anywhere, it stays open while you play and changes apply at once.
 - **English and German**: follows the game client's language.
 
 ## Usage
 
-1. Open the auction house: the VendorFloor window opens next to it.
-2. Pick a tab (Vendor, Disenchant, Crafting) and press **Scan**, or switch on **Continuous**.
+1. Open the auction house and click the **VendorFloor** tab (it opens there again next time).
+2. Pick a list on the left (Vendor, Disenchant, Crafting, Watchlist) and press **Scan**, or switch on **Continuous**.
 3. Click a find to check it against the live auctions, then press **Buy**.
 4. At the mailbox press **Collect purchases**, at a merchant **Sell purchases**.
-5. Menu (top right): statistics, your disenchants, your auctions, export and settings.
+5. Right-click a find to hide it or add it to the watchlist. Menu (top right): statistics, your disenchants, your auctions, export, watchlist, ignore list and settings.
 
 A full scan reads every auction at once (the auction house allows this every 15 minutes) and fills the tabs. In between, quick rounds and per-tab scans check the items that were cheap before.
 
@@ -37,24 +37,13 @@ With LevelTrail installed, the auction house profit shows up next to the levelin
 
 ## Chat commands
 
-Everything is also available in the window and the settings. For those who prefer commands:
+Everything is in the auction house tab, its menu and the settings. Three commands remain:
 
 | Command | Effect |
 | --- | --- |
-| `/vfloor` | Show or hide the window |
-| `/vfloor profit <amount>` | Minimum profit per unit, e.g. `50k`, `5s`, `1g 20s` |
-| `/vfloor percent <n>` | Minimum profit in percent |
-| `/vfloor slot <amount>` | Minimum profit per bag slot |
-| `/vfloor interval <seconds>` | Pause between two continuous rounds |
-| `/vfloor sound` / `flash` | Toggle the alert sound / taskbar flash |
+| `/vfloor` | Show or hide VendorFloor at the auction house |
 | `/vfloor buy` | Check and buy the next find (same as the key binding) |
-| `/vfloor full` / `quick` | Start a full scan / a quick round |
-| `/vfloor craft` / `de` / `sales` | Best crafts / disenchant results / sales in chat |
-| `/vfloor ignore list` / `clear` | Show or clear the ignore list |
-| `/vfloor stats` / `export` | Totals since install / ledger export |
-| `/vfloor forget` | Forget the purchases still to sell |
-| `/vfloor minimap` | Hide or show the minimap button |
-| `/vfloor options` / `reset` | Open the settings / reset the position of the detached window |
+| `/vfloor options` | Open the settings |
 
 ## Notes
 
