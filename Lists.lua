@@ -9,6 +9,7 @@ local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 local GetItemInfo = ns.GetItemInfo
 local floor, max, min = math.floor, math.max, math.min
+local C_Container, C_Item = C_Container, C_Item
 
 local ROW_H, ROWS = 24, 10
 
@@ -30,6 +31,144 @@ local function ItemID(text)
 	if id then return id end
 	local _, link = GetItemInfo(text)
 	return link and tonumber(link:match("item:(%d+)"))
+end
+
+---------------------------------------------------------------------------
+-- Name suggestions while typing: items VendorFloor has seen (auction prices, purchases,
+-- lists) and items in your bags. The game cannot search all items by name, so the
+-- index holds what the client knows; an item seen once in the auction house is in it.
+---------------------------------------------------------------------------
+
+local index, indexAt = {}, 0
+local MAX_SUGGEST = 8
+
+local function AddToIndex(id, seen)
+	if not id or seen[id] then return end
+	seen[id] = true
+	local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(id)
+	if name then
+		index[#index + 1] = { id = id, name = name, lower = name:lower(), link = link, icon = icon }
+	elseif C_Item and C_Item.RequestLoadItemDataByID then
+		C_Item.RequestLoadItemDataByID(id) -- known by the next keystroke
+	end
+end
+
+local function BuildIndex()
+	if GetTime() - indexAt < 2 then return end
+	indexAt = GetTime()
+	wipe(index)
+	local db, seen = DB(), {}
+	if db then
+		for pk in pairs(db.lows or {}) do AddToIndex(tonumber(tostring(pk):match("(%d+):")), seen) end
+		for _, t in ipairs({ db.wishlist, db.ignore, db.bought, db.debought, db.deBasket }) do
+			for id in pairs(t or {}) do AddToIndex(tonumber(id), seen) end
+		end
+	end
+	local slots = C_Container and C_Container.GetContainerNumSlots
+	if slots then
+		for _, bag in ipairs(ns.BAGS or { 0, 1, 2, 3, 4 }) do
+			for slot = 1, slots(bag) or 0 do
+				AddToIndex(C_Container.GetContainerItemID(bag, slot), seen)
+			end
+		end
+	end
+end
+
+-- Matches for the typed text: names starting with it first, then names containing it.
+local function Matches(text)
+	text = strtrim(text or ""):lower()
+	if #text < 2 or text:find("|H") then return {} end
+	local first, inner = {}, {}
+	for _, it in ipairs(index) do
+		local at = it.lower:find(text, 1, true)
+		if at == 1 then first[#first + 1] = it elseif at then inner[#inner + 1] = it end
+	end
+	local byName = function(a, b) return a.lower < b.lower end
+	table.sort(first, byName)
+	table.sort(inner, byName)
+	for _, it in ipairs(inner) do first[#first + 1] = it end
+	for i = #first, MAX_SUGGEST + 1, -1 do first[i] = nil end
+	return first
+end
+
+-- Attaches a suggestion list to an item field. Up/Down choose, Tab or Enter take one.
+local function Suggest(box)
+	local list = CreateFrame("Frame", nil, box, "BackdropTemplate")
+	list:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+	list:SetBackdropColor(0, 0, 0, 0.95)
+	list:SetPoint("TOPLEFT", box, "BOTTOMLEFT", -6, 0)
+	list:SetWidth(260)
+	list:SetFrameStrata("FULLSCREEN_DIALOG")
+	list:Hide()
+	list.rows, list.items, list.sel = {}, {}, 1
+	for i = 1, MAX_SUGGEST do
+		local b = CreateFrame("Button", nil, list)
+		b:SetHeight(18)
+		b:SetPoint("TOPLEFT", 6, -6 - (i - 1) * 18)
+		b:SetPoint("RIGHT", list, "RIGHT", -6, 0)
+		b.icon = b:CreateTexture(nil, "ARTWORK")
+		b.icon:SetSize(16, 16)
+		b.icon:SetPoint("LEFT")
+		b.text = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		b.text:SetPoint("LEFT", b.icon, "RIGHT", 4, 0)
+		b.text:SetPoint("RIGHT")
+		b.text:SetJustifyH("LEFT")
+		b.hl = b:CreateTexture(nil, "BACKGROUND")
+		b.hl:SetAllPoints()
+		b.hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+		b.hl:SetBlendMode("ADD")
+		b.hl:Hide()
+		b:SetScript("OnEnter", function() list:Select(i) end)
+		b:SetScript("OnClick", function() list:Take(i) end)
+		list.rows[i] = b
+	end
+	function list:Select(i)
+		self.sel = i
+		for j, b in ipairs(self.rows) do b.hl:SetShown(j == i) end
+	end
+	function list:Take(i)
+		local it = self.items[i or self.sel]
+		if not it then return false end
+		box.picking = true
+		box:SetText(it.link or it.name)
+		box.picking = false
+		self:Hide()
+		return true
+	end
+	function list:Update()
+		BuildIndex()
+		self.items = Matches(box:GetText())
+		for i, b in ipairs(self.rows) do
+			local it = self.items[i]
+			if it then
+				b.icon:SetTexture(it.icon or 134400)
+				b.text:SetText(it.link or it.name)
+				b:Show()
+			else
+				b:Hide()
+			end
+		end
+		self:SetHeight(12 + #self.items * 18)
+		self:SetShown(#self.items > 0 and box:HasFocus())
+		self:Select(1)
+	end
+	box:HookScript("OnTextChanged", function(_, user) if user and not box.picking then list:Update() end end)
+	box:HookScript("OnEditFocusLost", function() C_Timer.After(0.2, function() list:Hide() end) end)
+	box:HookScript("OnTabPressed", function() if list:IsShown() then list:Take() end end)
+	box:HookScript("OnArrowPressed", function(_, key)
+		if not list:IsShown() then return end
+		if key == "UP" then list:Select(max(1, list.sel - 1)) elseif key == "DOWN" then list:Select(min(#list.items, list.sel + 1)) end
+	end)
+	box:SetAltArrowKeyMode(false)
+	box.suggest = list
+	return list
+end
+
+-- Enter in an item field: takes the chosen suggestion first, else runs the action.
+local function OnEnter(box, action)
+	if box.suggest and box.suggest:IsShown() and box.suggest:Take() then return end
+	action()
 end
 
 ---------------------------------------------------------------------------
@@ -144,6 +283,18 @@ local function ByName(list)
 	return list
 end
 
+local function InputBox(parent, width, label)
+	local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
+	box:SetSize(width, 22)
+	box:SetAutoFocus(false)
+	box:SetFontObject("GameFontHighlight")
+	local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	fs:SetPoint("BOTTOMLEFT", box, "TOPLEFT", -4, 2)
+	fs:SetText(label)
+	box:SetScript("OnEscapePressed", box.ClearFocus)
+	return box
+end
+
 ---------------------------------------------------------------------------
 -- Ignore list
 ---------------------------------------------------------------------------
@@ -152,7 +303,7 @@ local ignoreWin
 
 function ns.ToggleIgnoreList()
 	if not ignoreWin then
-		ignoreWin = ListWindow("VendorFloorIgnoreFrame", L["VendorFloor: ignore list"], 0)
+		ignoreWin = ListWindow("VendorFloorIgnoreFrame", L["VendorFloor: ignore list"], 58)
 		ignoreWin.empty:SetText(L["No hidden items. Right-click a find in the list to hide that item."])
 		function ignoreWin:Items()
 			local db, list = DB(), {}
@@ -162,6 +313,29 @@ function ns.ToggleIgnoreList()
 			end
 			return ByName(list)
 		end
+		local box = InputBox(ignoreWin, 260, L["Item (shift-click, name or ID)"])
+		box:SetPoint("TOPLEFT", 22, -54)
+		Suggest(box)
+		local hide = CreateFrame("Button", nil, ignoreWin, "UIPanelButtonTemplate")
+		hide:SetSize(90, 22)
+		hide:SetPoint("LEFT", box, "RIGHT", 8, 0)
+		hide:SetText(L["Hide"])
+		local function Hide()
+			local db, id = DB(), ItemID(box:GetText())
+			if not id then
+				Print(L["Item not recognised. Shift-click it into the field, or type its exact name or ID."])
+				return
+			end
+			db.ignore = db.ignore or {}
+			db.ignore[id] = GetItemInfo(id) or true
+			box:SetText("")
+			box:ClearFocus()
+			ignoreWin:Fill()
+			if ns.RefreshWindow then ns.RefreshWindow() end
+		end
+		hide:SetScript("OnClick", Hide)
+		box:SetScript("OnEnterPressed", function() OnEnter(box, Hide) end)
+		ignoreWin.box = box
 		local clear = CreateFrame("Button", nil, ignoreWin, "UIPanelButtonTemplate")
 		clear:SetSize(120, 22)
 		clear:SetPoint("BOTTOMRIGHT", -14, 10)
@@ -202,24 +376,14 @@ function ns.WishBought(itemID, qty, mode)
 	if wishWin and wishWin:IsShown() then wishWin:Fill() end
 end
 
-local function InputBox(parent, width, label)
-	local box = CreateFrame("EditBox", nil, parent, "InputBoxTemplate")
-	box:SetSize(width, 22)
-	box:SetAutoFocus(false)
-	box:SetFontObject("GameFontHighlight")
-	local fs = parent:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	fs:SetPoint("BOTTOMLEFT", box, "TOPLEFT", -4, 2)
-	fs:SetText(label)
-	box:SetScript("OnEscapePressed", box.ClearFocus)
-	return box
-end
-
 -- Shift-click on an item puts its link into the focused item field.
 local itemBox
 local function InsertLink(link)
-	if itemBox and itemBox:HasFocus() and link then
-		itemBox:SetText(link)
-		return true
+	for _, box in ipairs({ itemBox, ignoreWin and ignoreWin.box }) do
+		if box and box:HasFocus() and link then
+			box:SetText(link)
+			return true
+		end
 	end
 end
 if ChatEdit_InsertLink then hooksecurefunc("ChatEdit_InsertLink", InsertLink) end
@@ -239,6 +403,7 @@ function ns.ToggleWishlist()
 		end
 		itemBox = InputBox(wishWin, 170, L["Item (shift-click, name or ID)"])
 		itemBox:SetPoint("TOPLEFT", 22, -54)
+		Suggest(itemBox)
 		local priceBox = InputBox(wishWin, 90, L["Max. price/unit"])
 		wishWin.priceBox = priceBox
 		priceBox:SetPoint("LEFT", itemBox, "RIGHT", 12, 0)
@@ -282,7 +447,8 @@ function ns.ToggleWishlist()
 			if ns.RefreshWindow then ns.RefreshWindow() end
 		end
 		add:SetScript("OnClick", Add)
-		for _, box in ipairs({ itemBox, priceBox, qtyBox }) do box:SetScript("OnEnterPressed", Add) end
+		itemBox:SetScript("OnEnterPressed", function() OnEnter(itemBox, Add) end)
+		for _, box in ipairs({ priceBox, qtyBox }) do box:SetScript("OnEnterPressed", Add) end
 	end
 	wishWin:SetShown(not wishWin:IsShown())
 end

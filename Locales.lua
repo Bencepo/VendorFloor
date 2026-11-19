@@ -346,3 +346,4 @@ L["Clears the purchases VendorFloor still counts as to sell, e.g. items you kept
 L["Forget all purchases VendorFloor still counts as to sell? The ledger of past sales stays."] = "Alle Käufe vergessen, die VendorFloor noch als zu verkaufen zählt? Die Bilanz bisheriger Verkäufe bleibt."
 L["VendorFloor %s: everything is in the auction house tab and its menu."] = "VendorFloor %s: alles findest du im Auktionshaus-Tab und seinem Menü."
 L["/vfloor – show or hide VendorFloor at the auction house"] = "/vfloor – VendorFloor im Auktionshaus zeigen oder ausblenden"
+L["Hide"] = "Ausblenden"
