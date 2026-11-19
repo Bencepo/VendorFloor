@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.3
+
+- "Internal auction error" no longer stops a purchase. WoW Forever's auction house sends it with purchases that go through: VendorFloor now waits two seconds for the confirmation, takes the red line off the screen, and counts the purchase as failed only if no confirmation comes.
+- A purchase the auction house really refuses is not the end: VendorFloor tries the next auction of the same item.
+- One click per purchase: once a find is bought out, the next find of the list is checked right away, so the next click buys it. Finds that turn out gone are skipped on the way.
+- An empty answer from the auction house is asked once more before a find counts as gone.
+- Menu > Purchase log: what happened during the last purchases, ready to copy into a bug report (Report a bug in the settings).
+
 ## 1.0.2
 
 - "Your auctions" counts again: sales and expired auctions are now read from the mailbox (the invoice of each sale, the "Auction expired" mail), since the game hides the chat lines about them from addons. Statistics update when you open the mailbox, and sales made while you were offline count too. Each mail is counted once.

@@ -134,6 +134,34 @@ local function ParseMoney(text)
 end
 ns.ParseMoney, ns.PlainMoney = ParseMoney, PlainMoney
 
+-- What happened during the last purchases: Menu > Purchase log, for bug reports.
+ns.log = {}
+function ns.Log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	ns.log[#ns.log + 1] = ("%s  %s"):format(date("%H:%M:%S"), ok and text or fmt)
+	if #ns.log > 80 then table.remove(ns.log, 1) end
+end
+
+-- Forever's auction house shows "Internal auction error" with purchases that go through.
+-- Right after our own bid that red line is taken off the screen; should the purchase really
+-- fail, it is shown after all (Tick).
+ns.hideDbErrorUntil = 0
+function ns.ShowError(msg)
+	if UIErrorsFrame and msg then UIErrorsFrame:AddMessage(msg, 1, 0.1, 0.1, 1) end
+end
+function ns.ExpectDbError() ns.hideDbErrorUntil = GetTime() + 1.5 end
+if UIErrorsFrame and hooksecurefunc then
+	local function OnErrorShown(_, msg)
+		if issecretvalue and issecretvalue(msg) then return end
+		if msg == ERR_AUCTION_DATABASE_ERROR and GetTime() < ns.hideDbErrorUntil then
+			ns.hideDbErrorUntil = 0
+			UIErrorsFrame:Clear()
+		end
+	end
+	if UIErrorsFrame.AddExternalErrorMessage then hooksecurefunc(UIErrorsFrame, "AddExternalErrorMessage", OnErrorShown) end
+	hooksecurefunc(UIErrorsFrame, "AddMessage", OnErrorShown)
+end
+
 local function SetStatus(msg)
 	statusText = msg or ""
 	if ui then ui.status:SetText(statusText) end
@@ -706,9 +734,11 @@ Verify = function(d, purpose)
 	if d.plainKey and not d.triedPlain and keyStyle[d.id] == "plain" then
 		d.key, d.triedPlain = d.plainKey, true
 	end
+	local chain = buy.chain
 	wipe(buy)
-	buy.state, buy.deal, buy.t, buy.purpose = "verifying", d, GetTime(), purpose
+	buy.state, buy.deal, buy.t, buy.purpose, buy.chain = "verifying", d, GetTime(), purpose, purpose == "buy" and chain or nil
 	tries = 0
+	ns.Log("search %s (%s, key %s:%s)", tostring(d.name), purpose, tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel))
 	Send(function() AH.SendSearchQuery(d.key, SORTS, true) end)
 	if purpose == "check" then
 		SetStatus(L["Checking: %s (%d left)"]:format(d.link or d.name or "?", #queue))
@@ -836,9 +866,10 @@ local function ReadCommodity()
 	local offer = CommodityOffer(d, ns.Budget(GetMoney()))
 	if not offer then
 		RemoveDeal(d)
-		ResetBuy(L["Nothing below vendor price any more (or not enough gold)."])
+		ns.Gone(L["Nothing below vendor price any more (or not enough gold)."])
 		return
 	end
+	d.askedAgain = nil
 	buy.state, buy.qty, buy.cost = "commodity_ready", offer.count, offer.cost
 	SetStatus(L["%d× %s below vendor price, profit about %s."]:format(offer.count, d.link or d.name, Money(offer.profit)))
 	Refresh()
@@ -864,10 +895,12 @@ local function ReadItem()
 			return
 		end
 		RemoveDeal(d)
-		ResetBuy(L["Nothing below vendor price any more."])
+		ns.Gone(L["Nothing below vendor price any more."])
 		return
 	end
+	d.askedAgain = nil
 	local best = offer.best
+	ns.Log("offer %s: auction %s, %s for %d", tostring(d.name), tostring(best.auctionID), tostring(best.buyout), best.quantity)
 	if d.triedPlain and d.plainKey then keyStyle[d.id] = "plain" end
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 	buy.state = "item_ready"
@@ -909,6 +942,8 @@ local function Action()
 			SetStatus(stop)
 			return
 		end
+		ns.Log("PlaceBid %s @ %s (%s)", tostring(buy.auctionID), tostring(buy.buyout), tostring(d.name))
+		ns.ExpectDbError()
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		-- an auction is bid on once: if it is still listed afterwards, the purchase failed
 		-- ("Internal auction error") and the next check moves on instead of offering it again
@@ -917,7 +952,7 @@ local function Action()
 			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
 		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
-		buy.state, buy.t = "bought", GetTime()
+		buy.state, buy.t, buy.chain, buy.confirmed, buy.dbErrorAt = "bought", GetTime(), true, nil, nil
 	elseif state == "commodity_ready" then
 		local stop = ns.Guard(buy.cost or 0, ns.SlotsFor(d.id, buy.qty))
 		if stop then
@@ -933,7 +968,7 @@ local function Action()
 	Refresh()
 end
 
-local BUSY = { quoting = true, confirming = true, bought = true }
+local BUSY = { quoting = true, confirming = true, bought = true, failed = true }
 
 local function Select(d)
 	local state = buy.state
@@ -961,6 +996,35 @@ function VendorFloor_BuyNext()
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	local d = (selected and deals[selected.k] and selected) or View()[1]
 	if d then Select(d) end
+end
+
+-- A find has nothing left to buy. Right after a purchase the next find of the list is
+-- checked at once, so the next click buys it (as in TransmogSweep).
+function ns.Gone(msg)
+	local chain = buy.chain
+	ResetBuy(msg)
+	if not (chain and ahOpen and ui and ui:IsShown()) then return end
+	local d = View()[1]
+	if d then
+		selected = d
+		buy.chain = true -- a find that turns out gone moves on to the next one too
+		Select(d)
+	end
+end
+
+-- A purchase the auction house refused: the next auction of the same item is tried.
+function ns.PurchaseFailed(msg)
+	local d = buy.deal
+	ns.Log("purchase failed: %s (auction %s)", tostring(msg), tostring(buy.auctionID))
+	wipe(buy)
+	buy.state, buy.deal, buy.t, buy.chain = "failed", d, GetTime(), true
+	SetStatus(L["Purchase failed (%s). Trying the next auction …"]:format(msg or "?"))
+	Refresh()
+	C_Timer.After(1.5, function()
+		if buy.state == "failed" and buy.deal == d then
+			if deals[d.k] then Verify(d, "buy") else ns.Gone() end
+		end
+	end)
 end
 
 ---------------------------------------------------------------------------
@@ -1823,18 +1887,27 @@ local function Tick()
 		-- No answer to a purchase check: the auction house sends none for a search without
 		-- results. Gear from a full scan gets a second try with the plain item key, then it is gone.
 		local d = buy.deal
-		if d and NextVariant(d) then
+		if d and not d.askedAgain then
+			-- an empty answer is asked once more before the item counts as gone
+			d.askedAgain = true
+			ns.Log("no answer for %s, asking again", tostring(d.name))
+			Verify(d, "buy")
+		elseif d and NextVariant(d) then
 			Verify(d, "buy")
 		elseif d and d.plainKey and not d.triedPlain then
 			d.key, d.triedPlain = d.plainKey, true
 			Verify(d, "buy")
 		else
 			if d then RemoveDeal(d) end
-			ResetBuy(L["Nothing below vendor price any more."])
+			ns.Gone(L["Nothing below vendor price any more."])
 		end
 	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
 		ResetBuy(L["No answer while checking."])
-	elseif state == "bought" and now - buy.t > 1.5 then
+	elseif state == "bought" and buy.dbErrorAt and not buy.confirmed and now - buy.dbErrorAt > 2 then
+		-- "Internal auction error" and no confirmation after it: this time it was real
+		ns.ShowError(ERR_AUCTION_DATABASE_ERROR)
+		ns.PurchaseFailed(ERR_AUCTION_DATABASE_ERROR)
+	elseif state == "bought" and now - buy.t > 1.5 and (buy.confirmed or not buy.dbErrorAt) then
 		Verify(buy.deal, "buy") -- more of it below the vendor price?
 	elseif (state == "quoting" or state == "confirming") and now - buy.t > 12 then
 		CancelQuote()
@@ -2691,6 +2764,7 @@ local function BuildUI()
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
 		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
 		{ L["Ignore list"], function() if ns.ToggleIgnoreList then ns.ToggleIgnoreList() end end },
+		{ L["Purchase log"], function() if ns.ShowCopy then ns.ShowCopy(L["VendorFloor: purchase log"], table.concat(ns.log, "\n")) end end },
 		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
@@ -3226,6 +3300,8 @@ end
 handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 
 function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
+	ns.Log("purchase completed %s", tostring(auctionID))
+	if buy.state == "bought" and buy.auctionID == auctionID then buy.confirmed = true end
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
@@ -3274,23 +3350,38 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	ns.WishBought(d.id, buy.qty, d.mode)
 	RemoveDeal(d)
-	ResetBuy(L["Bought."])
+	buy.chain = true
+	ns.Gone(L["Bought."])
 end
 
 -- An item purchase the auction house refused ("Internal auction error" and the like).
 ns.AUCTION_ERRORS = {}
-for _, key in ipairs({ "ERR_AUCTION_DATABASE_ERROR", "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
+-- "Internal auction error" is left out: Forever's auction house sends it with purchases that
+-- go through. It counts only if no confirmation follows within 2 seconds (Tick).
+for _, key in ipairs({ "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
 	"ERR_AUCTION_BID_OWN", "ERR_NOT_ENOUGH_MONEY" }) do
 	if _G[key] then ns.AUCTION_ERRORS[_G[key]] = true end
 end
 function handlers.UI_ERROR_MESSAGE(_, msg)
 	if issecretvalue and issecretvalue(msg) then return end
-	if buy.state == "bought" and msg and ns.AUCTION_ERRORS[msg] then
-		ResetBuy(L["Purchase failed (%s). This auction is skipped."]:format(msg))
+	if buy.state ~= "bought" or not msg then return end
+	if msg == ERR_AUCTION_DATABASE_ERROR then
+		buy.dbErrorAt = buy.dbErrorAt or GetTime()
+		ns.Log("internal auction error after bid %s", tostring(buy.auctionID))
+	elseif ns.AUCTION_ERRORS[msg] then
+		ns.PurchaseFailed(msg)
 	end
 end
 
+-- the auction house's own error channel (the red message in its window)
+function handlers.AUCTION_HOUSE_SHOW_ERROR(err)
+	ns.Log("AH error %s", tostring(err))
+	local dbError = Enum and Enum.AuctionHouseError and Enum.AuctionHouseError.DatabaseError or 10
+	if err == dbError and buy.state == "bought" then buy.dbErrorAt = buy.dbErrorAt or GetTime() end
+end
+
 function handlers.COMMODITY_PURCHASE_FAILED()
+	ns.Log("commodity purchase failed")
 	if buy.state == "confirming" or buy.state == "quoting" then ResetBuy(L["Purchase failed."]) end
 end
 

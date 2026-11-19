@@ -479,3 +479,56 @@ function ns.WishPrefill(itemID, price)
 	wishWin.priceBox:SetText(price and ns.PlainMoney and ns.PlainMoney(price) or "")
 	wishWin.priceBox:SetFocus()
 end
+
+---------------------------------------------------------------------------
+-- A text to copy (Ctrl+C), e.g. the purchase log for a bug report
+---------------------------------------------------------------------------
+
+local copyWin
+function ns.ShowCopy(title, text)
+	if not copyWin then
+		local ok, w = pcall(CreateFrame, "Frame", "VendorFloorCopyFrame", UIParent, "BasicFrameTemplateWithInset")
+		if not ok or not w then
+			w = CreateFrame("Frame", "VendorFloorCopyFrame", UIParent, "BackdropTemplate")
+			w:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+				edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true, tileSize = 32, edgeSize = 32,
+				insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+			local close = CreateFrame("Button", nil, w, "UIPanelCloseButton")
+			close:SetPoint("TOPRIGHT", -4, -4)
+		end
+		w:SetSize(560, 400)
+		w:SetPoint("CENTER")
+		w:SetFrameStrata("DIALOG")
+		w:SetMovable(true)
+		w:EnableMouse(true)
+		w:RegisterForDrag("LeftButton")
+		w:SetScript("OnDragStart", w.StartMoving)
+		w:SetScript("OnDragStop", w.StopMovingOrSizing)
+		w.title = w.TitleText or w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+		if not w.TitleText then w.title:SetPoint("TOP", 0, -16) end
+		local hint = w:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+		hint:SetPoint("BOTTOMLEFT", 16, 12)
+		hint:SetText(L["Ctrl+C copies the text. Paste it into your bug report."])
+		local sf = CreateFrame("ScrollFrame", nil, w, "UIPanelScrollFrameTemplate")
+		sf:SetPoint("TOPLEFT", 16, -32)
+		sf:SetPoint("BOTTOMRIGHT", -34, 30)
+		local box = CreateFrame("EditBox", nil, sf)
+		box:SetMultiLine(true)
+		box:SetFontObject("GameFontHighlightSmall")
+		box:SetWidth(500)
+		box:SetAutoFocus(false)
+		box:SetScript("OnEscapePressed", function() w:Hide() end)
+		-- read-only: typing puts the text back
+		box:SetScript("OnTextChanged", function(b, user) if user then b:SetText(w.text or "") b:HighlightText() end end)
+		sf:SetScrollChild(box)
+		w.box = box
+		tinsert(UISpecialFrames, "VendorFloorCopyFrame")
+		copyWin = w
+	end
+	copyWin.title:SetText(title)
+	copyWin.text = text ~= "" and text or L["Nothing logged yet. Buy something first."]
+	copyWin.box:SetText(copyWin.text)
+	copyWin:Show()
+	copyWin.box:SetFocus()
+	copyWin.box:HighlightText()
+end
