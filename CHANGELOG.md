@@ -4,6 +4,8 @@
 
 - VendorFloor is now a tab of the auction house window, next to Buy, Sell and Auctions, instead of a separate window beside it. The tab is added with LibAHTab, the library Auctionator uses too: the tabs of all addons stay visible in one row, and Blizzard's tab list is left alone (changing it would taint your bags).
 - Laid out like the auction house's own tabs: scan buttons on top, the lists (Vendor, Disenchant, Crafting) and the profit filters on the left like Blizzard's categories, the result list with column headers (price, value, profit, quantity) on the right, the buy button bottom right. Blizzard buttons, input field and insets, title in the window's title bar. Your gold stays visible below it.
+- Column headers in Blizzard's style; click one to sort by name, price, value, profit or quantity, click again to reverse. The buy button follows the order shown.
+- The menu opens as Blizzard's context menu and no longer slides under the list.
 - New setting "Small tab": the VendorFloor tab only as wide as its text, so more addon tabs fit in one row. Until you set it, it follows Auctionator's "Small tabs".
 - The auction house opens on the tab you used last: leave it on VendorFloor and it is there right away next time.
 - Away from the auction house (crafting button in a profession window) VendorFloor still opens as a window of its own.

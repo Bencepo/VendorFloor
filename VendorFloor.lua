@@ -83,6 +83,7 @@ local function View()
 	for _, d in ipairs(order) do
 		if (d.mode or "vendor") == tab and Shown(d) then list[#list + 1] = d end
 	end
+	if ns.SortList then ns.SortList(list) end
 	return list
 end
 
@@ -1766,9 +1767,45 @@ local HEADERS = {
 	de = { L["Price"], L["Disenchant value"], L["Profit"], L["Qty"] },
 	craft = { L["Reagents"], L["Sells for"], L["Profit"], L["Via"] },
 }
+-- Sorting by a column header (click: sort, again: reverse). Unsorted: best profit first.
+local SORT_FIELDS = {
+	name = function(x) return (x.name or ""):lower() end,
+	price = function(x) return x.price or x.cost or 0 end,
+	value = function(x) return x.vendor or x.revenue or 0 end,
+	profit = function(x) return x.profit or 0 end,
+	qty = function(x) return x.count or (x.route == "ah" and 1 or 0) end,
+}
+function ns.SortList(list)
+	local s = db and db.sort
+	local get = s and SORT_FIELDS[s.key]
+	if not get then return end
+	table.sort(list, function(a, b)
+		local x, y = get(a), get(b)
+		if x == y then return (a.profit or 0) > (b.profit or 0) end
+		if s.desc then return x > y end
+		return x < y
+	end)
+end
+
+function ns.SortBy(key)
+	local s = db.sort
+	if s and s.key == key then
+		s.desc = not s.desc
+	else
+		db.sort = { key = key, desc = key ~= "name" and key ~= "price" }
+	end
+	offset = 0
+	Refresh()
+end
+
 function ns.ListHeader(tab)
 	local h, t = ui and ui.hdr, HEADERS[tab] or HEADERS.vendor
 	if not h then return end
+	for key, cell in pairs(ui.hdrCells) do
+		local on = db.sort and db.sort.key == key
+		cell.arrow:SetShown(on and true or false)
+		if on then cell.arrow:SetTexCoord(0, 0.5625, db.sort.desc and 0 or 1, db.sort.desc and 1 or 0) end
+	end
 	h.price:SetText(t[1])
 	h.value:SetText(t[2])
 	h.profit:SetText(t[3])
@@ -1780,6 +1817,7 @@ end
 local function RefreshCraft()
 	local list, miss = {}, 0
 	if ns.CraftResults then list, miss = ns.CraftResults() end
+	ns.SortList(list)
 	local maxOffset = max(#list - ROWS, 0)
 	offset = max(min(offset, maxOffset), 0)
 	ui.empty:SetShown(#list == 0)
@@ -2255,32 +2293,60 @@ local function BuildUI()
 	listInset:SetPoint("TOPLEFT", LIST_X - 4, -46)
 	listInset:SetPoint("BOTTOMRIGHT", 0, AHT.bottom - 4)
 
-	-- column headers of the result list, relabelled per tab (ns.ListHeader)
+	-- column headers of the result list like Blizzard's (relabelled per tab in ns.ListHeader);
+	-- a click sorts by that column
 	local COLS = { { "qty", 52 }, { "profit", 104 }, { "value", 112 }, { "price", 112 } }
 	local hdr = CreateFrame("Frame", nil, body)
-	hdr:SetPoint("TOPLEFT", LIST_X, -50)
-	hdr:SetPoint("RIGHT", body, "RIGHT", -4, 0)
-	hdr:SetHeight(20)
-	local hbg = hdr:CreateTexture(nil, "BACKGROUND")
-	hbg:SetAllPoints()
-	hbg:SetColorTexture(0, 0, 0, 0.45)
-	local hline = hdr:CreateTexture(nil, "ARTWORK")
-	hline:SetColorTexture(0.6, 0.5, 0.25, 0.5)
-	hline:SetHeight(1)
-	hline:SetPoint("BOTTOMLEFT")
-	hline:SetPoint("BOTTOMRIGHT")
-	f.hdr = {}
-	local hx = -6
-	for _, col in ipairs(COLS) do
-		local fs = hdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-		fs:SetPoint("RIGHT", hx, 0)
-		fs:SetWidth(col[2])
-		fs:SetJustifyH("RIGHT")
-		f.hdr[col[1]] = fs
-		hx = hx - col[2]
+	hdr:SetPoint("TOPLEFT", LIST_X - 1, -49)
+	hdr:SetPoint("RIGHT", body, "RIGHT", -3, 0)
+	hdr:SetHeight(22)
+	local TABS_TEX = "Interface\\FriendsFrame\\WhoFrame-ColumnTabs"
+	local function HeaderCell(key, alignRight)
+		local c = CreateFrame("Button", nil, hdr)
+		c:SetHeight(22)
+		local l = c:CreateTexture(nil, "BACKGROUND")
+		l:SetTexture(TABS_TEX)
+		l:SetTexCoord(0, 0.078125, 0, 0.75)
+		l:SetSize(5, 22)
+		l:SetPoint("TOPLEFT")
+		local r = c:CreateTexture(nil, "BACKGROUND")
+		r:SetTexture(TABS_TEX)
+		r:SetTexCoord(0.90625, 0.96875, 0, 0.75)
+		r:SetSize(4, 22)
+		r:SetPoint("TOPRIGHT")
+		local m = c:CreateTexture(nil, "BACKGROUND")
+		m:SetTexture(TABS_TEX)
+		m:SetTexCoord(0.078125, 0.90625, 0, 0.75)
+		m:SetPoint("TOPLEFT", l, "TOPRIGHT")
+		m:SetPoint("BOTTOMRIGHT", r, "BOTTOMLEFT")
+		c:SetHighlightTexture("Interface\\PaperDollInfoFrame\\UI-Character-Tab-Highlight", "ADD")
+		c.text = c:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		c.arrow = c:CreateTexture(nil, "OVERLAY")
+		c.arrow:SetTexture("Interface\\Buttons\\UI-SortArrow")
+		c.arrow:SetSize(9, 8)
+		c.arrow:Hide()
+		if alignRight then
+			c.text:SetPoint("RIGHT", -8, 0)
+			c.arrow:SetPoint("RIGHT", c.text, "LEFT", -3, 0)
+		else
+			c.text:SetPoint("LEFT", 26, 0)
+			c.arrow:SetPoint("LEFT", c.text, "RIGHT", 3, 0)
+		end
+		c:SetScript("OnClick", function() ns.SortBy(key) end)
+		return c
 	end
-	f.hdr.name = hdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-	f.hdr.name:SetPoint("LEFT", 28, 0)
+	f.hdr, f.hdrCells = {}, {}
+	local prevCell
+	for _, col in ipairs(COLS) do
+		local c = HeaderCell(col[1], true)
+		c:SetWidth(col[2])
+		if prevCell then c:SetPoint("RIGHT", prevCell, "LEFT", 0, 0) else c:SetPoint("RIGHT", hdr, "RIGHT", 0, 0) end
+		f.hdr[col[1]], f.hdrCells[col[1]], prevCell = c.text, c, c
+	end
+	local nameCell = HeaderCell("name", false)
+	nameCell:SetPoint("LEFT", hdr, "LEFT", 0, 0)
+	nameCell:SetPoint("RIGHT", prevCell, "LEFT", 0, 0)
+	f.hdr.name, f.hdrCells.name = nameCell.text, nameCell
 	f.hdr.name:SetText(L["Name"])
 	f.COLS = COLS
 
@@ -2457,6 +2523,8 @@ local function BuildUI()
 		tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
 	menu:SetBackdropColor(0, 0, 0, 0.92)
 	menu:SetFrameStrata("DIALOG")
+	menu:SetFixedFrameStrata(true) -- keep DIALOG when the panel moves into the auction house window
+	menu:SetFrameLevel(50)
 	menu:SetPoint("TOPRIGHT", menuBtn, "BOTTOMRIGHT", 0, -2)
 	menu:Hide()
 	local entries = {
@@ -2477,7 +2545,16 @@ local function BuildUI()
 		end)
 	end
 	menu:SetSize(202, 12 + #entries * 28 - 4)
-	menuBtn:SetScript("OnClick", function() menu:SetShown(not menu:IsShown()) end)
+	menuBtn:SetScript("OnClick", function(self)
+		-- Blizzard's own context menu where the client has it, else a small list of buttons
+		if MenuUtil and MenuUtil.CreateContextMenu then
+			MenuUtil.CreateContextMenu(self, function(_, root)
+				for _, e in ipairs(entries) do root:CreateButton(e[1], function() e[2]() end) end
+			end)
+		else
+			menu:SetShown(not menu:IsShown())
+		end
+	end)
 	f:HookScript("OnHide", function() menu:Hide() end)
 
 	-- progress bar under the buttons
