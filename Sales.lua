@@ -1,7 +1,7 @@
 -- VendorFloor
 -- Copyright (c) 2026 Bencepo. All rights reserved. See LICENSE.
 --
--- Own auction sales: what you post (hooked from the auction house, works with Auctionator),
+-- Own auction sales: what you post (hooked from the auction house, works with any auction addon),
 -- when a buyer is found and what expires. From this VendorFloor learns how fast an item
 -- sells, at what price it really sold, and how often it sells at all. Disenchant materials
 -- and crafted items are then valued at the price that sold, times the share that sells.

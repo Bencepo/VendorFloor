@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.0
+
+- VendorFloor is now a tab of the auction house window, next to Buy, Sell and Auctions (and the tabs of other auction addons), instead of a separate window beside it. The panel fills the auction house window and shows more rows; your gold stays visible below it.
+- The auction house opens on the tab you used last: leave it on VendorFloor and it is there right away next time.
+- Away from the auction house (crafting button in a profession window) VendorFloor still opens as a window of its own.
+- No longer tied to Auctionator: works with any or no other auction addon.
+
 ## 0.9.3
 
 - Full scan works again. The request went out while a search was still under way, and the auction house drops such a request without an answer. VendorFloor now sends it once the auction house is free and sends it again if it is dropped.

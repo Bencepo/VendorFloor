@@ -1,6 +1,6 @@
 # VendorFloor
 
-Auction house sniper for WoW Forever. Finds auctions that are worth more than they cost: below vendor price, below disenchant value, or the reagents for a profitable craft. It runs in its own small window next to Auctionator, and every purchase is your own click.
+Auction house sniper for WoW Forever. Finds auctions that are worth more than they cost: below vendor price, below disenchant value, or the reagents for a profitable craft. It lives as its own tab in the auction house window, works alongside other auction addons, and every purchase is your own click.
 
 **Website and live demo:** https://bencepo.github.io/vendorfloor/
 
@@ -54,11 +54,11 @@ Everything is also available in the window and the settings. For those who prefe
 | `/vfloor stats` / `export` | Totals since install / ledger export |
 | `/vfloor forget` | Forget the purchases still to sell |
 | `/vfloor minimap` | Hide or show the minimap button |
-| `/vfloor options` / `reset` | Open the settings / reset the window position |
+| `/vfloor options` / `reset` | Open the settings / reset the position of the detached window |
 
 ## Notes
 
-- Stop the scan before running an Auctionator search. Both addons share the auction house's query channel.
+- Stop the scan before searching on another tab or with another auction addon. All searches share the auction house's query channel.
 - Built for WoW Forever 1.60.1. Libraries: LibStub, CallbackHandler, LibDataBroker, LibDBIcon (bundled).
 
 ## Releasing

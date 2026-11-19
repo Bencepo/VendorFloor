@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: VendorFloor
-## Notes: Auction house sniper: finds auctions below vendor price, below disenchant value and profitable crafts. One-click buy, collect and sell. Works next to Auctionator.
-## Notes-deDE: Auktionshaus-Sniper: findet Auktionen unter Händlerpreis, unter Entzauberwert und profitable Rezepte. Kaufen, abholen und verkaufen mit je einem Klick. Läuft neben Auctionator.
+## Notes: Auction house sniper: finds auctions below vendor price, below disenchant value and profitable crafts. One-click buy, collect and sell, as a tab in the auction house window.
+## Notes-deDE: Auktionshaus-Sniper: findet Auktionen unter Händlerpreis, unter Entzauberwert und profitable Rezepte. Kaufen, abholen und verkaufen mit je einem Klick, als Tab im Auktionshausfenster.
 ## Author: Bencepo
 ## Version: @project-version@
 ## X-Website: https://bencepo.github.io/vendorfloor/
@@ -11,7 +11,6 @@
 ## SavedVariables: VendorFloorDB
 ## IconTexture: Interface\AddOns\VendorFloor\Icons\minimap
 ## AddonCompartmentFunc: VendorFloor_OnCompartmentClick
-## OptionalDeps: Auctionator
 
 Libs\LibStub\LibStub.lua
 Libs\CallbackHandler-1.0\CallbackHandler-1.0.lua
