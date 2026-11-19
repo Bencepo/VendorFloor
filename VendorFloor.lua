@@ -1186,6 +1186,16 @@ end
 function ns.PurchaseFailed(msg)
 	local d = buy.deal
 	ns.Log("purchase failed: %s (auction %s)", tostring(msg), tostring(buy.auctionID))
+	if d then
+		-- the auction house keeps listing auctions that are gone: three refusals and the find is dropped
+		d.fails = (d.fails or 0) + 1
+		if d.fails >= 3 then
+			ns.Log("%s dropped after %d refused auctions", tostring(d.name), d.fails)
+			RemoveDeal(d)
+			ns.Gone(L["Nothing below vendor price any more."])
+			return
+		end
+	end
 	wipe(buy)
 	buy.state, buy.deal, buy.t, buy.chain = "failed", d, GetTime(), true
 	SetStatus(L["Purchase failed (%s). Trying the next auction …"]:format(msg or "?"))
