@@ -209,7 +209,9 @@ local function AddButton()
 	local parent = ProfessionsFrame or TradeSkillFrame
 	if button or not parent or not ns.FlatButton then return end
 	button = ns.FlatButton(parent, 150, 24, "primary")
-	button:SetPoint("TOPRIGHT", parent, "BOTTOMRIGHT", 0, -4)
+	-- above the window, never near "Create" / "Create All": below it the button lay over them,
+	-- because the window's frame reaches further down than its art
+	button:SetPoint("BOTTOMRIGHT", parent, "TOPRIGHT", parent == TradeSkillFrame and -34 or 0, 4)
 	button:SetText(L["Craft profits"])
 	button:SetScript("OnClick", function()
 		ScanRecipes()

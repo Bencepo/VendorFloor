@@ -6,6 +6,7 @@
 - The auction house opens on the tab you used last: leave it on VendorFloor and it is there right away next time.
 - Away from the auction house (crafting button in a profession window) VendorFloor still opens as a window of its own.
 - No longer tied to Auctionator: works with any or no other auction addon.
+- The "Craft profits" button sits above the profession window now. Below it, it could cover the "Create" button so that only "Create All" worked.
 
 ## 0.9.3
 
