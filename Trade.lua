@@ -103,8 +103,18 @@ function ns.RecordBuy(itemID, qty, cost, value, mode)
 	local db = DB()
 	if not db or not itemID then return end
 	qty = max(floor(qty or 1), 1)
+	-- every purchase counts for the spending limit and the bag slots it will take
+	Add(session, "allSpent", cost or 0)
+	ns.mailSlots = (ns.mailSlots or 0) + (ns.SlotsFor and ns.SlotsFor(itemID, qty) or 1)
 	if mode == "de" then
 		RecordOther(itemID, qty, cost)
+		return
+	end
+	if mode == "wish" then
+		-- watchlist purchases are yours to keep: collected with the others, never sold
+		db.debought = db.debought or {}
+		db.debought[itemID] = (db.debought[itemID] or 0) + qty
+		Changed()
 		return
 	end
 	local b = db.bought[itemID] or { units = 0, cost = 0 }

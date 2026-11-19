@@ -18,6 +18,24 @@ describe("VendorFloor", function()
 		env.items[11288] = { name = "Greater Magic Wand", quality = 2, ilvl = 23, minLevel = 18, classID = 2 }
 	end)
 
+	describe("watchlist and limits", function()
+		it("a watchlist find only needs to stay within the limit", function()
+			db.minProfit, db.minPercent = 100, 50
+			assert.is_true(ns.Fits({ mode = "wish" }, 1000, 1000))
+			assert.is_false(ns.Fits({ mode = "wish" }, 1000, 1001))
+			assert.is_false(ns.Fits({ mode = "vendor" }, 1000, 1000))
+		end)
+		it("the spending limit caps what may be spent", function()
+			ns.session = { allSpent = 15000 }
+			db.spendLimit = 2
+			assert.equal(5000, ns.Budget(100000))
+			assert.is_not_nil(ns.Guard(6000, 1))
+			assert.is_nil(ns.Guard(4000, 1))
+			db.spendLimit = 0
+			assert.equal(100000, ns.Budget(100000))
+		end)
+	end)
+
 	describe("ParseMoney", function()
 		it("reads gold, silver and copper", function()
 			assert.equal(12000, T.ParseMoney("1g 20s"))

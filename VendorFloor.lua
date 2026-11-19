@@ -34,7 +34,7 @@ local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
 local MAX_CHECKS = 150         -- checks per round at most
-local TABS = { "vendor", "de", "craft" }
+local TABS = { "vendor", "de", "craft", "wish" }
 
 local defaults = {
 	minPercent = 0,       -- minimum profit in percent of the price (0: off)
@@ -46,6 +46,9 @@ local defaults = {
 	sound = true,         -- sound on a new find
 	loop = false,         -- continuous mode: scan again after each round
 	interval = 20,        -- seconds between two rounds
+	spendLimit = 0,       -- gold that may be spent per session (0: no limit)
+	keepSlots = 0,        -- bag slots to keep free, counting purchases still in the mail (0: off)
+	tooltip = false,      -- VendorFloor's values in item tooltips
 }
 local db
 
@@ -72,6 +75,7 @@ local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults,
 -- The finds of the tab shown, in list order.
 -- A find passes the minimum profit in percent (changeable at any time, also for listed finds).
 local function Shown(d)
+	if d.mode == "wish" then return true end -- watchlist: your own price limit, no profit filter
 	if d.mode == "de" and ns.CanDisenchant and not ns.CanDisenchant(d.id) then return false end
 	local pct = db and db.minPercent or 0
 	if pct <= 0 or not (d.price and d.vendor) or d.price <= 0 then return true end
@@ -128,6 +132,7 @@ local function ParseMoney(text)
 	end
 	return found and total or nil
 end
+ns.ParseMoney, ns.PlainMoney = ParseMoney, PlainMoney
 
 local function SetStatus(msg)
 	statusText = msg or ""
@@ -276,6 +281,45 @@ local function Worth(target, unit, count)
 end
 ns.Worth = Worth
 
+-- Worth it for this find: watchlist finds only need to stay within your price limit.
+function ns.Fits(d, target, unit, count)
+	if d and d.mode == "wish" then return unit >= 1 and unit <= target end
+	return Worth(target, unit, count)
+end
+
+-- Spending limit and free bag slots (settings). Purchases arrive by mail: the slots they
+-- will take count from the purchase on until the mailbox has been visited.
+function ns.Budget(money)
+	local limit = (db.spendLimit or 0) * 10000
+	if limit <= 0 then return money end
+	return max(0, min(money, limit - (ns.session and ns.session.allSpent or 0)))
+end
+
+function ns.FreeSlots()
+	local free = 0
+	local get = C_Container and C_Container.GetContainerNumFreeSlots
+	if not get then return nil end
+	for _, bag in ipairs(ns.BAGS or { 0, 1, 2, 3, 4 }) do free = free + (get(bag) or 0) end
+	return free - (ns.mailSlots or 0)
+end
+
+-- nil when the purchase may go ahead, else the reason why not.
+function ns.Guard(cost, slots)
+	if (db.spendLimit or 0) > 0 and cost > ns.Budget(cost) then
+		return L["Spending limit of this session reached (%s). Change it in the settings."]:format(Money(db.spendLimit * 10000))
+	end
+	local free = (db.keepSlots or 0) > 0 and ns.FreeSlots()
+	if free and free - (slots or 1) < db.keepSlots then
+		return L["Bags almost full: %d slots free (purchases in the mail counted), %d to keep free."]:format(max(free, 0), db.keepSlots)
+	end
+end
+
+-- Bag slots an amount of an item takes.
+function ns.SlotsFor(item, qty)
+	local stack = select(8, GetItemInfo(item)) or 1
+	return math.ceil(max(qty or 1, 1) / max(stack, 1))
+end
+
 local function IsGear(item)
 	local equipLoc = select(9, GetItemInfo(item))
 	return equipLoc ~= nil and equipLoc ~= "" and equipLoc ~= "INVTYPE_NON_EQUIP_IGNORE"
@@ -311,6 +355,7 @@ end
 -- Messages about a disenchant find name its disenchant value instead of the vendor price.
 local function DeText(d, text)
 	if d and d.mode == "de" then return (text:gsub("vendor pays %%s", "disenchanting brings about %%s")) end
+	if d and d.mode == "wish" then return (text:gsub("vendor pays %%s", "your limit %%s")) end
 	return text
 end
 
@@ -400,6 +445,8 @@ local function Evaluate(result)
 	end
 	-- each tab scans for itself: the vendor tab only for vendor finds, the disenchant tab only for gear
 	if scan.mode ~= "de" then
+		local want = db.wishlist and db.wishlist[id]
+		if want and price <= want.max then AddCandidate(result, "wish", want.max, id, name, link, icon) end
 		if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
 		return
 	end
@@ -441,7 +488,7 @@ local function Ignore(d)
 	for _, other in pairs(deals) do
 		if other.id == d.id then RemoveDeal(other) end
 	end
-	Print(L["Hidden: %s. /vfloor ignore clear shows it again."]:format(d.link or d.name or d.id))
+	Print(L["Hidden: %s. Menu > Ignore list shows it again."]:format(d.link or d.name or d.id))
 	Refresh()
 end
 
@@ -457,9 +504,46 @@ end
 -- Scan: the whole auction house item list, page by page
 ---------------------------------------------------------------------------
 
+-- Watchlist round: one search per watched item, checked against your price limit.
+function ns.StartWish()
+	if not ahOpen or buy.state or full.active then return false end
+	scan.mode = "vendor"
+	scan.round = scan.round + 1
+	wipe(queue)
+	wipe(queued)
+	for id, want in pairs(db.wishlist or {}) do
+		local _, name, link, icon = VendorPrice(id)
+		local key = AH.MakeItemKey and AH.MakeItemKey(id)
+		if key then
+			local k = GroupKey(key, "wish")
+			local d = deals[k] or { k = k }
+			d.key, d.id, d.vendor, d.mode = key, id, want.max, "wish"
+			d.name, d.link, d.icon, d.dropped = name or want.name, link, icon, nil
+			d.price = d.price or want.max
+			d.browsePrice = nil
+			d.commodity = IsCommodity(key) == true
+			queued[k] = d
+			Enqueue(d)
+		end
+	end
+	if not queue[1] then
+		SetStatus(L["The watchlist is empty. Add items with \"Edit watchlist\"."])
+		Refresh()
+		return false
+	end
+	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
+	SetStatus(L["Watchlist: checking %d items …"]:format(#queue))
+	Refresh()
+	return true
+end
+
 StartScan = function()
 	if not ahOpen then
 		Print(L["The auction house must be open."])
+		return
+	end
+	if db.tab == "wish" then
+		ns.StartWish()
 		return
 	end
 	if buy.state or full.active then return end
@@ -534,6 +618,8 @@ NextRound = function()
 	scan.rounds = (scan.rounds or 0) + 1
 	if db.tab == "craft" then
 		if not StartCraftScan() then scan.nextAt = GetTime() + db.interval end
+	elseif db.tab == "wish" then
+		if not ns.StartWish() then scan.nextAt = GetTime() + db.interval end
 	elseif db.tab == "de" then
 		StartScan()
 	elseif scan.rounds % 3 ~= 0 and StartQuick() then
@@ -544,11 +630,15 @@ NextRound = function()
 end
 
 local function RoundDone()
-	local v, e = newFinds.vendor or 0, newFinds.de or 0
+	local v, e, w = newFinds.vendor or 0, newFinds.de or 0, newFinds.wish or 0
 	wipe(newFinds)
 	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d."]:format(scan.seen, v, e))
 	if v + e > 0 then
 		Print(L["New finds: vendor %d, disenchant %d."]:format(v, e))
+		Alert()
+	end
+	if w > 0 then
+		Print(L["Watchlist: %d items within your price limit."]:format(w))
 		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + db.interval end
@@ -671,15 +761,17 @@ local function CommodityOffer(d, limit)
 	local count, cost, first = 0, 0, nil
 	for i = 1, (AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(d.id) or 0) do
 		local info = AH.GetCommoditySearchResultInfo(d.id, i)
-		if not info or not info.unitPrice or not Worth(d.vendor, info.unitPrice) then break end
+		if not info or not info.unitPrice or not ns.Fits(d, d.vendor, info.unitPrice) then break end
 		local n = (info.quantity or 0) - (info.numOwnerItems or 0)
 		if limit then n = min(n, floor((limit - cost) / info.unitPrice)) end
+		local want = d.mode == "wish" and db.wishlist and db.wishlist[d.id]
+		if want and (want.qty or 0) > 0 then n = min(n, want.qty - count) end
 		if n > 0 then
 			first = first or info.unitPrice
 			count, cost = count + n, cost + n * info.unitPrice
 		end
 	end
-	if count <= 0 or ((db.minSlot or 0) > 0 and count * d.vendor - cost < db.minSlot) then return nil end
+	if count <= 0 or (d.mode ~= "wish" and (db.minSlot or 0) > 0 and count * d.vendor - cost < db.minSlot) then return nil end
 	return { unit = first, count = count, cost = cost, profit = count * d.vendor - cost }
 end
 
@@ -695,7 +787,7 @@ local function ItemOffer(d)
 			-- vendor finds compare each auction with its own vendor price, the other tabs with the find's value
 			local vendor = (d.mode or "vendor") == "vendor" and info.itemLink and VendorPrice(info.itemLink) or d.vendor
 			local unit = info.buyoutAmount / quantity
-			if vendor and Worth(vendor, unit, quantity) then
+			if vendor and ns.Fits(d, vendor, unit, quantity) then
 				count, profit = count + quantity, profit + (vendor - unit) * quantity
 				if not best or unit < best.unit then
 					best = { auctionID = info.auctionID, buyout = info.buyoutAmount, quantity = quantity,
@@ -741,7 +833,7 @@ local function ReadCommodity()
 		FinishCheck(d, CommodityOffer(d))
 		return
 	end
-	local offer = CommodityOffer(d, GetMoney())
+	local offer = CommodityOffer(d, ns.Budget(GetMoney()))
 	if not offer then
 		RemoveDeal(d)
 		ResetBuy(L["Nothing below vendor price any more (or not enough gold)."])
@@ -812,6 +904,11 @@ local function Action()
 			SetStatus(L["Not enough gold."])
 			return
 		end
+		local stop = ns.Guard(buy.buyout, 1)
+		if stop then
+			SetStatus(stop)
+			return
+		end
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		-- an auction is bid on once: if it is still listed afterwards, the purchase failed
 		-- ("Internal auction error") and the next check moves on instead of offering it again
@@ -822,6 +919,11 @@ local function Action()
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
 		buy.state, buy.t = "bought", GetTime()
 	elseif state == "commodity_ready" then
+		local stop = ns.Guard(buy.cost or 0, ns.SlotsFor(d.id, buy.qty))
+		if stop then
+			SetStatus(stop)
+			return
+		end
 		if AH.StartCommoditiesPurchase then AH.StartCommoditiesPurchase(d.id, buy.qty) end
 		buy.state, buy.t = "quoting", GetTime()
 	elseif state == "quote_ok" then
@@ -1429,7 +1531,7 @@ local function FinishFull(failed)
 		end
 	end
 	-- 2. finds per tab
-	local found, counts = {}, { vendor = 0, de = 0 }
+	local found, counts = {}, { vendor = 0, de = 0, wish = 0 }
 	local function add(mode, pk, it, target, unit, count)
 		local k = GroupKey(it.key, mode)
 		local g = found[k]
@@ -1454,6 +1556,8 @@ local function FinishFull(failed)
 			if not own then
 				if it.vendor > 0 and Worth(it.vendor, unit, count) then add("vendor", pk, it, it.vendor, unit, count) end
 				if de and Worth(de, unit, count) then add("de", pk, it, de, unit, count) end
+				local want = db.wishlist and db.wishlist[it.id]
+				if want and unit <= want.max then add("wish", pk, it, want.max, unit, count) end
 			end
 		end
 	end
@@ -1749,6 +1853,7 @@ end
 ---------------------------------------------------------------------------
 
 local TAB_HINT = {
+	wish = "Items you want, at or below your price limit. Add them with \"Edit watchlist\" (shift-click an item into the field). \"Scan\" searches each watched item; normal and full scans fill this list too.",
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
 	de = "Green and blue weapons and armor below what disenchanting them brings (WoW Forever disenchant tables and your own results, materials at the cheapest listings). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
 	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
@@ -1766,7 +1871,22 @@ local HEADERS = {
 	vendor = { L["Price"], L["Vendor price"], L["Profit"], L["Qty"] },
 	de = { L["Price"], L["Disenchant value"], L["Profit"], L["Qty"] },
 	craft = { L["Reagents"], L["Sells for"], L["Profit"], L["Via"] },
+	wish = { L["Price"], L["Your limit"], L["Below limit"], L["Qty"] },
 }
+-- Scroll bar of the result list follows the offset.
+function ns.UpdateScroll(total)
+	local sb = ui and ui.scrollBar
+	if not sb then return end
+	local maxOffset = max(total - ROWS, 0)
+	sb.updating = true
+	sb:SetMinMaxValues(0, maxOffset)
+	sb:SetValue(offset)
+	sb.updating = false
+	if sb.ScrollUpButton then sb.ScrollUpButton:SetEnabled(offset > 0) end
+	if sb.ScrollDownButton then sb.ScrollDownButton:SetEnabled(offset < maxOffset) end
+	if ui.editWish then ui.editWish:SetShown(db.tab == "wish") end
+end
+
 -- Sorting by a column header (click: sort, again: reverse). Unsorted: best profit first.
 local SORT_FIELDS = {
 	name = function(x) return (x.name or ""):lower() end,
@@ -1841,6 +1961,7 @@ local function RefreshCraft()
 	ui.summary:SetText(#list == 0 and "" or profText == "" and L[#list == 1 and "1 craft with profit" or "%d crafts with profit"]:format(#list)
 		or L[#list == 1 and "1 craft with profit · %s" or "%d crafts with profit · %s"]:format(#list, profText))
 	ui.count:SetText(#list > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #list), #list) or "")
+	ns.UpdateScroll(#list)
 	if miss > 0 and not craft.active then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
 	ui.action:SetText(L["Read recipes: open a profession window"])
 	ui.action:SetEnabled(false)
@@ -1930,6 +2051,7 @@ Refresh = function()
 		or L["%d finds · cost %s · profit %s"]:format(#view, Money(cost), Money(profit))) or "")
 	ui.loop:SetChecked(db.loop)
 	ui.count:SetText(#view > ROWS and L["%d–%d of %d"]:format(offset + 1, min(offset + ROWS, #view), #view) or "")
+	ns.UpdateScroll(#view)
 
 	local state, text, enabled = buy.state, L["Click a find"], false
 	if not state or buy.purpose == "check" then
@@ -2298,7 +2420,7 @@ local function BuildUI()
 	local COLS = { { "qty", 52 }, { "profit", 104 }, { "value", 112 }, { "price", 112 } }
 	local hdr = CreateFrame("Frame", nil, body)
 	hdr:SetPoint("TOPLEFT", LIST_X - 1, -49)
-	hdr:SetPoint("RIGHT", body, "RIGHT", -3, 0)
+	hdr:SetPoint("RIGHT", body, "RIGHT", -25, 0)
 	hdr:SetHeight(22)
 	local TABS_TEX = "Interface\\FriendsFrame\\WhoFrame-ColumnTabs"
 	local function HeaderCell(key, alignRight)
@@ -2403,7 +2525,7 @@ local function BuildUI()
 	local profit = CreateFrame("EditBox", nil, body, "InputBoxTemplate")
 	profit:SetFontObject("GameFontHighlight")
 	profit:SetSize(LEFT_W - 28, 20)
-	profit:SetPoint("TOPLEFT", 16, -152)
+	profit:SetPoint("TOPLEFT", 16, -176)
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
@@ -2441,7 +2563,7 @@ local function BuildUI()
 
 	-- tabs: one list per kind of find, never mixed
 	f.tabs = {}
-	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"] }
+	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"], wish = L["Watchlist"] }
 	local nav = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("auctionhouse-nav-button")
 	-- a category button like the auction house's list on the left (its atlas when the client has it)
 	local function NavButton()
@@ -2480,7 +2602,7 @@ local function BuildUI()
 	-- minimum profit in percent: click for more, right-click for less
 	local PRESETS = { 0, 5, 10, 15, 20, 25, 35, 50 }
 	local pct = FlatButton(body, LEFT_W - 12, 22)
-	pct:SetPoint("TOPLEFT", 6, -180)
+	pct:SetPoint("TOPLEFT", 6, -204)
 	pct:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	local function ShowPct()
 		local v = db.minPercent or 0
@@ -2514,6 +2636,36 @@ local function BuildUI()
 	ShowPct()
 	f.pct, f.ShowPct = pct, ShowPct
 
+	-- watchlist and ignore list: windows of their own (Lists.lua)
+	f.editWish = FlatButton(body, LEFT_W - 12, 22)
+	f.editWish:SetPoint("TOPLEFT", 6, -238)
+	f.editWish:SetText(L["Edit watchlist"])
+	f.editWish:SetScript("OnClick", function() if ns.ToggleWishlist then ns.ToggleWishlist() end end)
+
+	-- scroll bar of the result list, like Blizzard's
+	local okSb, sb = pcall(CreateFrame, "Slider", "VendorFloorScrollBar", body, "UIPanelScrollBarTemplate")
+	if not okSb or not sb then
+		sb = CreateFrame("Slider", nil, body)
+		sb:SetOrientation("VERTICAL")
+		sb:SetThumbTexture("Interface\\Buttons\\UI-ScrollBar-Knob")
+	end
+	sb:SetPoint("TOPRIGHT", body, "TOPRIGHT", -5, -AHT.top - 16)
+	sb:SetPoint("BOTTOMRIGHT", body, "BOTTOMRIGHT", -5, AHT.bottom + 14)
+	sb:SetWidth(16)
+	sb:SetMinMaxValues(0, 0)
+	sb:SetValueStep(1)
+	if sb.SetObeyStepOnDrag then sb:SetObeyStepOnDrag(true) end
+	sb.scrollStep = 3
+	sb:SetScript("OnValueChanged", function(self, v)
+		if self.updating then return end
+		v = floor(v + 0.5)
+		if v ~= offset then
+			offset = v
+			Refresh()
+		end
+	end)
+	f.scrollBar = sb
+
 	-- menu: everything that used to need a chat command
 	local menuBtn = FlatButton(body, 80, 22)
 	menuBtn:SetPoint("TOPRIGHT", -4, -12)
@@ -2533,6 +2685,8 @@ local function BuildUI()
 		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], ns.SalesLines and ns.SalesLines() or {}) end },
 		{ L["Export for the website"], function() ns.ShowExport() end },
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
+		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
+		{ L["Ignore list"], function() if ns.ToggleIgnoreList then ns.ToggleIgnoreList() end end },
 		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
@@ -2579,7 +2733,7 @@ local function BuildUI()
 		local row = CreateFrame("Button", nil, body)
 		row:SetHeight(ROW_HEIGHT)
 		row:SetPoint("TOPLEFT", LIST_X, -AHT.top - (i - 1) * ROW_HEIGHT)
-		row:SetPoint("RIGHT", body, "RIGHT", -4, 0)
+		row:SetPoint("RIGHT", body, "RIGHT", -26, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		if i % 2 == 0 then
 			local zebra = row:CreateTexture(nil, "BACKGROUND", nil, -1)
@@ -2794,7 +2948,7 @@ local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 320, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 380, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -2839,7 +2993,19 @@ local function BuildSettings()
 			AHT.SizeTab()
 		end)
 
-	w:Text(16, -256, L["Finer amounts and the other filters are set in the auction house window."], 360)
+	w:Check(X, -240, L["Values in item tooltips"], L["Adds disenchant value, latest auction price and your watchlist limit to item tooltips. Off by default: many addons show such values already."],
+		function() return db.tooltip end, function(v) db.tooltip = v and true or false end)
+
+	X = 16
+	w:Header(X, -232, L["Limits"])
+	w:Slider(X, -256, L["Spending limit per session (gold)"], 0, 1000, 10, function() return db.spendLimit or 0 end,
+		function(v) db.spendLimit = v end, L["VendorFloor stops buying once this session's purchases reach it. 0 turns it off."], 190,
+		function(v) return v > 0 and (v .. " g") or L["off"] end)
+	w:Slider(X, -296, L["Keep bag slots free"], 0, 40, 1, function() return db.keepSlots or 0 end,
+		function(v) db.keepSlots = v end, L["Stops buying when fewer bag slots would stay free. Purchases still in the mail count until you visit the mailbox. 0 turns it off."], 190,
+		function(v) return v > 0 and tostring(v) or L["off"] end)
+
+	w:Text(16, -340, L["Finer amounts and the other filters are set in the auction house window."], 480)
 end
 
 function ns.ToggleSettings()
@@ -2884,7 +3050,7 @@ function handlers.ADDON_LOADED(name)
 		for itemID, n in pairs(db.debought or {}) do db.deBasket[itemID] = n end
 	end
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
-	if db.tab ~= "vendor" and db.tab ~= "de" and db.tab ~= "craft" then db.tab = "vendor" end
+	if db.tab ~= "vendor" and db.tab ~= "de" and db.tab ~= "craft" and db.tab ~= "wish" then db.tab = "vendor" end
 	ns.db = db
 	local ok, err = pcall(RegisterSettings)
 	if not ok then Print(tostring(err)) end
@@ -3009,6 +3175,7 @@ function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
 	if not p then return end
 	pendingBuys[auctionID] = nil
 	ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
+	ns.WishBought(p.id, p.qty, p.mode)
 end
 
 -- In case the client has no purchase event: the "You won an auction for ..." line.
@@ -3021,6 +3188,7 @@ function handlers.CHAT_MSG_SYSTEM(msg)
 		if p.name == name and GetTime() - p.at < 60 then
 			pendingBuys[auctionID] = nil
 			ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
+			ns.WishBought(p.id, p.qty, p.mode)
 			return
 		end
 	end
@@ -3029,7 +3197,7 @@ end
 function handlers.COMMODITY_PRICE_UPDATED(_, total)
 	if buy.state ~= "quoting" then return end
 	local d = buy.deal
-	if total and total <= buy.qty * (d.vendor - db.minProfit) then
+	if total and total <= buy.qty * (d.vendor - (d.mode == "wish" and 0 or db.minProfit)) then
 		buy.state, buy.total, buy.t = "quote_ok", total, GetTime()
 		SetStatus(L[DeText(d, "Quote: %d× for %s, vendor pays %s.")]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
 		Refresh()
@@ -3049,6 +3217,7 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 	Print(L[DeText(d, "Bought: %s ×%d for %s (vendor pays %s).")]:format(d.link or d.name, buy.qty, Money(buy.total),
 		Money(buy.qty * d.vendor)))
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
+	ns.WishBought(d.id, buy.qty, d.mode)
 	RemoveDeal(d)
 	ResetBuy(L["Bought."])
 end
@@ -3070,6 +3239,11 @@ function handlers.COMMODITY_PURCHASE_FAILED()
 end
 
 local events = CreateFrame("Frame")
+-- the mailbox was visited: purchases in the mail no longer count as taken bag slots
+function handlers.MAIL_CLOSED()
+	ns.mailSlots = 0
+end
+
 for event in pairs(handlers) do
 	pcall(events.RegisterEvent, events, event)
 end
