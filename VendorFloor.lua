@@ -1430,6 +1430,7 @@ end
 local noDeFrame = CreateFrame("Frame")
 noDeFrame:RegisterEvent("UI_ERROR_MESSAGE")
 noDeFrame:SetScript("OnEvent", function(_, _, _, msg)
+	if issecretvalue and issecretvalue(msg) then return end -- messages the game hides from addons (secret values)
 	if deTarget and ERR_CANT_BE_DISENCHANTED and msg == ERR_CANT_BE_DISENCHANTED then
 		db.noDE = db.noDE or {}
 		db.noDE[deTarget] = true
@@ -3235,7 +3236,7 @@ end
 -- In case the client has no purchase event: the "You won an auction for ..." line.
 local WON_PATTERN = ERR_AUCTION_WON_S and ("^" .. ERR_AUCTION_WON_S:gsub("([%(%)%.%+%-%*%?%[%]%^%$])", "%%%1"):gsub("%%s", "(.+)") .. "$")
 function handlers.CHAT_MSG_SYSTEM(msg)
-	if not (WON_PATTERN and msg) then return end
+	if not (WON_PATTERN and msg) or issecretvalue and issecretvalue(msg) then return end -- secret: hidden from addons
 	local name = msg:match(WON_PATTERN)
 	if not name then return end
 	for auctionID, p in pairs(pendingBuys) do
@@ -3283,6 +3284,7 @@ for _, key in ipairs({ "ERR_AUCTION_DATABASE_ERROR", "ERR_ITEM_NOT_FOUND", "ERR_
 	if _G[key] then ns.AUCTION_ERRORS[_G[key]] = true end
 end
 function handlers.UI_ERROR_MESSAGE(_, msg)
+	if issecretvalue and issecretvalue(msg) then return end
 	if buy.state == "bought" and msg and ns.AUCTION_ERRORS[msg] then
 		ResetBuy(L["Purchase failed (%s). This auction is skipped."]:format(msg))
 	end

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.1
+
+- Fixed Lua errors "attempt to index local 'msg' (a secret string value)": the game now hides some chat and error lines from addons. VendorFloor skips those instead of reading them. Purchases and sales are still recorded through the auction house events.
+
 ## 1.0.0
 
 - VendorFloor is now a tab of the auction house window, next to Buy, Sell and Auctions, instead of a separate window beside it. The tab is added with LibAHTab, the library Auctionator uses too: the tabs of all addons stay visible in one row, and Blizzard's tab list is left alone (changing it would taint your bags).

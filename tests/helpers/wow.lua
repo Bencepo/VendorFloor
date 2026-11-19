@@ -49,6 +49,7 @@ function M.Load(addon, files, setup)
 	env.SlashCmdList = {}
 	env.UISpecialFrames = {}
 	env.ERR_AUCTION_SOLD_S = "A buyer has been found for your auction of %s."
+	env.issecretvalue = function() return false end
 	env.ERR_AUCTION_EXPIRED_S = "Your auction of %s has expired."
 	env.ERR_CANT_BE_DISENCHANTED = "Item cannot be disenchanted"
 	env.ERR_AUCTION_WON_S = "You won an auction for %s"

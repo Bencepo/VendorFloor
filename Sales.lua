@@ -90,6 +90,8 @@ end
 
 local function OnSystem(msg)
 	local db = DB()
+	-- the game hides some chat lines from addons as secret values: those cannot be read
+	if issecretvalue and issecretvalue(msg) then return end
 	if not (db and db.open and type(msg) == "string") then return end
 	local name = SOLD and msg:match(SOLD)
 	if name then

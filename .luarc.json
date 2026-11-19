@@ -21,6 +21,7 @@
     "ERR_AUCTION_WON_S",
     "ERR_CANT_BE_DISENCHANTED",
     "GetSpellInfo",
+    "issecretvalue",
     "ItemRefTooltip",
     "MailFrame",
     "MerchantFrame",
