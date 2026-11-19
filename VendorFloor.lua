@@ -1753,6 +1753,29 @@ local TAB_HINT = {
 	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
 
+-- Result list columns (built in BuildUI): price, value, profit and quantity per row.
+function ns.RowColumns(row, price, value, profit, qty)
+	row.price:SetText(price)
+	row.value:SetText(value)
+	row.profit:SetText(profit)
+	row.qty:SetText(qty)
+end
+
+local HEADERS = {
+	vendor = { L["Price"], L["Vendor price"], L["Profit"], L["Qty"] },
+	de = { L["Price"], L["Disenchant value"], L["Profit"], L["Qty"] },
+	craft = { L["Reagents"], L["Sells for"], L["Profit"], L["Via"] },
+}
+function ns.ListHeader(tab)
+	local h, t = ui and ui.hdr, HEADERS[tab] or HEADERS.vendor
+	if not h then return end
+	h.price:SetText(t[1])
+	h.value:SetText(t[2])
+	h.profit:SetText(t[3])
+	h.qty:SetText(t[4])
+	h.name:SetText(tab == "craft" and L["Recipe"] or L["Name"])
+end
+
 -- Crafting tab: rows show recipes instead of auctions.
 local function RefreshCraft()
 	local list, miss = {}, 0
@@ -1767,8 +1790,8 @@ local function RefreshCraft()
 		if c then
 			row.icon:SetTexture(c.icon)
 			row.name:SetText((c.link or c.name) .. (c.qty ~= 1 and (" ×" .. c.qty) or ""))
-			row.info:SetText(("%s > %s  |cff6cc58c+%s|r |cff8d97a5(%s)|r"):format(Money(c.cost), Money(c.revenue),
-				Money(c.profit), c.route == "ah" and L["AH"] or L["merchant"]))
+			ns.RowColumns(row, Money(c.cost), Money(c.revenue), "|cff6cc58c+" .. Money(c.profit) .. "|r",
+				c.route == "ah" and L["AH"] or L["merchant"])
 			row.mark:Hide()
 			row:Show()
 		else
@@ -1788,6 +1811,7 @@ end
 
 Refresh = function()
 	if not ui then return end
+	ns.ListHeader(db.tab)
 	local view = View()
 	local maxOffset = max(#view - ROWS, 0)
 	offset = max(min(offset, maxOffset), 0)
@@ -1811,8 +1835,8 @@ Refresh = function()
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			row.info:SetText(("%s > %s%s  |cff6cc58c+%s|r |cff8d97a5(%s×)|r"):format(Money(d.price),
-				d.mode == "de" and L["DE ~"] or "", Money(d.vendor), Money(d.profit or 0), d.count and tostring(d.count) or "?"))
+			ns.RowColumns(row, Money(d.price), (d.mode == "de" and "~" or "") .. Money(d.vendor),
+				"|cff6cc58c+" .. Money(d.profit or 0) .. "|r", d.count and (d.count .. "×") or "?")
 			row.mark:SetShown(d == selected)
 			row:Show()
 		else
@@ -1948,6 +1972,8 @@ local AHT = {
 	tab = nil,                   -- our tab button (LibAHTab)
 	hooked = {},                 -- other tab buttons whose clicks are hooked
 	maxRows = 24,                -- rows built; a tall auction house window shows more of them
+	top = 73,                    -- body: first list row below its top
+	bottom = 74,                 -- body: room below the list (lines and the buy button)
 	dialog = { bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark", edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
 		tile = true, tileSize = 32, edgeSize = 32, insets = { left = 11, right = 12, top = 12, bottom = 11 } },
 }
@@ -1955,7 +1981,7 @@ local AHT = {
 function AHT.Layout(f)
 	f = f or ui
 	if not f or not f.rows then return end
-	ROWS = max(3, min(AHT.maxRows, floor((f:GetHeight() - 222) / ROW_HEIGHT)))
+	ROWS = max(3, min(AHT.maxRows, floor((f.body:GetHeight() - AHT.top - AHT.bottom) / ROW_HEIGHT)))
 	for i = ROWS + 1, AHT.maxRows do f.rows[i]:Hide() end
 end
 
@@ -1979,13 +2005,18 @@ local function PlaceWindow()
 		ui:SetPoint("TOPLEFT", AuctionHouseFrame, "TOPLEFT", AHT.inset[1], AHT.inset[2])
 		ui:SetPoint("BOTTOMRIGHT", AuctionHouseFrame, "BOTTOMRIGHT", AHT.inset[3], AHT.inset[4])
 		ui:SetBackdrop(nil)
+		ui.body:ClearAllPoints()
+		ui.body:SetAllPoints(ui)
 		for _, r in ipairs(standalone) do r:Hide() end
 	else
 		-- away from the auction house (the crafting button of a profession window): a window of its own
 		ui.embedded = false
 		ui:SetParent(UIParent)
 		ui:SetFrameStrata("HIGH")
-		ui:SetSize(580, 222 + 12 * ROW_HEIGHT)
+		ui:SetSize(800, 42 + AHT.top + AHT.bottom + 12 * ROW_HEIGHT)
+		ui.body:ClearAllPoints()
+		ui.body:SetPoint("TOPLEFT", 12, -30)
+		ui.body:SetPoint("BOTTOMRIGHT", -12, 12)
 		if db.point then
 			ui:SetPoint(db.point[1], UIParent, db.point[2], db.point[3], db.point[4])
 		else
@@ -2024,9 +2055,30 @@ function AHT.CreateTab()
 			db.hidden = false
 			ns.ShowWindow()
 		end)
+		AHT.tab:HookScript("OnShow", AHT.SizeTab)
 	end
+	AHT.SizeTab()
 	AHT.HookOthers()
 end
+
+-- "Small tab" (settings): as narrow as the text allows, like Auctionator's small tabs.
+-- Unset, it follows Auctionator's setting when Auctionator is installed.
+function AHT.SmallTab()
+	if db.smallTab ~= nil then return db.smallTab end
+	local A = _G.Auctionator
+	local ok, small = pcall(function() return A.Config.Get(A.Config.Options.SMALL_TABS) end)
+	return ok and small and true or false
+end
+
+function AHT.SizeTab()
+	if not AHT.tab or not PanelTemplates_TabResize then return end
+	if AHT.SmallTab() then
+		PanelTemplates_TabResize(AHT.tab, 0, nil, 36)
+	else
+		PanelTemplates_TabResize(AHT.tab, 20, nil, 70)
+	end
+end
+ns.SizeTab = AHT.SizeTab
 
 ---------------------------------------------------------------------------
 -- Look: flat dark panels in the colours of bencepo.github.io
@@ -2138,10 +2190,6 @@ local function BuildUI()
 	local f = CreateFrame("Frame", "VendorFloorFrame", UIParent, "BackdropTemplate")
 	f:SetSize(580, 222 + ROWS * ROW_HEIGHT)
 	f:SetFrameStrata("HIGH")
-	f:SetScript("OnSizeChanged", function(self)
-		AHT.Layout(self)
-		if ui and ui:IsShown() then Refresh() end
-	end)
 	f:SetMovable(true)
 	f:SetClampedToScreen(true)
 	f:EnableMouse(true)
@@ -2165,6 +2213,18 @@ local function BuildUI()
 		scan.nextAt = nil
 	end)
 
+	-- body: everything but the title row of the detached window. Inside the auction house
+	-- it fills the window like Blizzard's own tabs: buttons on top, categories on the
+	-- left, the result list with column headers on the right, the buy button bottom right.
+	local body = CreateFrame("Frame", nil, f)
+	body:SetAllPoints(f)
+	body:SetScript("OnSizeChanged", function()
+		AHT.Layout(f)
+		if ui and ui:IsShown() then Refresh() end
+	end)
+	f.body = body
+	local LEFT_W, LIST_X = 150, 160
+
 	local title = f:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", 12, -9)
 	title:SetText("VendorFloor")
@@ -2179,12 +2239,50 @@ local function BuildUI()
 	head:SetPoint("TOPRIGHT", -1, -30)
 	f.title, f.version, f.head = title, version, head
 	-- dark inset behind the list, like the auction house's result lists
-	local okInset, inset = pcall(CreateFrame, "Frame", nil, f, "InsetFrameTemplate")
-	if okInset and inset then
-		inset:SetPoint("TOPLEFT", 4, -92)
-		inset:SetPoint("BOTTOMRIGHT", -4, 100)
-		inset:SetFrameLevel(f:GetFrameLevel())
+	local function Inset()
+		local ok, inset = pcall(CreateFrame, "Frame", nil, body, "InsetFrameTemplate")
+		if not ok or not inset then
+			inset = CreateFrame("Frame", nil, body, "BackdropTemplate")
+			Flat(inset, { 0, 0, 0, 0.35 }, { 0.3, 0.3, 0.3, 0.8 })
+		end
+		inset:SetFrameLevel(body:GetFrameLevel())
+		return inset
 	end
+	local catInset = Inset()
+	catInset:SetPoint("TOPLEFT", 0, -46)
+	catInset:SetPoint("BOTTOMRIGHT", body, "BOTTOMLEFT", LEFT_W, AHT.bottom - 4)
+	local listInset = Inset()
+	listInset:SetPoint("TOPLEFT", LIST_X - 4, -46)
+	listInset:SetPoint("BOTTOMRIGHT", 0, AHT.bottom - 4)
+
+	-- column headers of the result list, relabelled per tab (ns.ListHeader)
+	local COLS = { { "qty", 52 }, { "profit", 104 }, { "value", 112 }, { "price", 112 } }
+	local hdr = CreateFrame("Frame", nil, body)
+	hdr:SetPoint("TOPLEFT", LIST_X, -50)
+	hdr:SetPoint("RIGHT", body, "RIGHT", -4, 0)
+	hdr:SetHeight(20)
+	local hbg = hdr:CreateTexture(nil, "BACKGROUND")
+	hbg:SetAllPoints()
+	hbg:SetColorTexture(0, 0, 0, 0.45)
+	local hline = hdr:CreateTexture(nil, "ARTWORK")
+	hline:SetColorTexture(0.6, 0.5, 0.25, 0.5)
+	hline:SetHeight(1)
+	hline:SetPoint("BOTTOMLEFT")
+	hline:SetPoint("BOTTOMRIGHT")
+	f.hdr = {}
+	local hx = -6
+	for _, col in ipairs(COLS) do
+		local fs = hdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		fs:SetPoint("RIGHT", hx, 0)
+		fs:SetWidth(col[2])
+		fs:SetJustifyH("RIGHT")
+		f.hdr[col[1]] = fs
+		hx = hx - col[2]
+	end
+	f.hdr.name = hdr:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	f.hdr.name:SetPoint("LEFT", 28, 0)
+	f.hdr.name:SetText(L["Name"])
+	f.COLS = COLS
 
 	local close = FlatButton(f, 22, 20)
 	close:SetPoint("TOPRIGHT", -6, -5)
@@ -2192,8 +2290,8 @@ local function BuildUI()
 	close:SetScript("OnClick", function() f:Hide() end)
 	f.close = close
 
-	f.scan = FlatButton(f, 90, 24)
-	f.scan:SetPoint("TOPLEFT", 10, -38)
+	f.scan = FlatButton(body, 80, 22)
+	f.scan:SetPoint("TOPLEFT", LIST_X, -12)
 	f.scan:SetScript("OnClick", function()
 		if craft.active then
 			StopCraftScan(L["Scan stopped."])
@@ -2209,7 +2307,7 @@ local function BuildUI()
 	end)
 
 	-- full scan: every auction at once, allowed every 15 minutes
-	f.full = FlatButton(f, 130, 24)
+	f.full = FlatButton(body, 116, 22)
 	f.full:SetPoint("LEFT", f.scan, "RIGHT", 6, 0)
 	f.full:SetScript("OnClick", function() StartFull() end)
 	f.full:HookScript("OnEnter", function(self)
@@ -2223,7 +2321,7 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 
-	local loop = FlatToggle(f, L["Continuous"], 120)
+	local loop = FlatToggle(body, L["Continuous"], 116)
 	loop:SetPoint("LEFT", f.full, "RIGHT", 6, 0)
 	loop:SetChecked(db.loop)
 	loop:SetScript("OnClick", function(self)
@@ -2232,14 +2330,14 @@ local function BuildUI()
 	end)
 	f.loop = loop
 
-	f.count = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	f.count:SetPoint("TOPRIGHT", -110, -10)
+	f.count = body:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	f.count:SetPoint("BOTTOMRIGHT", -6, AHT.bottom + 2)
 
 	-- Minimum profit per unit: how far below the vendor price an auction must be
-	local profit = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+	local profit = CreateFrame("EditBox", nil, body, "InputBoxTemplate")
 	profit:SetFontObject("GameFontHighlight")
-	profit:SetSize(80, 22)
-	profit:SetPoint("TOPRIGHT", -12, -39)
+	profit:SetSize(LEFT_W - 28, 20)
+	profit:SetPoint("TOPLEFT", 16, -152)
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
@@ -2271,30 +2369,52 @@ local function BuildUI()
 		if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 	end)
 	f.profit = profit
-	local profitText = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-	profitText:SetPoint("RIGHT", profit, "LEFT", -8, 0)
+	local profitText = body:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	profitText:SetPoint("BOTTOMLEFT", profit, "TOPLEFT", -4, 3)
 	profitText:SetText(L["Min. profit/unit"])
 
 	-- tabs: one list per kind of find, never mixed
 	f.tabs = {}
 	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"] }
-	local prev
-	for _, mode in ipairs(TABS) do
-		local tab = FlatButton(f, 132, 24)
+	local nav = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("auctionhouse-nav-button")
+	-- a category button like the auction house's list on the left (its atlas when the client has it)
+	local function NavButton()
+		if not nav then return FlatButton(body, LEFT_W - 12, 22) end
+		local b = CreateFrame("Button", nil, body)
+		b:SetSize(LEFT_W - 12, 22)
+		b:SetNormalAtlas("auctionhouse-nav-button")
+		b:SetHighlightAtlas("auctionhouse-nav-button-highlight")
+		b.sel = b:CreateTexture(nil, "ARTWORK")
+		b.sel:SetAtlas("auctionhouse-nav-button-select")
+		b.sel:SetAllPoints()
+		b.sel:Hide()
+		local fs = b:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		fs:SetPoint("LEFT", 10, 0)
+		fs:SetPoint("RIGHT", -6, 0)
+		fs:SetJustifyH("LEFT")
+		b:SetFontString(fs)
+		function b:SetOn(on)
+			self.sel:SetShown(on)
+			fs:SetFontObject(on and "GameFontHighlightSmall" or "GameFontNormalSmall")
+		end
+		return b
+	end
+	for i, mode in ipairs(TABS) do
+		local tab = NavButton()
 		tab.label = labels[mode]
-		if prev then tab:SetPoint("LEFT", prev, "RIGHT", 6, 0) else tab:SetPoint("TOPLEFT", 10, -68) end
+		tab:SetPoint("TOPLEFT", 6, -52 - (i - 1) * 24)
 		tab:SetScript("OnClick", function()
 			db.tab, offset = mode, 0
 			if selected and (selected.mode or "vendor") ~= mode then selected = nil end
 			Refresh()
 		end)
-		f.tabs[mode], prev = tab, tab
+		f.tabs[mode] = tab
 	end
 
 	-- minimum profit in percent: click for more, right-click for less
 	local PRESETS = { 0, 5, 10, 15, 20, 25, 35, 50 }
-	local pct = FlatButton(f, 140, 24)
-	pct:SetPoint("TOPRIGHT", -10, -68)
+	local pct = FlatButton(body, LEFT_W - 12, 22)
+	pct:SetPoint("TOPLEFT", 6, -180)
 	pct:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	local function ShowPct()
 		local v = db.minPercent or 0
@@ -2329,11 +2449,13 @@ local function BuildUI()
 	f.pct, f.ShowPct = pct, ShowPct
 
 	-- menu: everything that used to need a chat command
-	local menuBtn = FlatButton(f, 70, 20)
-	menuBtn:SetPoint("TOPRIGHT", -32, -5)
+	local menuBtn = FlatButton(body, 80, 22)
+	menuBtn:SetPoint("TOPRIGHT", -4, -12)
 	menuBtn:SetText(L["Menu"])
 	local menu = CreateFrame("Frame", nil, f, "BackdropTemplate")
-	Flat(menu, C.panel, C.gold)
+	menu:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+	menu:SetBackdropColor(0, 0, 0, 0.92)
 	menu:SetFrameStrata("DIALOG")
 	menu:SetPoint("TOPRIGHT", menuBtn, "BOTTOMRIGHT", 0, -2)
 	menu:Hide()
@@ -2359,16 +2481,16 @@ local function BuildUI()
 	f:HookScript("OnHide", function() menu:Hide() end)
 
 	-- progress bar under the buttons
-	f.bar = CreateFrame("StatusBar", nil, f)
-	f.bar:SetPoint("TOPLEFT", 10, -98)
-	f.bar:SetPoint("RIGHT", f, "RIGHT", -10, 0)
-	f.bar:SetHeight(14)
-	f.bar:SetStatusBarTexture(WHITE)
-	f.bar:SetStatusBarColor(unpack(C.gold))
+	f.bar = CreateFrame("StatusBar", nil, body)
+	f.bar:SetPoint("LEFT", loop, "RIGHT", 12, 0)
+	f.bar:SetPoint("RIGHT", menuBtn, "LEFT", -12, 0)
+	f.bar:SetHeight(16)
+	f.bar:SetStatusBarTexture("Interface\\TargetingFrame\\UI-StatusBar")
+	f.bar:SetStatusBarColor(0.85, 0.65, 0.15)
 	f.bar:SetMinMaxValues(0, 1)
 	f.bar.bg = f.bar:CreateTexture(nil, "BACKGROUND")
 	f.bar.bg:SetAllPoints()
-	f.bar.bg:SetColorTexture(unpack(C.well))
+	f.bar.bg:SetColorTexture(0, 0, 0, 0.6)
 	f.bar.text = f.bar:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	f.bar.text:SetPoint("CENTER", 0, 0)
 	local font = f.bar.text:GetFont()
@@ -2377,10 +2499,10 @@ local function BuildUI()
 
 	f.rows = {}
 	for i = 1, AHT.maxRows do
-		local row = CreateFrame("Button", nil, f)
+		local row = CreateFrame("Button", nil, body)
 		row:SetHeight(ROW_HEIGHT)
-		row:SetPoint("TOPLEFT", 10, -118 - (i - 1) * ROW_HEIGHT)
-		row:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+		row:SetPoint("TOPLEFT", LIST_X, -AHT.top - (i - 1) * ROW_HEIGHT)
+		row:SetPoint("RIGHT", body, "RIGHT", -4, 0)
 		row:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 		if i % 2 == 0 then
 			local zebra = row:CreateTexture(nil, "BACKGROUND", nil, -1)
@@ -2389,20 +2511,31 @@ local function BuildUI()
 		end
 		local hl = row:CreateTexture(nil, "HIGHLIGHT")
 		hl:SetAllPoints()
-		hl:SetColorTexture(1, 1, 1, 0.06)
+		hl:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+		hl:SetBlendMode("ADD")
+		hl:SetAlpha(0.5)
 		row.mark = row:CreateTexture(nil, "BACKGROUND")
 		row.mark:SetAllPoints()
-		row.mark:SetColorTexture(C.gold[1], C.gold[2], C.gold[3], 0.16)
+		row.mark:SetTexture("Interface\\QuestFrame\\UI-QuestTitleHighlight")
+		row.mark:SetBlendMode("ADD")
+		row.mark:SetVertexColor(1, 0.82, 0.3, 0.6)
 		row.icon = row:CreateTexture(nil, "ARTWORK")
 		row.icon:SetSize(ROW_HEIGHT - 2, ROW_HEIGHT - 2)
 		row.icon:SetPoint("LEFT", 2, 0)
 		row.icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-		row.info = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-		row.info:SetPoint("RIGHT", -2, 0)
-		row.info:SetJustifyH("RIGHT")
+		local rx, last = -6, nil
+		for _, col in ipairs(COLS) do
+			local fs = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+			fs:SetPoint("RIGHT", rx, 0)
+			fs:SetWidth(col[2])
+			fs:SetJustifyH("RIGHT")
+			fs:SetWordWrap(false)
+			row[col[1]], last = fs, fs
+			rx = rx - col[2]
+		end
 		row.name = row:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-		row.name:SetPoint("LEFT", row.icon, "RIGHT", 4, 0)
-		row.name:SetPoint("RIGHT", row.info, "LEFT", -6, 0)
+		row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+		row.name:SetPoint("RIGHT", last, "LEFT", -6, 0)
 		row.name:SetJustifyH("LEFT")
 		row.name:SetWordWrap(false)
 		row:SetScript("OnClick", function(self, button)
@@ -2455,42 +2588,36 @@ local function BuildUI()
 		f.rows[i] = row
 	end
 
-	f.empty = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-	f.empty:SetPoint("TOPLEFT", 20, -130)
-	f.empty:SetPoint("RIGHT", f, "RIGHT", -20, 0)
+	f.empty = body:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.empty:SetPoint("TOPLEFT", LIST_X + 20, -AHT.top - 14)
+	f.empty:SetPoint("RIGHT", body, "RIGHT", -20, 0)
 	f.empty:SetJustifyH("LEFT")
 	f.empty:SetSpacing(3)
 
-	f.ledger = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
-	f.ledger:SetPoint("BOTTOMLEFT", 10, 60)
-	f.ledger:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+	f.action = FlatButton(body, 260, 24, "primary")
+	f.action:SetPoint("BOTTOMRIGHT", -4, 6)
+	f.action:SetScript("OnClick", VendorFloor_BuyNext)
+
+	f.ledger = body:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	f.ledger:SetPoint("BOTTOMLEFT", 6, 30)
+	f.ledger:SetPoint("RIGHT", f.action, "LEFT", -12, 0)
 	f.ledger:SetJustifyH("LEFT")
 	f.ledger:SetWordWrap(false)
 	f.ledger:SetText(ns.LedgerLine and ns.LedgerLine() or "")
 
-	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	f.summary:SetPoint("BOTTOMLEFT", 10, 79)
-	f.summary:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+	f.summary = body:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	f.summary:SetPoint("BOTTOMLEFT", 6, 48)
+	f.summary:SetPoint("RIGHT", f.action, "LEFT", -12, 0)
 	f.summary:SetJustifyH("LEFT")
 	f.summary:SetWordWrap(false)
 
-	f.status = f:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-	f.status:SetPoint("BOTTOMLEFT", 10, 43)
-	f.status:SetPoint("RIGHT", f, "RIGHT", -10, 0)
+	f.status = body:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.status:SetPoint("BOTTOMLEFT", 6, 12)
+	f.status:SetPoint("RIGHT", f.action, "LEFT", -12, 0)
 	f.status:SetJustifyH("LEFT")
 	f.status:SetWordWrap(false)
 	f.status:SetText(statusText)
 
-	local foot = f:CreateTexture(nil, "ARTWORK")
-	foot:SetColorTexture(unpack(C.line))
-	foot:SetHeight(1)
-	foot:SetPoint("BOTTOMLEFT", 1, 98)
-	foot:SetPoint("BOTTOMRIGHT", -1, 98)
-
-	f.action = FlatButton(f, 100, 30, "primary")
-	f.action:SetPoint("BOTTOMLEFT", 10, 8)
-	f.action:SetPoint("BOTTOMRIGHT", -10, 8)
-	f.action:SetScript("OnClick", VendorFloor_BuyNext)
 
 
 	local elapsed, second = 0, 0
@@ -2590,7 +2717,7 @@ local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 300, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 320, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -2628,7 +2755,14 @@ local function BuildSettings()
 			db.minSlot = v * 100
 		end, L["Profit an auction must bring as a whole (one auction takes one bag slot). 0 turns it off."], 190, silver)
 
-	w:Text(16, -236, L["Finer amounts and the other filters are set in the auction house window."], 360)
+	w:Header(X, -192, L["Auction house"])
+	w:Check(X, -216, L["Small tab"], L["Makes the VendorFloor tab in the auction house as narrow as its text, so more addon tabs fit in one row. Unset, it follows Auctionator's \"Small tabs\" setting."],
+		function() return AHT.SmallTab() end, function(v)
+			db.smallTab = v and true or false
+			AHT.SizeTab()
+		end)
+
+	w:Text(16, -256, L["Finer amounts and the other filters are set in the auction house window."], 360)
 end
 
 function ns.ToggleSettings()
