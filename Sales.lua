@@ -158,7 +158,7 @@ function ns.SalesLines(limit)
 		local x, e = list[i], list[i].e
 		local ended = e.firstN + e.expired
 		lines[#lines + 1] = L["%s: posted %d×, sold %d of %d ended, first buyer after %s, last price %s"]:format(
-			select(2, GetItemInfo(x.id)) or x.id, e.posts, e.firstN, ended,
+			ns.ItemLink and ns.ItemLink(x.id) or select(2, GetItemInfo(x.id)) or x.id, e.posts, e.firstN, ended,
 			e.firstN > 0 and Duration(e.firstSum / e.firstN) or "–",
 			e.price and ns.Money(e.price) or "–")
 	end

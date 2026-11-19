@@ -1506,7 +1506,7 @@ function ns.DeLines(limit)
 	for i = 1, min(#list, limit or #list) do
 		local x = list[i]
 		local v = LearnedValue(x.e)
-		lines[#lines + 1] = L["%s: %d× disenchanted, about %s each"]:format(select(2, GetItemInfo(x.id)) or x.id, x.e.n,
+		lines[#lines + 1] = L["%s: %d× disenchanted, about %s each"]:format(ns.ItemLink(x.id), x.e.n,
 			v and Money(v * AH_CUT) or "?")
 	end
 	return lines
@@ -2681,8 +2681,8 @@ local function BuildUI()
 	menu:Hide()
 	local entries = {
 		{ L["Statistics"], function() ns.ShowInfo(L["Statistics"], ns.StatsLines()) end },
-		{ L["Your disenchants"], function() ns.ShowInfo(L["Your disenchants"], ns.DeLines()) end },
-		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], ns.SalesLines and ns.SalesLines() or {}) end },
+		{ L["Your disenchants"], function() ns.ShowInfo(L["Your disenchants"], nil, ns.DeLines) end },
+		{ L["Your auctions"], function() ns.ShowInfo(L["Your auctions"], nil, function() return ns.SalesLines and ns.SalesLines() or {} end) end },
 		{ L["Export for the website"], function() ns.ShowExport() end },
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
 		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
@@ -2888,28 +2888,44 @@ end
 
 -- A simple text window (statistics, your disenchants, your auctions).
 local info
-function ns.ShowInfo(titleText, lines)
+-- Item link for a text line; an item the client has not loaded yet is requested and the
+-- open info window filled again once it arrives (else bare item IDs stayed in the list).
+function ns.ItemLink(id)
+	local link = select(2, GetItemInfo(id))
+	if link then return link end
+	ns.infoMissing = true
+	if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(id) end
+	return "item " .. tostring(id)
+end
+
+function ns.ShowInfo(titleText, lines, builder, attempt)
+	if builder then
+		ns.infoMissing = false
+		lines = builder()
+		if ns.infoMissing and (attempt or 0) < 5 then
+			C_Timer.After(1, function()
+				if info and info:IsShown() and info.title:GetText() == titleText then ns.ShowInfo(titleText, nil, builder, (attempt or 0) + 1) end
+			end)
+		end
+	end
 	if not info then
 		info = CreateFrame("Frame", "VendorFloorInfoFrame", UIParent, "BackdropTemplate")
-		info:SetSize(480, 380)
+		info:SetSize(500, 400)
 		info:SetPoint("CENTER")
 		info:SetFrameStrata("DIALOG")
-		Flat(info, C.bg, C.line)
+		info:SetBackdrop(AHT.dialog)
 		info:SetMovable(true)
 		info:EnableMouse(true)
 		info:RegisterForDrag("LeftButton")
 		info:SetScript("OnDragStart", info.StartMoving)
 		info:SetScript("OnDragStop", info.StopMovingOrSizing)
 		info.title = info:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-		info.title:SetPoint("TOPLEFT", 12, -9)
-		info.title:SetTextColor(unpack(C.gold))
-		local close = FlatButton(info, 22, 20)
-		close:SetPoint("TOPRIGHT", -6, -5)
-		close:SetText("x")
-		close:SetScript("OnClick", function() info:Hide() end)
+		info.title:SetPoint("TOPLEFT", 20, -18)
+		local close = CreateFrame("Button", nil, info, "UIPanelCloseButton")
+		close:SetPoint("TOPRIGHT", -6, -6)
 		local sf = CreateFrame("ScrollFrame", nil, info, "UIPanelScrollFrameTemplate")
-		sf:SetPoint("TOPLEFT", 12, -38)
-		sf:SetPoint("BOTTOMRIGHT", -30, 12)
+		sf:SetPoint("TOPLEFT", 20, -44)
+		sf:SetPoint("BOTTOMRIGHT", -38, 18)
 		local content = CreateFrame("Frame", nil, sf)
 		content:SetSize(430, 10)
 		sf:SetScrollChild(content)
