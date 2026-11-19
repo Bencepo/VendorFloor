@@ -58,7 +58,7 @@ function M.Load(addon, files, setup)
 	end
 	env.GetInboxInvoiceInfo = function(i)
 		local inv = env.mails[i].invoice
-		if inv then return unpack(inv) end
+		if inv then return (table.unpack or unpack)(inv) end
 	end
 	env.issecretvalue = function() return false end
 	env.ERR_AUCTION_EXPIRED_S = "Your auction of %s has expired."

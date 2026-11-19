@@ -10,6 +10,7 @@
   ],
   "diagnostics.globals": [
     "ATTACHMENTS_MAX_RECEIVE",
+    "AUCTION_EXPIRED_MAIL_SUBJECT",
     "AuctionHouseFrame",
     "AuctionHouseFrameBuyTab",
     "ChatEdit_InsertLink",
@@ -20,6 +21,9 @@
     "ERR_AUCTION_SOLD_S",
     "ERR_AUCTION_WON_S",
     "ERR_CANT_BE_DISENCHANTED",
+    "GetInboxHeaderInfo",
+    "GetInboxInvoiceInfo",
+    "GetInboxNumItems",
     "GetSpellInfo",
     "issecretvalue",
     "ItemRefTooltip",
