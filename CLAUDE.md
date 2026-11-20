@@ -12,6 +12,6 @@ VendorFloor: auction house sniper for WoW Forever (modern C_AuctionHouse API, Lu
 ## Rules
 
 - UI texts in English, German translations in `Locales.lua`. Buttons in the UI instead of chat commands.
-- `C_AuctionHouse.ReplicateItems` (full scan) is a throttled message: sent while a search is still under way it is dropped without an answer. Only send it when `IsThrottledMessageSystemReady()` is true, and resend on `AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED`. Since 0.9.2 continuous mode leaves the full scan to the button; it is unproven whether a full scan started without a click is answered.
+- `C_AuctionHouse.ReplicateItems` (full scan) is a throttled message: sent while a search is still under way it is dropped without an answer. Only send it when `IsThrottledMessageSystemReady()` is true, and resend on `AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED`. Since 0.9.2 continuous mode leaves the full scan to the button. Tested by Ben (Nov 2026): the full scan only comes when the player clicks; one started without a click is not answered. Keep it on the button.
 - Test before release: `busted` (tests/*_spec.lua, WoW mock in tests/helpers/wow.lua). CI also runs luacheck and LuaLS with the WoW API annotations.
 - Release: new version heading at the top of `CHANGELOG.md` (`## 0.9.2`), push to `main`; the workflow tags, builds and uploads to CurseForge and Wago. The release reaches players right away, so test changes in the game before pushing.
