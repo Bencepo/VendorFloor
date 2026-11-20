@@ -12,6 +12,8 @@
 - Quick rounds learn from finds and purchases: items found often, above all those whose finds were gone again within two minutes (someone else was faster), and items that earned you the most are checked first (fading over 30 days), gear included, in the exact variants you bought before. Purchases from before this version count too: they come from the ledger kept for the website.
 - Continuous mode goes on one second after a purchase instead of five, and the pause between rounds can be set down to one second.
 - Menu > Purchase log: what happened during the last purchases, ready to copy into a bug report (Report a bug in the settings).
+- Checks no longer hang ("Checking 3 of 4"): a scan whose next page never comes ends after 8 seconds, a find made ready to buy is let go after 20 seconds without a click, and a watchdog frees the check queue after 30 seconds without progress.
+- A find whose auctions the auction house keeps refusing as gone is dropped after three tries instead of being tried auction by auction.
 
 ## 1.0.2
 
