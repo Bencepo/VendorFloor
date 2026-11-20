@@ -61,6 +61,7 @@ local pendingBuys = {}        -- auctionID -> item purchase waiting for confirma
 local triedBids = {}          -- auctionID -> true: bought already, or the auction house refused it
 local scan = { active = false, seen = 0, round = 0 }
 local full = { active = false } -- the full scan (every auction at once)
+local craft = {} -- price check of the crafting tab
 local buy = {}                -- state of the find being checked or bought
 local selected
 local pendingSend, lastSend, sentAt, tries = nil, nil, nil, 0
@@ -133,6 +134,35 @@ local function ParseMoney(text)
 	return found and total or nil
 end
 ns.ParseMoney, ns.PlainMoney = ParseMoney, PlainMoney
+
+-- What happened during the last purchases: Menu > Purchase log, for bug reports.
+ns.log = {}
+function ns.Log(fmt, ...)
+	local ok, text = pcall(string.format, fmt, ...)
+	ns.log[#ns.log + 1] = ("%s  %s"):format(date("%H:%M:%S"), ok and text or fmt)
+	ns.logAt = GetTime()
+	if #ns.log > 80 then table.remove(ns.log, 1) end
+end
+
+-- Forever's auction house shows "Internal auction error" with purchases that go through.
+-- Right after our own bid that red line is taken off the screen; should the purchase really
+-- fail, it is shown after all (Tick).
+ns.hideDbErrorUntil = 0
+function ns.ShowError(msg)
+	if UIErrorsFrame and msg then UIErrorsFrame:AddMessage(msg, 1, 0.1, 0.1, 1) end
+end
+function ns.ExpectDbError() ns.hideDbErrorUntil = GetTime() + 1.5 end
+if UIErrorsFrame and hooksecurefunc then
+	local function OnErrorShown(_, msg)
+		if issecretvalue and issecretvalue(msg) then return end
+		if msg == ERR_AUCTION_DATABASE_ERROR and GetTime() < ns.hideDbErrorUntil then
+			ns.hideDbErrorUntil = 0
+			UIErrorsFrame:Clear()
+		end
+	end
+	if UIErrorsFrame.AddExternalErrorMessage then hooksecurefunc(UIErrorsFrame, "AddExternalErrorMessage", OnErrorShown) end
+	hooksecurefunc(UIErrorsFrame, "AddMessage", OnErrorShown)
+end
 
 local function SetStatus(msg)
 	statusText = msg or ""
@@ -335,6 +365,82 @@ local function Watch(itemID)
 	db.watch[itemID] = w
 end
 
+-- Hot items: what your purchases really earned, per item, with the auction keys bought
+-- (gear differs by item level and suffix). Quick rounds check these first.
+-- db.hot[itemID] = { profit = copper, buys, last = time, keys = { "level:suffix", ... } }
+local function HotEntry(itemID, key, mode)
+	db.hot = db.hot or {}
+	local h = db.hot[itemID] or { profit = 0, buys = 0, keys = {} }
+	h.last, h.mode = time(), mode or h.mode
+	if key then
+		local ks = (key.itemLevel or 0) .. ":" .. (key.itemSuffix or 0)
+		local known = false
+		for _, k in ipairs(h.keys) do known = known or k == ks end
+		if not known then
+			table.insert(h.keys, 1, ks)
+			h.keys[4] = nil -- the three variants seen last
+		end
+	end
+	db.hot[itemID] = h
+	return h
+end
+
+function ns.LearnBuy(itemID, key, cost, value, mode)
+	if not itemID or mode == "wish" then return end
+	local h = HotEntry(itemID, key, mode)
+	h.profit, h.buys = h.profit + max((value or 0) - (cost or 0), 0), h.buys + 1
+end
+
+-- Finds teach more than purchases: an item found often, and above all one whose find is
+-- gone again within two minutes (someone else bought it), is where the big profits are.
+-- kind "found": a new find; "gone": a find vanished without your purchase.
+function ns.LearnFind(d, kind)
+	if not (d and d.id) or d.mode == "wish" then return end
+	local h = HotEntry(d.id, d.key, d.mode or "vendor")
+	if kind == "found" then
+		h.finds = (h.finds or 0) + 1
+		h.findProfit = (h.findProfit or 0) + max(d.profit or ((d.vendor or 0) - (d.price or 0)), 0)
+	elseif kind == "gone" and d.foundAt and GetTime() - d.foundAt < 120 then
+		h.fast = (h.fast or 0) + 1
+	end
+end
+
+-- Weight of a hot item: what you earned (gold, purchases), how often it was found and what
+-- the finds were worth, and most of all how often a find was gone within two minutes.
+-- It fades over 30 days without news.
+function ns.HotScore(h)
+	local age = (time() - (h.last or 0)) / 86400
+	if age > 30 then return 0 end
+	local gold = (h.profit or 0) / 10000 * 2 + (h.findProfit or 0) / 10000
+	return (gold + (h.buys or 0) + (h.finds or 0) * 0.5 + (h.fast or 0) * 3) * (1 - age / 30)
+end
+
+-- Once: the hot items are seeded from the ledger kept for the website (db.items: buys,
+-- spent and vendor value per item), so the purchases made before this version count too.
+-- Gear variants come from the auction prices VendorFloor saw for that item (db.lows).
+function ns.SeedHot()
+	if db.hotSeeded then return end
+	db.hotSeeded = true
+	db.hot = db.hot or {}
+	local variants = {}
+	for pk in pairs(db.lows or {}) do
+		local id, level, suffix = tostring(pk):match("^(%d+):(%-?%d+):(%-?%d+)")
+		id = tonumber(id)
+		if id then
+			variants[id] = variants[id] or {}
+			if #variants[id] < 3 and (tonumber(level) or 0) > 0 then variants[id][#variants[id] + 1] = level .. ":" .. suffix end
+		end
+	end
+	local now = time()
+	for id, it in pairs(db.items or {}) do
+		local id2 = tonumber(id)
+		if id2 and (it.buys or 0) > 0 and not db.hot[id2] then
+			db.hot[id2] = { profit = max((it.value or 0) - (it.spent or 0), 0), buys = it.buys, last = now,
+				keys = variants[id2] or {}, mode = "vendor" }
+		end
+	end
+end
+
 -- Sound and taskbar flash for new finds: once per round, at most once a minute.
 local lastAlert = 0
 local function Alert()
@@ -371,6 +477,8 @@ local function Confirm(d, quiet)
 	local mode = d.mode or "vendor"
 	if mode == "vendor" then Watch(d.id) end
 	newFinds[mode] = (newFinds[mode] or 0) + 1
+	d.foundAt = GetTime()
+	if ns.LearnFind then ns.LearnFind(d, "found") end
 end
 
 -- Every candidate is checked against its real auctions before it is listed: an item
@@ -547,7 +655,7 @@ StartScan = function()
 		return
 	end
 	if buy.state or full.active then return end
-	scan.active, scan.seen, scan.nextAt = true, 0, nil
+	scan.active, scan.seen, scan.nextAt, scan.lastAt = true, 0, nil, GetTime()
 	scan.mode = db.tab == "de" and "de" or "vendor"
 	scan.round = scan.round + 1
 	tries = 0
@@ -574,38 +682,57 @@ end
 local function StartQuick()
 	if not ahOpen or buy.state or full.active then return false end
 	scan.mode = "vendor"
-	local list = {}
+	-- candidates: { id, score, key (gear: the variant bought before), mode }
+	local list, seen = {}, {}
+	for itemID, h in pairs(db.hot or {}) do
+		local score = ns.HotScore(h)
+		if score > 0 and not IsIgnored(itemID) and (h.mode or "vendor") ~= "craft" then
+			seen[itemID] = true
+			if IsGear(itemID) then
+				for _, ks in ipairs(h.keys or {}) do
+					local level, suffix = ks:match("(%-?%d+):(%-?%d+)")
+					list[#list + 1] = { id = itemID, score = score + 1000, level = tonumber(level), suffix = tonumber(suffix),
+						mode = h.mode, hot = true }
+				end
+			else
+				list[#list + 1] = { id = itemID, score = score + 1000, mode = h.mode, hot = true }
+			end
+		end
+	end
 	for itemID, w in pairs(db.watch or {}) do
-		if not IsIgnored(itemID) then list[#list + 1] = { id = itemID, hits = w.hits or 0 } end
+		if not seen[itemID] and not IsIgnored(itemID) then list[#list + 1] = { id = itemID, score = w.hits or 0 } end
 	end
 	if #list < 5 then return false end
-	table.sort(list, function(a, b) return a.hits > b.hits end)
+	table.sort(list, function(x, y) return x.score > y.score end)
 	scan.round = scan.round + 1
 	wipe(queue)
 	wipe(queued)
-	local now = GetTime()
-	for i = 1, min(#list, 40) do -- a quick round checks 40 items
-		local id = list[i].id
-		local vendor, name, link, icon = VendorPrice(id)
-		local key = AH.MakeItemKey and AH.MakeItemKey(id)
-		if vendor and vendor > 0 and key then
-			local k = DealKey(key)
+	local now, hot = GetTime(), 0
+	for i = 1, min(#list, 40) do -- a quick round checks 40 items, those that paid off first
+		local c = list[i]
+		local vendor, name, link, icon = VendorPrice(c.id)
+		local key = AH.MakeItemKey and (c.level and AH.MakeItemKey(c.id, c.level, c.suffix) or AH.MakeItemKey(c.id))
+		local mode = c.mode == "de" and "de" or "vendor"
+		local value = mode == "de" and ns.DisenchantValue and ns.DisenchantValue(link or c.id) or vendor
+		if value and value > 0 and key then
+			local k = GroupKey(key, mode)
 			local skip = noOffer[k]
 			if not (skip and now - skip.at < NO_OFFER_KEEP / 3) then
 				local d = deals[k] or { k = k }
-				d.key, d.id, d.vendor, d.mode = key, id, vendor, "vendor"
+				d.key, d.id, d.vendor, d.mode = key, c.id, value, mode
 				d.name, d.link, d.icon, d.dropped = name, link, icon, nil
-				d.price = d.price or vendor
-				d.browsePrice = d.browsePrice or vendor
+				d.price = d.price or value
+				d.browsePrice = d.browsePrice or value
 				d.commodity = IsCommodity(key) == true
 				queued[k] = d
 				Enqueue(d)
+				if c.hot then hot = hot + 1 end
 			end
 		end
 	end
 	if not queue[1] then return false end
 	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
-	SetStatus(L["Quick round: checking %d items that were often below vendor price …"]:format(#queue))
+	SetStatus(L["Quick round: checking %d items, %d of them paid off before …"]:format(#queue, hot))
 	Refresh()
 	return true
 end
@@ -691,7 +818,8 @@ end
 ResetBuy = function(msg)
 	wipe(buy)
 	if msg then SetStatus(msg) end
-	if db.loop and ahOpen and ui and ui:IsShown() and not queue[1] then scan.nextAt = GetTime() + 5 end
+	-- after buying, scanning goes on almost at once
+	if db.loop and ahOpen and ui and ui:IsShown() and not queue[1] then scan.nextAt = GetTime() + 1 end
 	Refresh()
 end
 
@@ -706,9 +834,11 @@ Verify = function(d, purpose)
 	if d.plainKey and not d.triedPlain and keyStyle[d.id] == "plain" then
 		d.key, d.triedPlain = d.plainKey, true
 	end
+	local chain = buy.chain
 	wipe(buy)
-	buy.state, buy.deal, buy.t, buy.purpose = "verifying", d, GetTime(), purpose
+	buy.state, buy.deal, buy.t, buy.purpose, buy.chain = "verifying", d, GetTime(), purpose, purpose == "buy" and chain or nil
 	tries = 0
+	ns.Log("search %s (%s, key %s:%s:%s)", tostring(d.name), purpose, tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel), tostring(d.key and d.key.itemSuffix))
 	Send(function() AH.SendSearchQuery(d.key, SORTS, true) end)
 	if purpose == "check" then
 		SetStatus(L["Checking: %s (%d left)"]:format(d.link or d.name or "?", #queue))
@@ -747,7 +877,10 @@ local function FinishCheck(d, offer)
 		SaveFinds()
 	else
 		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
-		if deals[d.k] then RemoveDeal(d) end
+		if deals[d.k] then
+			ns.LearnFind(d, "gone")
+			RemoveDeal(d)
+		end
 	end
 	queued[d.k] = nil
 	wipe(buy)
@@ -835,10 +968,12 @@ local function ReadCommodity()
 	end
 	local offer = CommodityOffer(d, ns.Budget(GetMoney()))
 	if not offer then
+		if not buy.chain then ns.LearnFind(d, "gone") end
 		RemoveDeal(d)
-		ResetBuy(L["Nothing below vendor price any more (or not enough gold)."])
+		ns.Gone(L["Nothing below vendor price any more (or not enough gold)."])
 		return
 	end
+	d.askedAgain = nil
 	buy.state, buy.qty, buy.cost = "commodity_ready", offer.count, offer.cost
 	SetStatus(L["%d× %s below vendor price, profit about %s."]:format(offer.count, d.link or d.name, Money(offer.profit)))
 	Refresh()
@@ -848,6 +983,8 @@ local function ReadItem()
 	local d = buy.deal
 	pcall(RecordItemPrices, d)
 	local offer = ItemOffer(d)
+	-- the cheapest auction of a check is kept: a click within a few seconds buys it at once
+	if offer then d.best, d.bestAt = offer.best, GetTime() else d.best = nil end
 	if buy.purpose == "check" then
 		FinishCheck(d, offer)
 		return
@@ -863,11 +1000,14 @@ local function ReadItem()
 			Verify(d, "buy")
 			return
 		end
+		if not buy.chain then ns.LearnFind(d, "gone") end
 		RemoveDeal(d)
-		ResetBuy(L["Nothing below vendor price any more."])
+		ns.Gone(L["Nothing below vendor price any more."])
 		return
 	end
+	d.askedAgain = nil
 	local best = offer.best
+	ns.Log("offer %s: auction %s, %s for %d", tostring(d.name), tostring(best.auctionID), tostring(best.buyout), best.quantity)
 	if d.triedPlain and d.plainKey then keyStyle[d.id] = "plain" end
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 	buy.state = "item_ready"
@@ -909,15 +1049,17 @@ local function Action()
 			SetStatus(stop)
 			return
 		end
+		ns.Log("PlaceBid %s @ %s (%s)", tostring(buy.auctionID), tostring(buy.buyout), tostring(d.name))
+		ns.ExpectDbError()
 		AH.PlaceBid(buy.auctionID, buy.buyout)
 		-- an auction is bid on once: if it is still listed afterwards, the purchase failed
 		-- ("Internal auction error") and the next check moves on instead of offering it again
 		triedBids[buy.auctionID] = true
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
-			name = d.name, at = GetTime(), mode = d.mode or "vendor" }
+			name = d.name, at = GetTime(), mode = d.mode or "vendor", key = d.key }
 		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
 			Money(buy.buyout), Money(buy.vendor * buy.qty)))
-		buy.state, buy.t = "bought", GetTime()
+		buy.state, buy.t, buy.chain, buy.confirmed, buy.dbErrorAt = "bought", GetTime(), true, nil, nil
 	elseif state == "commodity_ready" then
 		local stop = ns.Guard(buy.cost or 0, ns.SlotsFor(d.id, buy.qty))
 		if stop then
@@ -933,9 +1075,31 @@ local function Action()
 	Refresh()
 end
 
-local BUSY = { quoting = true, confirming = true, bought = true }
+local BUSY = { quoting = true, confirming = true, bought = true, failed = true }
 
-local function Select(d)
+-- Hot deals: a find checked a few seconds ago is bought on the first click, without a new
+-- search. The auction keeps its buyout, so the price cannot have risen; should it be sold
+-- by now, the next auction of the item is tried (PurchaseFailed).
+local function BuyNow(d, prepareOnly)
+	local b = d.best
+	if d.commodity or not b or not d.bestAt or GetTime() - d.bestAt > 15 or triedBids[b.auctionID] then return false end
+	wipe(buy)
+	buy.state, buy.deal, buy.t, buy.purpose = "item_ready", d, GetTime(), "buy"
+	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = b.auctionID, b.buyout, b.quantity, b.vendor, b.link
+	if prepareOnly then
+		-- ready to buy: the next click places the bid without another search
+		ns.Log("ready at once %s (checked %.1fs ago)", tostring(d.name), GetTime() - d.bestAt)
+		SetStatus(L[DeText(d, "%s ×%d for %s, vendor pays %s.")]:format(b.link or d.link or d.name, b.quantity,
+			Money(b.buyout), Money(b.vendor * b.quantity)))
+		Refresh()
+		return true
+	end
+	ns.Log("buy at once %s (checked %.1fs ago)", tostring(d.name), GetTime() - d.bestAt)
+	Action()
+	return buy.state == "bought"
+end
+
+local function Select(d, click)
 	local state = buy.state
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	if state == "quote_ok" then CancelQuote() end
@@ -943,6 +1107,10 @@ local function Select(d)
 		-- interrupt the round's check: that find is checked again afterwards
 		table.insert(queue, 1, buy.deal)
 		pendingSend, sentAt = nil, nil
+	end
+	if state ~= "quote_ok" and BuyNow(d, not click) then
+		selected = d
+		return
 	end
 	selected = d
 	Verify(d, "buy")
@@ -960,7 +1128,83 @@ function VendorFloor_BuyNext()
 	end
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
 	local d = (selected and deals[selected.k] and selected) or View()[1]
-	if d then Select(d) end
+	if d then Select(d, true) end
+end
+
+-- A confirmed purchase: more of this find below the vendor price? Else on to the next find.
+-- Runs on the confirmation itself, no fixed wait.
+function ns.AfterBuy()
+	local d = buy.deal
+	if not d then return end
+	local left = (d.count or 0) - (buy.qty or 1)
+	if not d.commodity and left <= 0 then
+		RemoveDeal(d)
+		ns.Gone(L["Bought."])
+	else
+		Verify(d, "buy")
+	end
+end
+
+-- A find has nothing left to buy. Right after a purchase the next find of the list is
+-- checked at once, so the next click buys it (as in TransmogSweep).
+function ns.Gone(msg)
+	local chain = buy.chain
+	ResetBuy(msg)
+	if not (chain and ahOpen and ui and ui:IsShown()) then return end
+	local d = View()[1]
+	if d then
+		selected = d
+		buy.chain = true -- a find that turns out gone moves on to the next one too
+		Select(d)
+	end
+end
+
+-- Text for a bug report: the find, the state of the purchase and the purchase log.
+function ns.Diagnose(d)
+	d = d or {}
+	local t = {
+		("VendorFloor %s, client %s"):format(ns.VERSION or "?", (GetBuildInfo())),
+		("find: %s id=%s mode=%s commodity=%s"):format(tostring(d.name), tostring(d.id), tostring(d.mode), tostring(d.commodity)),
+		("key: %s:%s:%s plainKey=%s triedPlain=%s"):format(tostring(d.key and d.key.itemID), tostring(d.key and d.key.itemLevel),
+			tostring(d.key and d.key.itemSuffix), tostring(d.plainKey ~= nil), tostring(d.triedPlain)),
+		("price=%s value=%s count=%s profit=%s"):format(tostring(d.price), tostring(d.vendor), tostring(d.count), tostring(d.profit)),
+		("best auction: %s @ %s, checked %s s ago"):format(tostring(d.best and d.best.auctionID), tostring(d.best and d.best.buyout),
+			d.bestAt and ("%.1f"):format(GetTime() - d.bestAt) or "-"),
+		("purchase: state=%s purpose=%s since %s s, auction=%s confirmed=%s dbError=%s"):format(tostring(buy.state),
+			tostring(buy.purpose), buy.t and ("%.0f"):format(GetTime() - buy.t) or "-", tostring(buy.auctionID),
+			tostring(buy.confirmed), tostring(buy.dbErrorAt ~= nil)),
+		("scan: active=%s queue=%d checked=%s/%s pendingSend=%s full=%s craft=%s loop=%s nextAt=%s"):format(tostring(scan.active),
+			#queue, tostring(scan.checked), tostring(scan.checkTotal), tostring(pendingSend ~= nil), tostring(full.active),
+			tostring(craft.active), tostring(db.loop), scan.nextAt and ("%.0f"):format(scan.nextAt - GetTime()) or "-"),
+		"", "purchase log:",
+	}
+	for _, line in ipairs(ns.log) do t[#t + 1] = line end
+	return table.concat(t, "\n")
+end
+
+-- A purchase the auction house refused: the next auction of the same item is tried.
+function ns.PurchaseFailed(msg)
+	local d = buy.deal
+	ns.Log("purchase failed: %s (auction %s)", tostring(msg), tostring(buy.auctionID))
+	if d then
+		-- the auction house keeps listing auctions that are gone: three refusals and the find is dropped
+		d.fails = (d.fails or 0) + 1
+		if d.fails >= 3 then
+			ns.Log("%s dropped after %d refused auctions", tostring(d.name), d.fails)
+			RemoveDeal(d)
+			ns.Gone(L["Nothing below vendor price any more."])
+			return
+		end
+	end
+	wipe(buy)
+	buy.state, buy.deal, buy.t, buy.chain = "failed", d, GetTime(), true
+	SetStatus(L["Purchase failed (%s). Trying the next auction …"]:format(msg or "?"))
+	Refresh()
+	C_Timer.After(0.5, function()
+		if buy.state == "failed" and buy.deal == d then
+			if deals[d.k] then Verify(d, "buy") else ns.Gone() end
+		end
+	end)
 end
 
 ---------------------------------------------------------------------------
@@ -1604,7 +1848,6 @@ end
 -- recipes, their current median price goes into the price history.
 ---------------------------------------------------------------------------
 
-local craft = {}
 local CRAFT_WAIT, CRAFT_TIMEOUT = 0.6, 3
 
 local function CraftItems()
@@ -1778,6 +2021,19 @@ local function Tick()
 		FullTick(now)
 		return
 	end
+	-- Watchdog: checks waiting and nothing happened for 30 s. The state goes to the purchase
+	-- log, then whatever holds the queue is let go.
+	if queue[1] and not craft.active and now - (ns.logAt or now) > 30 and now - (ns.dogAt or 0) > 30 then
+		ns.dogAt = now
+		ns.Log("watchdog: queue stuck, state=%s pendingSend=%s sentAt=%s scan=%s", tostring(buy.state),
+			tostring(pendingSend ~= nil), sentAt and ("%.0f"):format(now - sentAt) or "-", tostring(scan.active))
+		if buy.state ~= "quote_ok" and buy.state ~= "confirming" then wipe(buy) end
+		if pendingSend and now - (pendingAt or now) > 10 then pendingSend = nil end
+		if scan.active and not pendingSend and (not sentAt or now - sentAt > 30) then
+			scan.active, sentAt = false, nil
+		end
+		return
+	end
 	if craft.active and not pendingSend then
 		CraftTick(now)
 		return
@@ -1792,6 +2048,14 @@ local function Tick()
 		end
 		return
 	end
+	-- A purchase search sent during a scan replaces the browse query: no more pages come.
+	-- The scan ends there, the waiting checks go on and the next round starts after them.
+	if scan.active and not buy.state and now - (scan.lastAt or now) > 8 then
+		ns.Log("scan ended: no more pages for %.0f s (%d auctions read)", now - scan.lastAt, scan.seen or 0)
+		StopScan()
+		if not queue[1] and db.loop then scan.nextAt = now + db.interval end
+		return
+	end
 	if scan.active and sentAt and now - sentAt > SEND_TIMEOUT then
 		if tries < 3 and lastSend then
 			tries = tries + 1
@@ -1802,6 +2066,18 @@ local function Tick()
 		return
 	end
 	local state = buy.state
+	-- Watchdog: a find made ready to buy is let go after 20 s without a click, and anything
+	-- else that has not moved for 20 s is reset, so the checks of the round go on.
+	if state and queue[1] and not scan.active then
+		local waiting = state == "item_ready" or state == "commodity_ready"
+		if (waiting and now - (buy.t or now) > 20) or (not waiting and state ~= "quote_ok" and state ~= "confirming"
+			and now - (buy.t or now) > 20 and now - (ns.logAt or 0) > 20) then
+			ns.Log("watchdog: %s for %s let go after %.0f s", tostring(state), tostring(buy.deal and buy.deal.name), now - (buy.t or now))
+			wipe(buy)
+			pendingSend, sentAt = nil, nil
+			return
+		end
+	end
 	if not state and not scan.active and queue[1] then
 		local d = table.remove(queue, 1)
 		if not d.dropped then
@@ -1823,19 +2099,31 @@ local function Tick()
 		-- No answer to a purchase check: the auction house sends none for a search without
 		-- results. Gear from a full scan gets a second try with the plain item key, then it is gone.
 		local d = buy.deal
-		if d and NextVariant(d) then
+		if d and not d.askedAgain then
+			-- an empty answer is asked once more before the item counts as gone
+			d.askedAgain = true
+			ns.Log("no answer for %s, asking again", tostring(d.name))
+			Verify(d, "buy")
+		elseif d and NextVariant(d) then
 			Verify(d, "buy")
 		elseif d and d.plainKey and not d.triedPlain then
 			d.key, d.triedPlain = d.plainKey, true
 			Verify(d, "buy")
 		else
-			if d then RemoveDeal(d) end
-			ResetBuy(L["Nothing below vendor price any more."])
+			if d then
+				if not buy.chain then ns.LearnFind(d, "gone") end
+				RemoveDeal(d)
+			end
+			ns.Gone(L["Nothing below vendor price any more."])
 		end
 	elseif state == "verifying" and now - buy.t > SEND_TIMEOUT then
 		ResetBuy(L["No answer while checking."])
-	elseif state == "bought" and now - buy.t > 1.5 then
-		Verify(buy.deal, "buy") -- more of it below the vendor price?
+	elseif state == "bought" and buy.dbErrorAt and not buy.confirmed and now - buy.dbErrorAt > 2 then
+		-- "Internal auction error" and no confirmation after it: this time it was real
+		ns.ShowError(ERR_AUCTION_DATABASE_ERROR)
+		ns.PurchaseFailed(ERR_AUCTION_DATABASE_ERROR)
+	elseif state == "bought" and not buy.confirmed and not buy.dbErrorAt and now - buy.t > 2 then
+		Verify(buy.deal, "buy") -- no confirmation event: look whether it is still listed
 	elseif (state == "quoting" or state == "confirming") and now - buy.t > 12 then
 		CancelQuote()
 		ResetBuy(L["No answer from the auction house."])
@@ -2691,6 +2979,7 @@ local function BuildUI()
 		{ L["Disenchant basket"], function() if ns.ToggleBasket then ns.ToggleBasket() end end },
 		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
 		{ L["Ignore list"], function() if ns.ToggleIgnoreList then ns.ToggleIgnoreList() end end },
+		{ L["Purchase log"], function() if ns.ShowCopy then ns.ShowCopy(L["VendorFloor: purchase log"], ns.Diagnose(buy.deal)) end end },
 		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
@@ -2775,8 +3064,13 @@ local function BuildUI()
 		row.name:SetWordWrap(false)
 		row:SetScript("OnClick", function(self, button)
 			if not self.deal then return end
+			if button ~= "RightButton" and IsAltKeyDown() then
+				-- Alt+click: everything about this find plus the purchase log, to copy into a bug report
+				ns.ShowCopy(L["VendorFloor: bug report"], ns.Diagnose(self.deal))
+				return
+			end
 			if button ~= "RightButton" then
-				Select(self.deal)
+				Select(self.deal, true)
 				return
 			end
 			local d = self.deal
@@ -2832,7 +3126,7 @@ local function BuildUI()
 				GameTooltip:AddLine(L["Profit per unit %s, units not counted yet"]:format(Money(d.profit or 0)), 0.25, 1, 0.25)
 			end
 			GameTooltip:AddLine(L["Listed on the AH: %d"]:format(d.listed or 0), 0.7, 0.7, 0.7)
-			GameTooltip:AddLine(L["Click: check and buy. Right-click: hide or add to the watchlist."], 0.7, 0.7, 0.7, true)
+			GameTooltip:AddLine(L["Click: buy. Right-click: hide or add to the watchlist. Alt+click: bug report."], 0.7, 0.7, 0.7, true)
 			GameTooltip:Show()
 		end)
 		row:SetScript("OnLeave", function(self)
@@ -3016,7 +3310,7 @@ local function BuildSettings()
 			if not v then scan.nextAt = nil end
 			if ui then ui.loop:SetChecked(v and true or false) end
 		end)
-	w:Slider(X, -186, L["Pause between rounds (seconds)"], 5, 120, 5, function() return db.interval end,
+	w:Slider(X, -186, L["Pause between rounds (seconds)"], 1, 120, 1, function() return db.interval end,
 		function(v) db.interval = v end, L["How long continuous mode waits before the next round."], 190,
 		function(v) return v .. " s" end)
 
@@ -3099,6 +3393,7 @@ function handlers.ADDON_LOADED(name)
 	db.total = db.total or { buys = 0, spent = 0, value = 0 }
 	db.total.sold, db.total.soldCost = db.total.sold or 0, db.total.soldCost or 0
 	db.bought = db.bought or {}  -- itemID -> { units, cost }: bought and not sold yet
+	pcall(ns.SeedHot)
 	if db.deBasket == nil then
 		-- the disenchant basket starts with the disenchant purchases still in the mail
 		db.deBasket = {}
@@ -3166,12 +3461,14 @@ end
 
 function handlers.AUCTION_HOUSE_BROWSE_RESULTS_UPDATED()
 	if not scan.active then return end
+	scan.lastAt = GetTime()
 	Process(AH.GetBrowseResults())
 	ContinueScan()
 end
 
 function handlers.AUCTION_HOUSE_BROWSE_RESULTS_ADDED(added)
 	if not scan.active then return end
+	scan.lastAt = GetTime()
 	Process(added)
 	ContinueScan()
 end
@@ -3226,11 +3523,17 @@ end
 handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 
 function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
+	ns.Log("purchase completed %s", tostring(auctionID))
+	if buy.state == "bought" and buy.auctionID == auctionID then
+		buy.confirmed = true
+		C_Timer.After(0.2, function() if buy.state == "bought" and buy.confirmed and buy.auctionID == auctionID then ns.AfterBuy() end end)
+	end
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
 	ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
 	ns.WishBought(p.id, p.qty, p.mode)
+	ns.LearnBuy(p.id, p.key, p.cost, p.value, p.mode)
 end
 
 -- In case the client has no purchase event: the "You won an auction for ..." line.
@@ -3273,24 +3576,46 @@ function handlers.COMMODITY_PURCHASE_SUCCEEDED()
 		Money(buy.qty * d.vendor)))
 	ns.RecordBuy(d.id, buy.qty, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	ns.WishBought(d.id, buy.qty, d.mode)
+	ns.LearnBuy(d.id, d.key, buy.total or 0, buy.qty * d.vendor, d.mode or "vendor")
 	RemoveDeal(d)
-	ResetBuy(L["Bought."])
+	buy.chain = true
+	ns.Gone(L["Bought."])
 end
 
 -- An item purchase the auction house refused ("Internal auction error" and the like).
 ns.AUCTION_ERRORS = {}
-for _, key in ipairs({ "ERR_AUCTION_DATABASE_ERROR", "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
+-- "Internal auction error" is left out: Forever's auction house sends it with purchases that
+-- go through. It counts only if no confirmation follows within 2 seconds (Tick).
+for _, key in ipairs({ "ERR_ITEM_NOT_FOUND", "ERR_AUCTION_HIGHER_BID", "ERR_AUCTION_MIN_BID",
 	"ERR_AUCTION_BID_OWN", "ERR_NOT_ENOUGH_MONEY" }) do
 	if _G[key] then ns.AUCTION_ERRORS[_G[key]] = true end
 end
 function handlers.UI_ERROR_MESSAGE(_, msg)
 	if issecretvalue and issecretvalue(msg) then return end
-	if buy.state == "bought" and msg and ns.AUCTION_ERRORS[msg] then
-		ResetBuy(L["Purchase failed (%s). This auction is skipped."]:format(msg))
+	if buy.state ~= "bought" or not msg then return end
+	if msg == ERR_AUCTION_DATABASE_ERROR then
+		buy.dbErrorAt = buy.dbErrorAt or GetTime()
+		ns.Log("internal auction error after bid %s", tostring(buy.auctionID))
+	elseif ns.AUCTION_ERRORS[msg] then
+		ns.PurchaseFailed(msg)
+	end
+end
+
+-- the auction house's own error channel (the red message in its window)
+function handlers.AUCTION_HOUSE_SHOW_ERROR(err)
+	ns.Log("AH error %s", tostring(err))
+	local dbError = Enum and Enum.AuctionHouseError and Enum.AuctionHouseError.DatabaseError or 10
+	if buy.state ~= "bought" then return end
+	if err == dbError then
+		buy.dbErrorAt = buy.dbErrorAt or GetTime()
+	else
+		-- any other auction house error after our bid (e.g. 4: the auction is gone): next auction at once
+		ns.PurchaseFailed(("auction house error %s"):format(tostring(err)))
 	end
 end
 
 function handlers.COMMODITY_PURCHASE_FAILED()
+	ns.Log("commodity purchase failed")
 	if buy.state == "confirming" or buy.state == "quoting" then ResetBuy(L["Purchase failed."]) end
 end
 
@@ -3335,7 +3660,7 @@ SlashCmdList.VENDORFLOOR = function(msg)
 		SetMinProfit(money)
 		Print(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
 	elseif cmd == "interval" and num then
-		db.interval = max(floor(num), 5)
+		db.interval = max(floor(num), 1)
 		Print(L["Pause between rounds: %d seconds"]:format(db.interval))
 	elseif cmd == "sound" then
 		db.sound = not db.sound

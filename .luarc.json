@@ -17,6 +17,7 @@
     "ChatFrameUtil",
     "CreateSettingsButtonInitializer",
     "DEFAULT_CHAT_FRAME",
+    "ERR_AUCTION_DATABASE_ERROR",
     "ERR_AUCTION_EXPIRED_S",
     "ERR_AUCTION_SOLD_S",
     "ERR_AUCTION_WON_S",
@@ -41,6 +42,7 @@
     "StaticPopupDialogs",
     "TooltipDataProcessor",
     "TradeSkillFrame",
+    "UIErrorsFrame",
     "UISpecialFrames",
     "YES"
   ]
