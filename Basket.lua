@@ -96,15 +96,10 @@ local function Clear()
 end
 
 -- Out of combat right before the click: aim the button at the next basket item.
--- The button listens to both press and release; only the one the game uses for action
--- buttons casts, so a click or key press disenchants exactly one item.
-local function Aim(self, _, down)
+-- Aimed on press and on release alike: which of the two casts depends on the source
+-- (mouse, key binding, /click macro) and the client, the game casts only once.
+local function Aim(self)
 	if InCombatLockdown() then return end
-	local onDown = GetCVarBool and GetCVarBool("ActionButtonUseKeyDown")
-	if (down and true or false) ~= (onDown and true or false) then
-		Clear()
-		return
-	end
 	local target = Contents()[1]
 	if not target then
 		Clear()
