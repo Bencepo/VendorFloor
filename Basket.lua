@@ -91,28 +91,28 @@ local button
 local function Clear()
 	if not button or InCombatLockdown() then return end
 	button:SetAttribute("type", nil)
-	button:SetAttribute("macrotext", nil)
+	button:SetAttribute("spell", nil)
+	button:SetAttribute("target-bag", nil)
+	button:SetAttribute("target-slot", nil)
 	button.target = nil
 end
 
 -- Out of combat right before the click: aim the button at the next basket item.
--- The button listens to both press and release; only the one the game uses for action
--- buttons casts, so a click or key press disenchants exactly one item.
-local function Aim(self, _, down)
+-- Aimed on press and on release alike: which of the two casts depends on the source
+-- (mouse, key binding, /click macro) and the client, the game casts only once.
+-- A spell with a bag slot as target, not a macro: a macro cannot run inside a /click macro.
+local function Aim(self)
 	if InCombatLockdown() then return end
-	local onDown = GetCVarBool and GetCVarBool("ActionButtonUseKeyDown")
-	if (down and true or false) ~= (onDown and true or false) then
-		Clear()
-		return
-	end
 	local target = Contents()[1]
 	if not target then
 		Clear()
 		return
 	end
 	self.target = target
-	self:SetAttribute("type", "macro")
-	self:SetAttribute("macrotext", ("/cast %s\n/use %d %d"):format(SpellName(), target.bag, target.slot))
+	self:SetAttribute("type", "spell")
+	self:SetAttribute("spell", SpellName())
+	self:SetAttribute("target-bag", target.bag)
+	self:SetAttribute("target-slot", target.slot)
 end
 
 -- Can this character disenchant? (Enchanting learned, Disenchant in the spell book)
@@ -187,6 +187,9 @@ local function Create()
 	end
 	button:SetPoint("BOTTOM", 0, 8)
 	button:RegisterForClicks("AnyUp", "AnyDown")
+	-- cast on release for every source: a /click macro sends a release, whatever the
+	-- "cast on key down" setting says
+	button:SetAttribute("useOnKeyDown", false)
 	button:SetText(L["Disenchant (%d)"]:format(0))
 	button:SetScript("PreClick", Aim)
 	button:SetScript("PostClick", function() C_Timer.After(0, Clear) end)
