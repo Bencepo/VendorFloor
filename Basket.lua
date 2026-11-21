@@ -91,23 +91,32 @@ local button
 local function Clear()
 	if not button or InCombatLockdown() then return end
 	button:SetAttribute("type", nil)
-	button:SetAttribute("macrotext", nil)
+	button:SetAttribute("spell", nil)
+	button:SetAttribute("target-bag", nil)
+	button:SetAttribute("target-slot", nil)
 	button.target = nil
 end
 
 -- Out of combat right before the click: aim the button at the next basket item.
 -- Aimed on press and on release alike: which of the two casts depends on the source
 -- (mouse, key binding, /click macro) and the client, the game casts only once.
-local function Aim(self)
+-- A spell with a bag slot as target, not a macro: a macro cannot run inside a /click macro.
+local function Aim(self, mouse, down)
 	if InCombatLockdown() then return end
 	local target = Contents()[1]
+	if ns.Log then
+		ns.Log("basket click %s %s: %s", tostring(mouse), down and "down" or "up",
+			target and ("%s in %d/%d"):format(tostring(target.link or target.id), target.bag, target.slot) or "basket empty")
+	end
 	if not target then
 		Clear()
 		return
 	end
 	self.target = target
-	self:SetAttribute("type", "macro")
-	self:SetAttribute("macrotext", ("/cast %s\n/use %d %d"):format(SpellName(), target.bag, target.slot))
+	self:SetAttribute("type", "spell")
+	self:SetAttribute("spell", SpellName())
+	self:SetAttribute("target-bag", target.bag)
+	self:SetAttribute("target-slot", target.slot)
 end
 
 -- Can this character disenchant? (Enchanting learned, Disenchant in the spell book)
