@@ -101,13 +101,9 @@ end
 -- Aimed on press and on release alike: which of the two casts depends on the source
 -- (mouse, key binding, /click macro) and the client, the game casts only once.
 -- A spell with a bag slot as target, not a macro: a macro cannot run inside a /click macro.
-local function Aim(self, mouse, down)
+local function Aim(self)
 	if InCombatLockdown() then return end
 	local target = Contents()[1]
-	if ns.Log then
-		ns.Log("basket click %s %s: %s", tostring(mouse), down and "down" or "up",
-			target and ("%s in %d/%d"):format(tostring(target.link or target.id), target.bag, target.slot) or "basket empty")
-	end
 	if not target then
 		Clear()
 		return

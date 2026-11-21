@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.4
+
+- The disenchant basket works from a macro: `/click VendorFloorBasketButton` disenchants the next basket item, whatever the "cast on key down" setting says. The button now casts Disenchant on the bag slot directly instead of running a macro of its own.
+
 ## 1.0.3
 
 - "Internal auction error" no longer stops a purchase. WoW Forever's auction house sends it with purchases that go through: VendorFloor now waits two seconds for the confirmation, takes the red line off the screen, and counts the purchase as failed only if no confirmation comes.
