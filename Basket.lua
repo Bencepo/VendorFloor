@@ -191,6 +191,9 @@ local function Create()
 	end
 	button:SetPoint("BOTTOM", 0, 8)
 	button:RegisterForClicks("AnyUp", "AnyDown")
+	-- cast on release for every source: a /click macro sends a release, whatever the
+	-- "cast on key down" setting says
+	button:SetAttribute("useOnKeyDown", false)
 	button:SetText(L["Disenchant (%d)"]:format(0))
 	button:SetScript("PreClick", Aim)
 	button:SetScript("PostClick", function() C_Timer.After(0, Clear) end)
