@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.7
+
+- The settings window (BencepoUI) is now one version for all Bencepo addons: "Report a bug" sits in a footer of its own, and every settings window looks and works the same, whichever addon loads first.
+
 ## 1.0.6
 
 - Disenchant values follow new material prices at once: a check or a crafting price lookup that finds dust, essences or shards at a new price now updates the disenchant tab right away instead of after the next full scan.
