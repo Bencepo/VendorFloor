@@ -4,7 +4,7 @@
 
 - Disenchant values follow new material prices at once: a check or a crafting price lookup that finds dust, essences or shards at a new price now updates the disenchant tab right away instead of after the next full scan.
 - Crafting prices leave your own commodity auctions out (they could pull the usual price of a reagent towards your own listing).
-- The minimum profit filters the list at once, in both directions: raise it and finds below it hide, lower it and they come back (they were dropped until the next scan before). The input field applies while you type and when you click elsewhere, not only on Enter; Escape undoes the change. The crafting tab and the percent slider in the settings follow at once too.
+- The minimum profit filters the list at once, in both directions: raise it and finds below it hide, lower it and they come back (they were dropped until the next scan before). The input field saves the new value while you type, without Enter, and a click anywhere else ends the input; Escape undoes the change. The crafting tab and the percent slider in the settings follow at once too.
 - Purchases confirmed only by the chat line now count for quick rounds too, like all other purchases.
 - English only: the German translation is removed, VendorFloor shows the same English texts on every client.
 - The minimap tooltip points to the settings instead of a chat command.

@@ -2809,9 +2809,15 @@ local function BuildUI()
 	profit:SetText(PlainMoney(db.minProfit))
 	-- the list follows while you type; Enter or clicking elsewhere keeps the value, Escape undoes it
 	profit:SetScript("OnEditFocusGained", function(self) self.before = db.minProfit end)
-	profit:SetScript("OnTextChanged", function(self, user)
-		local copper = user and ParseMoney(self:GetText())
+	-- every readable value is taken and saved at once (text set by the addon is the stored value, a no-op)
+	profit:SetScript("OnTextChanged", function(self)
+		local copper = ParseMoney(self:GetText())
 		if copper and max(floor(copper), 1) ~= db.minProfit then SetMinProfit(copper, true) end
+	end)
+	-- a WoW input field keeps the keyboard when you click elsewhere: any click outside ends the input
+	profit:RegisterEvent("GLOBAL_MOUSE_DOWN")
+	profit:SetScript("OnEvent", function(self)
+		if self:HasFocus() and not self:IsMouseOver() then self:ClearFocus() end
 	end)
 	profit:SetScript("OnEnterPressed", function(self)
 		if not ParseMoney(self:GetText()) then
