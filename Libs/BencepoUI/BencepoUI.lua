@@ -11,7 +11,7 @@
 --   win:Check(16, -60, "Label", "Tooltip", function() return db.x end, function(v) db.x = v end)
 --   win:Toggle()
 
-local UI = LibStub:NewLibrary("BencepoUI-1.0", 3)
+local UI = LibStub:NewLibrary("BencepoUI-1.0", 4)
 if not UI then return end
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
@@ -156,16 +156,25 @@ function UI:CreateWindow(opts)
 	title:SetPoint("TOPLEFT", 14, -12)
 	title:SetTextColor(T.accent[1], T.accent[2], T.accent[3])
 	title:SetText(opts.title or "")
+	local used = 14 + title:GetStringWidth() -- room the title row takes from the left
 	if opts.subtitle then
 		local sub = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		sub:SetPoint("LEFT", title, "RIGHT", 8, -1)
 		sub:SetTextColor(T.muted[1], T.muted[2], T.muted[3])
 		sub:SetText(opts.subtitle)
+		used = used + 8 + sub:GetStringWidth()
 	end
+	-- the hint gets what is left of the row: shortened when it does not fit, left out when
+	-- there is hardly any room (it ran into the title and version before)
 	local hint = win:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	hint:SetPoint("TOPRIGHT", -38, -15)
 	hint:SetTextColor(T.muted[1], T.muted[2], T.muted[3])
+	hint:SetJustifyH("RIGHT")
+	hint:SetWordWrap(false)
 	hint:SetText(opts.hint or "drag to move, changes apply live")
+	local room = (opts.width or 500) - 38 - used - 16
+	hint:SetWidth(math.max(room, 1))
+	hint:SetShown(room >= 80)
 
 	local close = CreateFrame("Button", nil, win, "BackdropTemplate")
 	close:SetSize(22, 22)

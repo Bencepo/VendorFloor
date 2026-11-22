@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.8
+
+- The shared settings window (BencepoUI 4): the hint in its title row ("drag to move …") no longer runs into the title and version; it is shortened or left out when there is no room.
+
 ## 1.0.7
 
 - The minimap button opens the settings with a left-click, like the other Bencepo addons. Right-click shows the ledger for the website (the totals are in Menu > Statistics).
