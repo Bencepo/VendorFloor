@@ -74,13 +74,13 @@ local refreshSoon = false  -- the window is refreshed on the next tick
 local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults, StartFull, NextRound, FullReady, StartCraftScan
 
 -- The finds of the tab shown, in list order.
--- A find passes the minimum profit in percent (changeable at any time, also for listed finds).
+-- A find passes the minimum profit per unit and in percent. Both are a filter on the list,
+-- so a change shows at once in both directions: raised, finds hide; lowered, they come back.
 local function Shown(d)
 	if d.mode == "wish" then return true end -- watchlist: your own price limit, no profit filter
 	if d.mode == "de" and ns.CanDisenchant and not ns.CanDisenchant(d.id) then return false end
-	local pct = db and db.minPercent or 0
-	if pct <= 0 or not (d.price and d.vendor) or d.price <= 0 then return true end
-	return (d.vendor - d.price) / d.price * 100 >= pct
+	if not (db and ns.Worth and d.price and d.vendor) or d.price <= 0 then return true end
+	return ns.Worth(d.vendor, d.price)
 end
 
 local function View()
@@ -575,16 +575,14 @@ local function Process(results)
 	end
 end
 
--- Set the minimum distance to the vendor price (copper per unit). Finds below it leave the list.
-local function SetMinProfit(copper)
+-- Set the minimum distance to the vendor price (copper per unit). The list follows at once
+-- (Shown filters it); finds below the minimum stay known and come back when it is lowered.
+-- typing: true while the value comes from the input field, whose text is left alone.
+local function SetMinProfit(copper, typing)
 	db.minProfit = max(floor(copper), 1)
 	db.minProfitSilver = floor(db.minProfit / 100)
-	for i = #order, 1, -1 do
-		local d = order[i]
-		if not Worth(d.vendor, d.price) and d ~= buy.deal then RemoveDeal(d) end
-	end
 	ns.craftDirty = true -- the crafting tab filters by the same minimum
-	if ui then ui.profit:SetText(PlainMoney(db.minProfit)) end
+	if ui and not typing then ui.profit:SetText(PlainMoney(db.minProfit)) end
 	SetStatus(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
 	Refresh()
 end
@@ -1132,7 +1130,7 @@ function VendorFloor_BuyNext()
 		return
 	end
 	if BUSY[state] or (state == "verifying" and buy.purpose == "buy") then return end
-	local d = (selected and deals[selected.k] and selected) or View()[1]
+	local d = (selected and deals[selected.k] and Shown(selected) and selected) or View()[1]
 	if d then Select(d, true) end
 end
 
@@ -2333,7 +2331,7 @@ Refresh = function()
 
 	local state, text, enabled = buy.state, L["Click a find"], false
 	if not state or buy.purpose == "check" then
-		if selected and deals[selected.k] then text, enabled = L["Check"], true
+		if selected and deals[selected.k] and Shown(selected) then text, enabled = L["Check"], true
 		elseif view[1] then text, enabled = L["Check"], true end
 	elseif state == "verifying" then
 		text = L["Checking …"]
@@ -2809,28 +2807,32 @@ local function BuildUI()
 	profit:SetAutoFocus(false)
 	profit:SetMaxLetters(16)
 	profit:SetText(PlainMoney(db.minProfit))
+	-- the list follows while you type; Enter or clicking elsewhere keeps the value, Escape undoes it
+	profit:SetScript("OnEditFocusGained", function(self) self.before = db.minProfit end)
+	profit:SetScript("OnTextChanged", function(self, user)
+		local copper = user and ParseMoney(self:GetText())
+		if copper and max(floor(copper), 1) ~= db.minProfit then SetMinProfit(copper, true) end
+	end)
 	profit:SetScript("OnEnterPressed", function(self)
-		local copper = ParseMoney(self:GetText())
-		if copper then
-			SetMinProfit(copper)
-		else
-			self:SetText(PlainMoney(db.minProfit))
+		if not ParseMoney(self:GetText()) then
 			SetStatus(L["Amount not recognised. Examples: 50%s, 5s, 1g 20s"]:format(ns.COPPER))
 		end
 		self:ClearFocus()
 	end)
 	profit:SetScript("OnEscapePressed", function(self)
-		self:SetText(PlainMoney(db.minProfit))
+		if self.before and self.before ~= db.minProfit then SetMinProfit(self.before, true) end
+		self.before = nil
 		self:ClearFocus()
 	end)
 	profit:SetScript("OnEditFocusLost", function(self)
+		self.before = nil
 		self:SetText(PlainMoney(db.minProfit))
 	end)
 	profit:SetScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_TOP")
 		GameTooltip:AddLine(L["Minimum profit per unit"])
 		GameTooltip:AddLine(L["How far below the vendor price an auction must be."], 1, 1, 1, true)
-		GameTooltip:AddLine(L["Examples: 50%s, 5s, 1g 20s. Confirm with Enter."]:format(ns.COPPER), 0.7, 0.7, 0.7, true)
+		GameTooltip:AddLine(L["Examples: 50%s, 5s, 1g 20s. The list follows as you type."]:format(ns.COPPER), 0.7, 0.7, 0.7, true)
 		GameTooltip:Show()
 	end)
 	profit:SetScript("OnLeave", function(self)
@@ -3308,7 +3310,11 @@ local function BuildSettings()
 		function(v) SetMinProfit(v * 100) end,
 		L["How far below the vendor price an auction must be. Finer amounts can be typed into the window."], 190, silver)
 	w:Slider(X, -112, L["Minimum profit in percent"], 0, 100, 5, function() return db.minPercent end,
-		function(v) db.minPercent = v end, L["Profit in percent of the price, for every tab. 0 turns it off."], 190, percent)
+		function(v)
+			db.minPercent = v
+			if ui then ui.ShowPct() end
+			ns.RefreshWindow()
+		end, L["Profit in percent of the price, for every tab. 0 turns it off."], 190, percent)
 	w:Slider(X, -152, L["Minimum profit per bag slot (silver)"], 0, 500, 5, function() return db.minSlotSilver or 0 end,
 		function(v)
 			db.minSlotSilver = v

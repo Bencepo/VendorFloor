@@ -83,12 +83,20 @@ describe("VendorFloor", function()
 		end)
 		it("hides listed finds below the percent", function()
 			local find = { price = 250, vendor = 280, mode = "vendor" }
-			db.minPercent = 15
+			db.minProfit, db.minPercent = 1, 15
 			assert.is_false(T.Shown(find))
 			db.minPercent = 10
 			assert.is_true(T.Shown(find))
 			db.minPercent = 0
 			assert.is_true(T.Shown(find))
+		end)
+		it("the minimum per unit filters listed finds both ways", function()
+			local find = { price = 250, vendor = 300, mode = "vendor" }
+			db.minProfit, db.minPercent = 100, 0
+			assert.is_false(T.Shown(find)) -- 50 below the minimum: hidden
+			db.minProfit = 50
+			assert.is_true(T.Shown(find))  -- lowered: back in the list
+			assert.is_true(T.Shown({ price = 900, vendor = 300, mode = "wish" })) -- watchlist: own limit only
 		end)
 	end)
 
