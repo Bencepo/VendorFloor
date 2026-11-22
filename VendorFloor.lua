@@ -1896,8 +1896,10 @@ local function ReadCraftPrice(id)
 	for i = 1, n do
 		local info = AH.GetCommoditySearchResultInfo(id, i)
 		-- commodity results count your own units (numOwnerItems) instead of flagging them
-		local q = info and info.unitPrice and (info.quantity or 0) - (info.numOwnerItems or 0)
-		if q and q > 0 then a[#a + 1] = { info.unitPrice, q } end
+		if info and info.unitPrice then
+			local q = (info.quantity or 0) - (info.numOwnerItems or 0)
+			if q > 0 then a[#a + 1] = { info.unitPrice, q } end
+		end
 	end
 	if not a[1] and key then
 		for i = 1, (AH.GetNumItemSearchResults(key) or 0) do
