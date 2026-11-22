@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.6
+
+- Disenchant values follow new material prices at once: a check or a crafting price lookup that finds dust, essences or shards at a new price now updates the disenchant tab right away instead of after the next full scan.
+- Crafting prices leave your own commodity auctions out (they could pull the usual price of a reagent towards your own listing).
+- Changing the minimum profit updates the crafting tab at once.
+- Purchases confirmed only by the chat line now count for quick rounds too, like all other purchases.
+- German: the missing texts of the purchase log, the bug report and quick rounds are translated, and the full scan is called "Vollscan" everywhere.
+- The minimap tooltip points to the settings instead of a chat command.
+- Code cleanup, no change in how VendorFloor scans or buys.
+
 ## 1.0.5
 
 - The disenchant basket works from a macro: `/click VendorFloorBasketButton` disenchants the next basket item, whatever the "cast on key down" setting says. The button now casts Disenchant on the bag slot directly instead of running a macro of its own.

@@ -13,6 +13,7 @@ local GOLD = { 0.88, 0.66, 0.23 }
 local function AddLines(tip, link)
 	local db = ns.db
 	if not (db and db.tooltip and link and ns.Money) then return end
+	if issecretvalue and issecretvalue(link) then return end -- hidden from addons
 	local id = tonumber(link:match("item:(%d+)"))
 	if not id then return end
 	local lines = {}

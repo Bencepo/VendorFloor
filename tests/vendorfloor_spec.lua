@@ -129,6 +129,13 @@ describe("VendorFloor", function()
 			assert.near(2 * 100 * 0.95, ns.DisenchantValue(5000), 0.01)
 		end)
 
+		it("follows new material prices without a full scan", function()
+			local before = ns.DisenchantValue(5000)
+			ns.RecordListing(DUST, { { 200, 10 } }) -- a check finds dust at twice the price
+			local after = ns.DisenchantValue(5000)
+			assert.near(before + 0.75 * 2.5 * 100 * 0.95, after, 0.01)
+		end)
+
 		it("reads the item ID from links", function()
 			assert.equal(5000, T.ItemID("|cff1eff00|Hitem:5000::::::::|h[Test Bracers]|h|r"))
 			assert.equal(42, T.ItemID(42))

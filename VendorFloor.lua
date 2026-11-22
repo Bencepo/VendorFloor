@@ -583,6 +583,7 @@ local function SetMinProfit(copper)
 		local d = order[i]
 		if not Worth(d.vendor, d.price) and d ~= buy.deal then RemoveDeal(d) end
 	end
+	ns.craftDirty = true -- the crafting tab filters by the same minimum
 	if ui then ui.profit:SetText(PlainMoney(db.minProfit)) end
 	SetStatus(L["Minimum profit per unit: %s"]:format(Money(db.minProfit)))
 	Refresh()
@@ -1055,6 +1056,10 @@ local function Action()
 		-- an auction is bid on once: if it is still listed afterwards, the purchase failed
 		-- ("Internal auction error") and the next check moves on instead of offering it again
 		triedBids[buy.auctionID] = true
+		-- bids never confirmed (refused or failed) are let go after two minutes
+		for id, p in pairs(pendingBuys) do
+			if GetTime() - p.at > 120 then pendingBuys[id] = nil end
+		end
 		pendingBuys[buy.auctionID] = { id = d.id, qty = buy.qty, cost = buy.buyout, value = buy.vendor * buy.qty,
 			name = d.name, at = GetTime(), mode = d.mode or "vendor", key = d.key }
 		Print(L[DeText(d, "Purchase sent: %s ×%d for %s (vendor pays %s).")]:format(buy.link or d.link or d.name, buy.qty,
@@ -1307,9 +1312,8 @@ local function FullRecord(index)
 	local pk = DealKey(key)
 	local it = full.items[pk]
 	if not it then
-		it = { key = key, plainKey = plain, id = itemID, vendor = vendor, name = name, link = itemLink or link,
+		it = { key = key, plainKey = plain, id = itemID, vendor = vendor, name = name, link = link or itemLink,
 			icon = icon, a = {} }
-		if link then it.link = link end
 		full.items[pk] = it
 	end
 	it.a[#it.a + 1] = { unit, count, owner and owner == full.player or nil }
@@ -1329,8 +1333,9 @@ local function MedianOf(list)
 	return (list[n / 2] + list[n / 2 + 1]) / 2
 end
 
--- Median unit price of auctions { unit, count, own }, weighted by count, own auctions left out.
-local function ListingMedian(a)
+-- The unit price at which share (0..1) of the listed units is reached, weighted by count,
+-- own auctions left out. a: auctions { unit, count, own }. Also returns how many auctions count.
+local function ListingQuantile(a, share)
 	local list, total = {}, 0
 	for _, x in ipairs(a) do
 		if not x[3] then
@@ -1343,62 +1348,21 @@ local function ListingMedian(a)
 	local run = 0
 	for _, x in ipairs(list) do
 		run = run + x[2]
-		if run >= total / 2 then return x[1], #list end
+		if run >= total * share then return x[1], #list end
 	end
+	return list[#list][1], #list
 end
+
+-- ListingQuantile(a, 0.5) is the median. ListingLow: what the cheapest tenth of the listed
+-- units costs, the price to buy at and about the price a sale has to beat.
+local function ListingLow(a) return (ListingQuantile(a, 0.1)) end
 
 -- Day number (days since 1970) as the key of the price history: short in the saved file.
 local function Today() return floor(time() / 86400) end
 
--- What the cheapest tenth of the listed units costs (weighted by count, own auctions left
--- out): the price to buy at, and about the price a sale has to beat.
-local function ListingLow(a)
-	local list, total = {}, 0
-	for _, x in ipairs(a) do
-		if not x[3] then
-			list[#list + 1] = x
-			total = total + x[2]
-		end
-	end
-	if total == 0 then return nil end
-	table.sort(list, function(p, q) return p[1] < q[1] end)
-	local run = 0
-	for _, x in ipairs(list) do
-		run = run + x[2]
-		if run >= total * 0.1 then return x[1] end
-	end
-	return list[#list][1]
-end
+local matCache = {} -- itemID -> value of a disenchant material (false: none); cleared on new prices
 
--- Latest low price of a price key (from the last full scan or price check), or nil.
-local StorePrice
-
--- Prices from a checked item's complete list of auctions (pk: price key or item ID).
-function ns.RecordListing(pk, a)
-	if type(pk) == "number" then pk = ns.PlainKey(pk) end
-	local med = pk and #a > 0 and ListingMedian(a)
-	if not med then return end
-	StorePrice(pk, med)
-	local low = ListingLow(a)
-	if low then
-		db.lows = db.lows or {}
-		db.lows[pk] = { floor(low + 0.5), time() }
-	end
-end
-
-local function StoreLow(pk, value)
-	db.lows = db.lows or {}
-	db.lows[pk] = { floor(value + 0.5), time() }
-end
-
-local function LowValue(pk)
-	local l = db.lows and db.lows[pk]
-	if l and time() - l[2] < 3 * 86400 then return l[1] end
-	return nil
-end
-ns.LowValue = LowValue
-
-function StorePrice(pk, value)
+local function StorePrice(pk, value)
 	db.prices = db.prices or {}
 	local h = db.prices[pk] or {}
 	h[Today()] = floor(value + 0.5)
@@ -1409,6 +1373,30 @@ function StorePrice(pk, value)
 		for i = 1, #keys - MARKET_DAYS do h[keys[i]] = nil end
 	end
 	db.prices[pk] = h
+end
+
+local function StoreLow(pk, value)
+	if not value then return end
+	db.lows = db.lows or {}
+	db.lows[pk] = { floor(value + 0.5), time() }
+end
+
+-- Latest low price of a price key (from the last full scan or price check), or nil.
+local function LowValue(pk)
+	local l = db.lows and db.lows[pk]
+	if l and time() - l[2] < 3 * 86400 then return l[1] end
+	return nil
+end
+ns.LowValue = LowValue
+
+-- Prices from a checked item's complete list of auctions (pk: price key or item ID).
+function ns.RecordListing(pk, a)
+	if type(pk) == "number" then pk = ns.PlainKey(pk) end
+	local med = pk and #a > 0 and ListingQuantile(a, 0.5)
+	if not med then return end
+	StorePrice(pk, med)
+	StoreLow(pk, ListingLow(a))
+	wipe(matCache) -- disenchant values follow the new price
 end
 
 -- Usual price of a price key and on how many days it rests (nil without data).
@@ -1454,8 +1442,6 @@ local DE_ROWS = {
 	{ 60, { DUST.illusion, 3.5 }, { ESS.geternal, 2 }, SHARD.lbril },
 }
 local SHARD_CHANCE = 0.04 -- green items: a shard in about 3-5% of cases
-
-local matCache = {}
 
 local function MatValue(itemID, live)
 	if matCache[itemID] ~= nil then return matCache[itemID] or nil end
@@ -1769,7 +1755,7 @@ local function FinishFull(failed)
 	-- 1. today's usual price of every item (for disenchant materials and crafting)
 	wipe(matCache)
 	for pk, it in pairs(full.items) do
-		local med = ListingMedian(it.a)
+		local med = ListingQuantile(it.a, 0.5)
 		if med then
 			StorePrice(pk, med)
 			StoreLow(pk, ListingLow(it.a))
@@ -1791,7 +1777,8 @@ local function FinishFull(failed)
 		if mode == "de" then
 			AddVariant(g, it.key, unit)
 			-- the group shows the base item, not one of its variants
-			g.name, g.link = GetItemInfo(it.id), select(2, GetItemInfo(it.id)) or g.link
+			local baseName, baseLink = GetItemInfo(it.id)
+			g.name, g.link = baseName or g.name, baseLink or g.link
 		end
 	end
 	for pk, it in pairs(full.items) do
@@ -1898,9 +1885,9 @@ local function ReadCraftPrice(id)
 	local n = AH.GetNumCommoditySearchResults and AH.GetNumCommoditySearchResults(id) or 0
 	for i = 1, n do
 		local info = AH.GetCommoditySearchResultInfo(id, i)
-		if info and info.unitPrice and info.quantity and not info.containsOwnerItem then
-			a[#a + 1] = { info.unitPrice, info.quantity }
-		end
+		-- commodity results count your own units (numOwnerItems) instead of flagging them
+		local q = info and info.unitPrice and (info.quantity or 0) - (info.numOwnerItems or 0)
+		if q and q > 0 then a[#a + 1] = { info.unitPrice, q } end
 	end
 	if not a[1] and key then
 		for i = 1, (AH.GetNumItemSearchResults(key) or 0) do
@@ -1911,10 +1898,12 @@ local function ReadCraftPrice(id)
 			end
 		end
 	end
-	local med = ListingMedian(a)
+	local med = ListingQuantile(a, 0.5)
 	if med then
-		StorePrice(PlainKey(id), med)
-		StoreLow(PlainKey(id), ListingLow(a))
+		local pk = PlainKey(id)
+		StorePrice(pk, med)
+		StoreLow(pk, ListingLow(a))
+		wipe(matCache)
 		craft.found = craft.found + 1
 	end
 end
@@ -2371,13 +2360,12 @@ local function UpdateScanButton()
 	local running = scan.active or checking or waiting or craft.active
 	if waiting then
 		ui.scan:SetText(L["Stop (%d)"]:format(max(0, math.ceil(scan.nextAt - GetTime()))))
+	elseif running then
+		ui.scan:SetText(L["Stop"])
 	else
-		ui.scan:SetText(running and L["Stop"] or L["Scan"])
-	end
-	ui.scan:SetEnabled(not full.active and (running or not buy.state))
-	if not running then
 		ui.scan:SetText(db.tab == "craft" and L["Prices"] or L["Scan"])
 	end
+	ui.scan:SetEnabled(not full.active and (running or not buy.state))
 	-- while something runs the button is shown switched on
 	ui.scan:SetOn(running)
 end
@@ -3522,18 +3510,23 @@ function handlers.ITEM_SEARCH_RESULTS_UPDATED(key)
 end
 handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
 
-function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
-	ns.Log("purchase completed %s", tostring(auctionID))
-	if buy.state == "bought" and buy.auctionID == auctionID then
-		buy.confirmed = true
-		C_Timer.After(0.2, function() if buy.state == "bought" and buy.confirmed and buy.auctionID == auctionID then ns.AfterBuy() end end)
-	end
+-- A confirmed item purchase: into the ledger, the watchlist and the hot items.
+function ns.RecordPending(auctionID)
 	local p = pendingBuys[auctionID]
 	if not p then return end
 	pendingBuys[auctionID] = nil
 	ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
 	ns.WishBought(p.id, p.qty, p.mode)
 	ns.LearnBuy(p.id, p.key, p.cost, p.value, p.mode)
+end
+
+function handlers.AUCTION_HOUSE_PURCHASE_COMPLETED(auctionID)
+	ns.Log("purchase completed %s", tostring(auctionID))
+	if buy.state == "bought" and buy.auctionID == auctionID then
+		buy.confirmed = true
+		C_Timer.After(0.2, function() if buy.state == "bought" and buy.confirmed and buy.auctionID == auctionID then ns.AfterBuy() end end)
+	end
+	ns.RecordPending(auctionID)
 end
 
 -- In case the client has no purchase event: the "You won an auction for ..." line.
@@ -3544,9 +3537,7 @@ function handlers.CHAT_MSG_SYSTEM(msg)
 	if not name then return end
 	for auctionID, p in pairs(pendingBuys) do
 		if p.name == name and GetTime() - p.at < 60 then
-			pendingBuys[auctionID] = nil
-			ns.RecordBuy(p.id, p.qty, p.cost, p.value, p.mode)
-			ns.WishBought(p.id, p.qty, p.mode)
+			ns.RecordPending(auctionID)
 			return
 		end
 	end
@@ -3619,12 +3610,12 @@ function handlers.COMMODITY_PURCHASE_FAILED()
 	if buy.state == "confirming" or buy.state == "quoting" then ResetBuy(L["Purchase failed."]) end
 end
 
-local events = CreateFrame("Frame")
 -- the mailbox was visited: purchases in the mail no longer count as taken bag slots
 function handlers.MAIL_CLOSED()
 	ns.mailSlots = 0
 end
 
+local events = CreateFrame("Frame")
 for event in pairs(handlers) do
 	pcall(events.RegisterEvent, events, event)
 end
@@ -3745,7 +3736,7 @@ end
 -- For the automated tests (tests/*_spec.lua, run with busted outside the game); unused in the game.
 ns.test = {
 	Init = function() handlers.ADDON_LOADED(ADDON) end,
-	ParseMoney = ParseMoney, ListingMedian = ListingMedian, ListingLow = ListingLow, Worth = Worth,
+	ParseMoney = ParseMoney, ListingMedian = function(a) return ListingQuantile(a, 0.5) end, ListingLow = ListingLow, Worth = Worth,
 	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
 	IsDisenchantCast = IsDisenchantCast, StartFull = function() StartFull() end, NextRound = function() NextRound() end,
 	FullTick = FullTick, Full = function() return full end, Scan = function() return scan end, handlers = handlers,
