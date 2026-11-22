@@ -36,6 +36,29 @@ describe("VendorFloor", function()
 		end)
 	end)
 
+	describe("buying without enough gold", function()
+		it("frees the purchase so scanning goes on, and keeps the find", function()
+			env.items[6000] = { name = "Cheap Ore", quality = 1, ilvl = 10, minLevel = 0, classID = 7, sell = 500 }
+			local key = { itemID = 6000, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }
+			db.lastFinds = { at = os.time(), list = { { k = "6000:0:0:0", key = key, id = 6000, vendor = 500, price = 100,
+				count = 1, profit = 400, name = "Cheap Ore", mode = "vendor" } } }
+			db.minProfit, db.minPercent = 1, 0
+			local AH = env.C_AuctionHouse
+			AH.GetNumItemSearchResults = function() return 1 end
+			AH.GetItemSearchResultInfo = function()
+				return { auctionID = 77, buyoutAmount = 100, quantity = 1 }
+			end
+			env.GetMoney = function() return 50 end -- less than the 100 copper buyout
+			T.handlers.AUCTION_HOUSE_SHOW()
+			env.VendorFloor_BuyNext()                 -- click: the find is searched
+			assert.matches("state=verifying", ns.Diagnose())
+			T.handlers.ITEM_SEARCH_RESULTS_UPDATED(key) -- the auction arrives: too expensive for the bags of gold
+			assert.matches("state=nil", ns.Diagnose())
+			assert.is_true(T.Shown({ price = 100, vendor = 500, mode = "vendor" }))
+			assert.matches("Cheap Ore", ns.Diagnose(db.lastFinds.list[1]))
+		end)
+	end)
+
 	describe("ParseMoney", function()
 		it("reads gold, silver and copper", function()
 			assert.equal(12000, T.ParseMoney("1g 20s"))

@@ -967,9 +967,16 @@ local function ReadCommodity()
 	end
 	local offer = CommodityOffer(d, ns.Budget(GetMoney()))
 	if not offer then
+		local any = CommodityOffer(d)
+		if any then
+			-- still there, only not affordable: the find stays, scanning goes on
+			d.price, d.count, d.profit = any.unit, any.count, any.profit
+			ResetBuy(L["Not enough gold for %s (%s per unit). Scanning goes on."]:format(d.link or d.name, Money(any.unit)))
+			return
+		end
 		if not buy.chain then ns.LearnFind(d, "gone") end
 		RemoveDeal(d)
-		ns.Gone(L["Nothing below vendor price any more (or not enough gold)."])
+		ns.Gone(L["Nothing below vendor price any more."])
 		return
 	end
 	d.askedAgain = nil
@@ -1009,6 +1016,11 @@ local function ReadItem()
 	ns.Log("offer %s: auction %s, %s for %d", tostring(d.name), tostring(best.auctionID), tostring(best.buyout), best.quantity)
 	if d.triedPlain and d.plainKey then keyStyle[d.id] = "plain" end
 	d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
+	if ns.Budget(GetMoney()) < best.buyout then
+		-- not affordable: the find stays, and nothing waits for a click that cannot buy
+		ResetBuy(L["Not enough gold for %s (%s). Scanning goes on."]:format(best.link or d.link or d.name, Money(best.buyout)))
+		return
+	end
 	buy.state = "item_ready"
 	buy.auctionID, buy.buyout, buy.qty, buy.vendor, buy.link = best.auctionID, best.buyout, best.quantity, best.vendor, best.link
 	SetStatus(L[DeText(d, "%s ×%d for %s, vendor pays %s.")]:format(best.link or d.link or d.name, best.quantity,
@@ -1040,12 +1052,12 @@ local function Action()
 	local d = buy.deal
 	if state == "item_ready" then
 		if GetMoney() < buy.buyout then
-			SetStatus(L["Not enough gold."])
+			ResetBuy(L["Not enough gold."])
 			return
 		end
 		local stop = ns.Guard(buy.buyout, 1)
 		if stop then
-			SetStatus(stop)
+			ResetBuy(stop)
 			return
 		end
 		ns.Log("PlaceBid %s @ %s (%s)", tostring(buy.auctionID), tostring(buy.buyout), tostring(d.name))
@@ -1066,7 +1078,7 @@ local function Action()
 	elseif state == "commodity_ready" then
 		local stop = ns.Guard(buy.cost or 0, ns.SlotsFor(d.id, buy.qty))
 		if stop then
-			SetStatus(stop)
+			ResetBuy(stop)
 			return
 		end
 		if AH.StartCommoditiesPurchase then AH.StartCommoditiesPurchase(d.id, buy.qty) end
@@ -2054,14 +2066,17 @@ local function Tick()
 	end
 	local state = buy.state
 	-- Watchdog: a find made ready to buy is let go after 20 s without a click, and anything
-	-- else that has not moved for 20 s is reset, so the checks of the round go on.
-	if state and queue[1] and not scan.active then
+	-- else that has not moved for 20 s is reset, so the checks of the round, and in continuous
+	-- mode the next round, go on.
+	if state and (queue[1] or db.loop) and not scan.active then
 		local waiting = state == "item_ready" or state == "commodity_ready"
 		if (waiting and now - (buy.t or now) > 20) or (not waiting and state ~= "quote_ok" and state ~= "confirming"
 			and now - (buy.t or now) > 20 and now - (ns.logAt or 0) > 20) then
 			ns.Log("watchdog: %s for %s let go after %.0f s", tostring(state), tostring(buy.deal and buy.deal.name), now - (buy.t or now))
 			wipe(buy)
 			pendingSend, sentAt = nil, nil
+			if db.loop and not queue[1] then scan.nextAt = now + 1 end
+			Refresh()
 			return
 		end
 	end

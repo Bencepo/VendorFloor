@@ -37,7 +37,8 @@ function M.Load(addon, files, setup)
 		MakeItemKey = function(id) return { itemID = id, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 } end,
 	}, { __index = function() return stub end })
 	env.GetLocale = function() return "enUS" end
-	env.time = os.time
+	env.time, env.date = os.time, os.date
+	env.GetBuildInfo = function() return "1.0.0", "1", "Nov 1 2026", 16001 end
 	-- test time: starts at 0 and only moves when a test sets env.now
 	env.now = 0
 	env.GetTime = function() return env.now end
