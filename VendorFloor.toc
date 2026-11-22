@@ -1,7 +1,6 @@
 ## Interface: 16001
 ## Title: VendorFloor
 ## Notes: Auction house sniper: finds auctions below vendor price, below disenchant value and profitable crafts. One-click buy, collect and sell, as a tab in the auction house window.
-## Notes-deDE: Auktionshaus-Sniper: findet Auktionen unter Händlerpreis, unter Entzauberwert und profitable Rezepte. Kaufen, abholen und verkaufen mit je einem Klick, als Tab im Auktionshausfenster.
 ## Author: Bencepo
 ## Version: @project-version@
 ## X-Website: https://bencepo.github.io/vendorfloor/

@@ -6,7 +6,7 @@
 - Crafting prices leave your own commodity auctions out (they could pull the usual price of a reagent towards your own listing).
 - Changing the minimum profit updates the crafting tab at once.
 - Purchases confirmed only by the chat line now count for quick rounds too, like all other purchases.
-- German: the missing texts of the purchase log, the bug report and quick rounds are translated, and the full scan is called "Vollscan" everywhere.
+- English only: the German translation is removed, VendorFloor shows the same English texts on every client.
 - The minimap tooltip points to the settings instead of a chat command.
 - Code cleanup, no change in how VendorFloor scans or buys.
 
