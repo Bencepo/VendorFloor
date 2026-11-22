@@ -2,6 +2,7 @@
 
 ## 1.0.7
 
+- The minimap button opens the settings with a left-click, like the other Bencepo addons. Right-click shows the ledger for the website (the totals are in Menu > Statistics).
 - The settings window (BencepoUI) is now one version for all Bencepo addons: "Report a bug" sits in a footer of its own, and every settings window looks and works the same, whichever addon loads first.
 
 ## 1.0.6

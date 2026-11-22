@@ -168,13 +168,12 @@ end
 
 local minimapButton
 
+-- Left-click: settings, like every Bencepo addon. Right-click: the ledger for the website.
 local function MinimapClick(button)
 	if button == "RightButton" then
-		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. ns.TotalLine())
-	elseif AuctionHouseFrame and AuctionHouseFrame:IsShown() then
-		SlashCmdList.VENDORFLOOR("")
-	else
 		ns.ShowExport()
+	elseif ns.ToggleSettings then
+		ns.ToggleSettings()
 	end
 end
 
@@ -188,8 +187,8 @@ local function MinimapTooltip(tip)
 		tip:AddDoubleLine(L["Still to sell"], ns.Money(l.unsoldValue), 1, 1, 1, 1, 1, 1)
 	end
 	tip:AddLine(" ")
-	tip:AddLine(L["Left-click: ledger for bencepo.github.io/vendorfloor (at the auction house: window)"], 0.6, 0.8, 1, true)
-	tip:AddLine(L["Right-click: totals in chat"], 0.6, 0.8, 1)
+	tip:AddLine(L["Left-click: settings"], 0.6, 0.8, 1)
+	tip:AddLine(L["Right-click: ledger for bencepo.github.io/vendorfloor"], 0.6, 0.8, 1, true)
 	tip:AddLine(L["Drag: move. Hide it in the settings."], 0.6, 0.8, 1)
 end
 
