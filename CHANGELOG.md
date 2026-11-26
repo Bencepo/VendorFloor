@@ -2,7 +2,7 @@
 
 ## 1.1.0
 
-- First steps: the first time the VendorFloor tab opens, a short panel shows the way from scan to sale in three steps (Scan, Check, Buy). "Got it" closes it for good; Menu > How it works shows it again.
+- First steps: the first time the VendorFloor tab opens, three small callouts point one after the other at the Scan button, the result list and the buy button (Next, Next, Got it). The x skips them; Menu > How it works shows them again.
 
 ## 1.0.9
 
