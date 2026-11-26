@@ -18,6 +18,33 @@ describe("VendorFloor", function()
 		env.items[11288] = { name = "Greater Magic Wand", quality = 2, ilvl = 23, minLevel = 18, classID = 2 }
 	end)
 
+	describe("share text", function()
+		before_each(function()
+			ns, env = wow.Load("VendorFloor", { "Locales.lua", "VendorFloor.lua", "Trade.lua", "Sales.lua" }, function(e)
+				e.VendorFloorDB = {}
+				e.Enum = e.Enum or {}
+				rawset(e.Enum, "BagIndex", { ReagentBag = 5 })
+			end)
+			ns.test.Init()
+			db = ns.db
+		end)
+		it("shows today's and all-time profit without colour codes, with the addon link", function()
+			ns.Unsold = function() return 0, 152500 end
+			db.days = { [os.date("%Y-%m-%d")] = { buys = 12, spent = 50000, sold = 4123456, soldCost = 1000000 } }
+			db.total = { buys = 345, sold = 98765432, soldCost = 12345678 }
+			local text = ns.ShareText()
+			assert.truthy(text:find("12 buys, profit 312g from sales, 15g 25s still to sell", 1, true))
+			assert.truthy(text:find("345 buys, profit 8641g", 1, true))
+			assert.truthy(text:find("curseforge.com/wow/addons/vendorfloor", 1, true))
+			assert.falsy(text:find("|c", 1, true))
+		end)
+		it("says so when nothing was bought today", function()
+			db.days, db.total = {}, nil
+			ns.Unsold = function() return 0, 0 end
+			assert.truthy(ns.ShareText():find("no purchases today", 1, true))
+		end)
+	end)
+
 	describe("ready sound", function()
 		it("plays when the action button becomes clickable, not right after a click", function()
 			local played = 0

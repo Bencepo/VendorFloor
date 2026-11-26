@@ -190,6 +190,39 @@ function ns.TotalLine()
 end
 
 
+-- Gold for a text people paste elsewhere (Discord, chat): no colour codes, no copper.
+local function PlainGold(copper)
+	copper = floor(copper or 0)
+	local sign = copper < 0 and "-" or ""
+	copper = math.abs(copper)
+	local g, s = floor(copper / 10000), floor(copper % 10000 / 100)
+	if g >= 100 then return ("%s%dg"):format(sign, g) end
+	if g > 0 then return ("%s%dg %ds"):format(sign, g, s) end
+	return ("%s%ds"):format(sign, s)
+end
+ns.PlainGold = PlainGold
+
+-- A short text with today's and all-time results, to copy and share.
+function ns.ShareText()
+	local db = DB()
+	if not db then return "" end
+	local d = db.days and db.days[date("%Y-%m-%d")] or {}
+	local t = db.total or {}
+	local _, unsold = ns.Unsold()
+	local lines = {}
+	if (d.buys or 0) > 0 or (d.sold or 0) > 0 then
+		lines[#lines + 1] = L["VendorFloor today: %d buys, profit %s from sales, %s still to sell."]:format(d.buys or 0,
+			PlainGold((d.sold or 0) - (d.soldCost or 0)), PlainGold(unsold))
+	else
+		lines[#lines + 1] = L["VendorFloor: no purchases today yet."]
+	end
+	if (t.buys or 0) > 0 then
+		lines[#lines + 1] = L["All time: %d buys, profit %s."]:format(t.buys or 0, PlainGold((t.sold or 0) - (t.soldCost or 0)))
+	end
+	lines[#lines + 1] = L["Free addon for WoW Forever: curseforge.com/wow/addons/vendorfloor"]
+	return table.concat(lines, " ")
+end
+
 -- Read-only view of the ledger for other addons (LevelTrail reads it if installed).
 -- Amounts in copper; days maps "YYYY-MM-DD" to { buys, spent, sold, soldCost }.
 function VendorFloor_Ledger()
