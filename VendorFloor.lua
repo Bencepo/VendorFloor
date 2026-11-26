@@ -24,12 +24,12 @@ local ROWS, ROW_HEIGHT = 12, 22  -- rows shown (as many as fit the window, see A
 local SEND_TIMEOUT = 15
 local BUY_SILENT = 5       -- seconds a purchase check waits before it tries the other item key or gives up
 local keyStyle = {}        -- itemID -> "plain" when gear is only found with the plain item key
-local CHECK_TIMEOUT = 3    -- seconds a check waits for the auction house before it tries again later
-local CACHE_WAIT = 0.6     -- results the auction house already holds come without an event: read them after this
+local CHECK_TIMEOUT = 2    -- seconds a check waits after send before it tries again later
+local CACHE_WAIT = 0.35    -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
 local FULL_WAIT = 90           -- seconds a full scan waits for the auction house to answer
 local FULL_REUSE = 15          -- after this many seconds without an answer, read a list already there
-local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
+local FULL_PER_TICK = 400      -- fallback auctions per tick when debugprofilestop is unavailable
 
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
@@ -206,8 +206,23 @@ end
 local pendingAt = 0
 local SEND_FORCE = 10 -- seconds a query waits for the throttle before it is sent anyway
 
-local function Send(fn)
+function ns.FlushSend()
+	if not pendingSend then return false end
+	local now = GetTime()
+	if AH.IsThrottledMessageSystemReady() or now - pendingAt > SEND_FORCE then
+		local fn = pendingSend
+		pendingSend, sentAt = nil, now
+		if buy.state == "verifying" then buy.t = now end
+		if craft.active and craft.cur then craft.t = now end
+		fn()
+		return true
+	end
+	return false
+end
+
+local function Send(fn, deferSend)
 	pendingSend, lastSend, pendingAt = fn, fn, GetTime()
+	if not deferSend then ns.FlushSend() end
 end
 
 local PRICE_SORT = Enum and Enum.AuctionHouseSortOrder and Enum.AuctionHouseSortOrder.Price or 0
@@ -706,6 +721,7 @@ function ns.StartWish()
 	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
 	SetStatus(L["Watchlist: checking %d items …"]:format(#queue))
 	Refresh()
+	ns.PumpCheck()
 	return true
 end
 
@@ -803,6 +819,7 @@ local function StartQuick()
 	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
 	SetStatus(L["Quick round: checking %d items, %d of them paid off before …"]:format(#queue, hot))
 	Refresh()
+	ns.PumpCheck()
 	return true
 end
 
@@ -861,10 +878,12 @@ local function FinishScan()
 	scan.checkTotal, scan.checked = #queue, 0
 	if queue[1] then
 		SetStatus(L["%d items read. Checking %d candidates …"]:format(scan.seen, #queue))
+		Refresh()
+		ns.PumpCheck()
 	else
 		RoundDone()
+		Refresh()
 	end
-	Refresh()
 end
 
 local function ContinueScan()
@@ -872,9 +891,9 @@ local function ContinueScan()
 	if AH.HasFullBrowseResults() then
 		FinishScan()
 	else
-		Send(function() AH.RequestMoreBrowseResults() end)
+		Send(AH.RequestMoreBrowseResults)
 		SetStatus(L["Scanning … %d items read, %d finds"]:format(scan.seen, #order + #queue))
-		Refresh()
+		ns.UpdateProgress()
 	end
 end
 
@@ -913,10 +932,33 @@ Verify = function(d, purpose)
 	Send(function() AH.SendSearchQuery(d.key, SORTS, true) end)
 	if purpose == "check" then
 		SetStatus(L["Checking: %s (%d left)"]:format(d.link or d.name or "?", #queue))
+		ns.UpdateProgress()
 	else
 		SetStatus(L["Checking %s …"]:format(d.link or d.name or "?"))
+		Refresh()
 	end
-	Refresh()
+end
+
+function ns.PumpCheck()
+	if ns.pumpingCheck or not ahOpen or buy.state or scan.active or full.active or craft.active then return false end
+	ns.pumpingCheck = true
+	local started, popped = false, false
+	while queue[1] do
+		local d = table.remove(queue, 1)
+		popped = true
+		if not d.dropped then
+			scan.checked = (scan.checked or 0) + 1
+			Verify(d, "check")
+			started = true
+			break
+		end
+	end
+	ns.pumpingCheck = false
+	if popped and not started and not queue[1] and not scan.active then
+		RoundDone()
+		Refresh()
+	end
+	return started
 end
 
 -- Result of a check: with real offers into the list, without them out of it.
@@ -935,28 +977,41 @@ local function FinishCheck(d, offer)
 			queued[d.k] = nil
 		end
 		wipe(buy)
-		if not queue[1] and not scan.active then RoundDone() end
-		Refresh()
+		if not queue[1] and not scan.active then
+			RoundDone()
+			Refresh()
+		else
+			ns.UpdateProgress()
+			ns.PumpCheck()
+		end
 		return
 	end
 	d.retries = nil
+	local changed = false
 	if offer then
 		noOffer[d.k] = nil
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
 		SaveFinds()
+		changed = true
 	else
 		if d.browsePrice then noOffer[d.k] = { price = d.browsePrice, at = GetTime() } end
 		if deals[d.k] then
 			ns.LearnFind(d, "gone")
 			RemoveDeal(d)
+			changed = true
 		end
 	end
 	queued[d.k] = nil
 	wipe(buy)
-	if not queue[1] and not scan.active then RoundDone() end
-	Refresh()
+	if not queue[1] and not scan.active then
+		RoundDone()
+		Refresh()
+	else
+		if changed then Refresh() else ns.UpdateProgress() end
+		ns.PumpCheck()
+	end
 end
 
 -- Stackable goods (one price per unit): how many units lie below the vendor price?
@@ -2007,7 +2062,7 @@ end
 -- recipes, their current median price goes into the price history.
 ---------------------------------------------------------------------------
 
-local CRAFT_WAIT, CRAFT_TIMEOUT = 0.6, 3
+local CRAFT_WAIT, CRAFT_TIMEOUT = 0.35, 2.5
 
 local function CraftItems()
 	local char = (UnitName("player") or "?") .. "-" .. (GetRealmName and GetRealmName() or "")
@@ -2029,21 +2084,6 @@ local function CraftItems()
 		end
 	end
 	return list
-end
-
-StartCraftScan = function()
-	if not ahOpen or buy.state or full.active or scan.active then return false end
-	local list = CraftItems()
-	if not list[1] then
-		SetStatus(L["Open each profession window once so VendorFloor can read your recipes."])
-		return false
-	end
-	wipe(craft)
-	craft.active, craft.list, craft.i, craft.found = true, list, 0, 0
-	scan.nextAt = nil
-	SetStatus(L["Price check: %d reagents and products …"]:format(#list))
-	Refresh()
-	return true
 end
 
 local function StopCraftScan(msg)
@@ -2084,7 +2124,13 @@ local function ReadCraftPrice(id)
 end
 
 local function CraftTick(now)
+	if ns.craftStepping or not craft.active then return end
+	ns.craftStepping = true
 	if craft.cur then
+		if pendingSend then
+			ns.craftStepping = false
+			return
+		end
 		local id, key = craft.cur, craft.key
 		local ready = CommodityReady(id)
 			or (key and AH.HasSearchResults(key) and (AH.HasFullItemSearchResults(key) or (AH.GetItemSearchResultsQuantity(key) or 0) > 0))
@@ -2093,25 +2139,49 @@ local function CraftTick(now)
 			craft.cur = nil
 		elseif now - craft.t > CRAFT_TIMEOUT then
 			craft.cur = nil -- no auctions of it right now
+		else
+			ns.craftStepping = false
+			return
 		end
-		return
 	end
-	craft.i = craft.i + 1
-	local id = craft.list[craft.i]
-	if not id then
-		local found = craft.found
-		local total = #craft.list
-		StopCraftScan(L["Price check done: %d of %d items on the auction house."]:format(found, total))
-		ns.craftDirty = true
-		if db.loop then scan.nextAt = GetTime() + db.interval end
-		Refresh()
-		return
+	while true do
+		craft.i = craft.i + 1
+		local id = craft.list[craft.i]
+		if not id then
+			local found = craft.found
+			local total = #craft.list
+			StopCraftScan(L["Price check done: %d of %d items on the auction house."]:format(found, total))
+			ns.craftDirty = true
+			if db.loop then scan.nextAt = GetTime() + db.interval end
+			ns.craftStepping = false
+			Refresh()
+			return
+		end
+		local key = AH.MakeItemKey and AH.MakeItemKey(id)
+		if key then
+			craft.cur, craft.key, craft.t = id, key, now
+			Send(function() AH.SendSearchQuery(key, SORTS, true) end)
+			ns.UpdateProgress()
+			break
+		end
 	end
-	local key = AH.MakeItemKey and AH.MakeItemKey(id)
-	if not key then return end
-	craft.cur, craft.key, craft.t = id, key, now
-	Send(function() AH.SendSearchQuery(key, SORTS, true) end)
-	ns.UpdateProgress()
+	ns.craftStepping = false
+end
+
+StartCraftScan = function()
+	if not ahOpen or buy.state or full.active or scan.active then return false end
+	local list = CraftItems()
+	if not list[1] then
+		SetStatus(L["Open each profession window once so VendorFloor can read your recipes."])
+		return false
+	end
+	wipe(craft)
+	craft.active, craft.list, craft.i, craft.found = true, list, 0, 0
+	scan.nextAt = nil
+	SetStatus(L["Price check: %d reagents and products …"]:format(#list))
+	Refresh()
+	CraftTick(GetTime())
+	return true
 end
 
 local function FullTick(now)
@@ -2134,11 +2204,13 @@ local function FullTick(now)
 		if n ~= full.count then
 			full.count, full.stableAt = n, now
 		elseif now - full.stableAt > 2 then
-			full.phase, full.index = "reading", 0
+			full.phase, full.index, full.uiAt = "reading", 0, 0
 		end
 	elseif full.phase == "reading" then
-		local last = min(full.index + FULL_PER_TICK, full.count) - 1
-		for i = full.index, last do
+		local stop = debugprofilestop and (debugprofilestop() + 10)
+		local limit = stop and full.count or min(full.index + FULL_PER_TICK, full.count)
+		local i = full.index
+		while i < limit do
 			local ok, itemID = FullRecord(i)
 			if not ok then
 				full.pending[#full.pending + 1] = i
@@ -2149,10 +2221,21 @@ local function FullTick(now)
 					C_Item.RequestLoadItemDataByID(itemID)
 				end
 			end
+			i = i + 1
+			if stop and i % 50 == 0 and debugprofilestop() >= stop then break end
 		end
-		full.index = last + 1
-		SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
-		if full.index >= full.count then full.phase, full.loadT, full.progressT = "loading", now, now end
+		full.index = i
+		if full.index >= full.count then
+			full.phase, full.loadT, full.progressT, full.gotItem, full.scanAt = "loading", now, now, true, 0
+			SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
+			full.uiAt = now
+			ns.UpdateProgress()
+		elseif now - (full.uiAt or 0) >= 0.1 then
+			SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
+			full.uiAt = now
+			ns.UpdateProgress()
+		end
+		return
 	elseif full.phase == "loading" then
 		-- items the client had not loaded yet: up to 30 seconds more
 		-- A client with an empty item cache (fresh install, or a client language played for the
@@ -2160,28 +2243,46 @@ local function FullTick(now)
 		-- long as items keep arriving: up to 3 minutes, but stop after 20 seconds without progress.
 		local pending = full.pending
 		local totalPending = #pending
-		local write, limit = 0, min(totalPending, FULL_PER_TICK * 5)
-		for n = 1, limit do
-			local idx = pending[n]
-			if not FullRecord(idx) then
-				write = write + 1
-				pending[write] = idx
+		if totalPending == 0 then
+			FinishFull()
+			return
+		end
+		if full.gotItem or now - (full.scanAt or 0) >= 0.2 then
+			full.gotItem, full.scanAt = false, now
+			local stop = debugprofilestop and (debugprofilestop() + 10)
+			local limit = stop and totalPending or min(totalPending, FULL_PER_TICK * 5)
+			local write, processed = 0, 0
+			for n = 1, limit do
+				local idx = pending[n]
+				if not FullRecord(idx) then
+					write = write + 1
+					pending[write] = idx
+				end
+				processed = n
+				if stop and n % 50 == 0 and debugprofilestop() >= stop then break end
 			end
+			for n = processed + 1, totalPending do
+				write = write + 1
+				pending[write] = pending[n]
+			end
+			for n = write + 1, totalPending do
+				pending[n] = nil
+			end
+			if write < totalPending then full.progressT = now end
+			if processed < totalPending and write < processed then full.gotItem = true end
+			totalPending = write
 		end
-		for n = limit + 1, totalPending do
-			write = write + 1
-			pending[write] = pending[n]
-		end
-		for n = write + 1, totalPending do
-			pending[n] = nil
-		end
-		if write < totalPending then full.progressT = now end
-		if write > 0 and now - full.loadT < 180 and now - (full.progressT or full.loadT) < 20 then
-			SetStatus(L["Full scan: loading item data (%d left) …"]:format(write))
+		if totalPending > 0 and now - full.loadT < 180 and now - (full.progressT or full.loadT) < 20 then
+			if now - (full.uiAt or 0) >= 0.1 then
+				SetStatus(L["Full scan: loading item data (%d left) …"]:format(totalPending))
+				full.uiAt = now
+				ns.UpdateProgress()
+			end
 		else
 			FinishFull()
 			return
 		end
+		return
 	end
 	ns.UpdateProgress()
 end
@@ -2210,18 +2311,14 @@ local function Tick()
 		if pendingSend and now - (pendingAt or now) > 10 then pendingSend = nil end
 		return
 	end
-	if craft.active and not pendingSend then
-		CraftTick(now)
-		return
-	end
 	if pendingSend then
 		-- The throttle can stay "not ready" after a purchase; send anyway after a while.
 		-- A dropped query comes back through AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED.
-		if AH.IsThrottledMessageSystemReady() or now - pendingAt > SEND_FORCE then
-			local fn = pendingSend
-			pendingSend, sentAt = nil, now
-			fn()
-		end
+		ns.FlushSend()
+		return
+	end
+	if craft.active then
+		CraftTick(now)
 		return
 	end
 	if scan.active and sentAt and now - sentAt > SEND_TIMEOUT then
@@ -2260,11 +2357,7 @@ local function Tick()
 		end
 	end
 	if not state and not scan.active and queue[1] then
-		local d = table.remove(queue, 1)
-		if not d.dropped then
-			scan.checked = (scan.checked or 0) + 1
-			Verify(d, "check")
-		end
+		ns.PumpCheck()
 		return
 	end
 	-- A check reads held results quickly. A purchase waits longer for fresh ones, so an
@@ -2274,7 +2367,7 @@ local function Tick()
 		ReadResults()
 		return
 	end
-	if state == "verifying" and buy.purpose == "check" and now - buy.t > CHECK_TIMEOUT then
+	if state == "verifying" and buy.purpose == "check" and not pendingSend and sentAt and now - sentAt > CHECK_TIMEOUT then
 		FinishCheck(buy.deal, false)
 	elseif state == "verifying" and not pendingSend and now - buy.t > BUY_SILENT then
 		-- No answer to a purchase check: the auction house sends none for a search without
@@ -3447,9 +3540,12 @@ local function BuildUI()
 			second = 0
 			ns.UpdateFullButton()
 		end
-		if elapsed < 0.1 then return end
-		elapsed = 0
-		Tick()
+		if elapsed >= 0.1 then
+			elapsed = 0
+			Tick()
+		elseif full.active and (full.phase == "reading" or full.phase == "loading") then
+			FullTick(GetTime())
+		end
 	end)
 
 	ns.blizzardSkin = false
@@ -3754,6 +3850,7 @@ ns.AH_EVENTS = {
 	REPLICATE_ITEM_LIST_UPDATE = true,
 	AUCTION_HOUSE_BROWSE_FAILURE = true,
 	AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED = true,
+	AUCTION_HOUSE_THROTTLED_MESSAGE_SYSTEM_READY = true,
 	GET_ITEM_INFO_RECEIVED = true,
 	ITEM_DATA_LOAD_RESULT = true,
 	COMMODITY_SEARCH_RESULTS_UPDATED = true,
@@ -3895,16 +3992,36 @@ function handlers.AUCTION_HOUSE_BROWSE_FAILURE()
 	if scan.active then StopScan(L["The auction house rejected the query."]) end
 end
 
+function handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_SYSTEM_READY()
+	if not ahOpen then return end
+	if full.active and full.phase == "sending" then
+		SendFull(GetTime())
+		return
+	end
+	if pendingSend then
+		ns.FlushSend()
+		return
+	end
+	if craft.active and not craft.cur then
+		CraftTick(GetTime())
+		return
+	end
+	if not buy.state and not scan.active and queue[1] then
+		ns.PumpCheck()
+	end
+end
+
 function handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
 	-- the full scan request was dropped: send it again (three tries)
 	if full.active and full.phase == "waiting" and (full.sends or 0) < 3 and GetTime() - full.t0 < 10 then
 		full.phase, full.t0 = "sending", GetTime()
 		return
 	end
-	if lastSend and (scan.active or buy.state == "verifying" or craft.active) then Send(lastSend) end
+	if lastSend and (scan.active or buy.state == "verifying" or craft.active) then Send(lastSend, true) end
 end
 
 function handlers.GET_ITEM_INFO_RECEIVED(id, success)
+	if full.active and full.phase == "loading" then full.gotItem = true end
 	local results = pendingInfo[id]
 	if not results then return end
 	pendingInfo[id] = nil
@@ -3920,6 +4037,10 @@ function handlers.COMMODITY_SEARCH_RESULTS_UPDATED(id)
 	if buy.state == "verifying" and buy.deal and buy.deal.id == id then
 		buy.deal.commodity = true
 		ReadCommodity()
+	elseif craft.active and craft.cur == id and not pendingSend then
+		ReadCraftPrice(id)
+		craft.cur = nil
+		CraftTick(GetTime())
 	end
 end
 handlers.COMMODITY_SEARCH_RESULTS_ADDED = handlers.COMMODITY_SEARCH_RESULTS_UPDATED
@@ -3928,6 +4049,10 @@ function handlers.ITEM_SEARCH_RESULTS_UPDATED(key)
 	if buy.state == "verifying" and buy.deal and type(key) == "table" and key.itemID == buy.deal.id then
 		buy.deal.commodity = false
 		ReadItem()
+	elseif craft.active and craft.cur and not pendingSend and type(key) == "table" and key.itemID == craft.cur then
+		ReadCraftPrice(craft.cur)
+		craft.cur = nil
+		CraftTick(GetTime())
 	end
 end
 handlers.ITEM_SEARCH_RESULTS_ADDED = handlers.ITEM_SEARCH_RESULTS_UPDATED
@@ -4213,5 +4338,6 @@ ns.test = {
 	SetUI = function(u) ui = u end, FinishFull = function(failed) FinishFull(failed) end,
 	Deals = function() return order end, Fits = function(...) return ns.Fits(...) end,
 	Buy = function() return buy end, StartScan = function() StartScan() end, FinishScan = function() FinishScan() end,
+	StartCraftScan = function() return StartCraftScan() end, Craft = function() return craft end,
 	Tick = Tick, CommodityOffer = CommodityOffer, AddDeal = function(d) Confirm(d, true) end,
 }

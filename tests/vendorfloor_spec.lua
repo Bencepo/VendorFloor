@@ -385,4 +385,71 @@ describe("VendorFloor", function()
 			assert.has_no.errors(function() tns.ForgetPurchases() end)
 		end)
 	end)
+
+	describe("event-driven scan, check, and craft query pacing", function()
+		it("flushes browse and check queries immediately when ready and on THROTTLED_MESSAGE_SYSTEM_READY", function()
+			local AH = env.C_AuctionHouse
+			local ready = false
+			local sentBrowse, sentMore, sentSearch = 0, 0, {}
+			AH.IsThrottledMessageSystemReady = function() return ready end
+			AH.SendBrowseQuery = function() sentBrowse = sentBrowse + 1 end
+			AH.RequestMoreBrowseResults = function() sentMore = sentMore + 1 end
+			AH.HasFullBrowseResults = function() return false end
+			AH.GetBrowseResults = function() return {} end
+			AH.SendSearchQuery = function(key) sentSearch[#sentSearch + 1] = key.itemID end
+			AH.GetNumItemSearchResults = function() return 0 end
+
+			T.handlers.AUCTION_HOUSE_SHOW()
+			-- Browse query defers while throttle is busy, then fires immediately when system becomes ready
+			T.StartScan()
+			assert.equal(0, sentBrowse)
+			ready = true
+			T.handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_SYSTEM_READY()
+			assert.equal(1, sentBrowse)
+
+			-- Browse page requests next page immediately without waiting for Tick()
+			T.handlers.AUCTION_HOUSE_BROWSE_RESULTS_UPDATED()
+			assert.equal(1, sentMore)
+
+			-- Dropped message defers retry rather than synchronously looping
+			T.handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
+			assert.equal(1, sentMore)
+			T.handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_SYSTEM_READY()
+			assert.equal(2, sentMore)
+
+			-- Watchlist checks pipeline directly from FinishCheck -> PumpCheck without Tick()
+			T.FinishScan()
+			db.wishlist = { [5000] = { max = 500 }, [5001] = { max = 500 } }
+			assert.is_true(ns.StartWish())
+			assert.equal(1, #sentSearch)
+			local firstID = sentSearch[1]
+			T.handlers.ITEM_SEARCH_RESULTS_UPDATED({ itemID = firstID })
+			assert.equal(2, #sentSearch)
+			assert.not_equal(firstID, sentSearch[2])
+		end)
+
+		it("advances craft price checks immediately on search result events", function()
+			local AH = env.C_AuctionHouse
+			local sent = {}
+			AH.IsThrottledMessageSystemReady = function() return true end
+			AH.SendSearchQuery = function(key) sent[#sent + 1] = key.itemID end
+			AH.GetNumCommoditySearchResults = function(id) return id == DUST and 1 or 0 end
+			AH.GetCommoditySearchResultInfo = function() return { unitPrice = 120, quantity = 5, numOwnerItems = 0 } end
+			AH.GetNumItemSearchResults = function() return 0 end
+
+			env.UnitName = function() return "Tester" end
+			env.GetRealmName = function() return "Forever" end
+			db.recipes = { ["Tester-Forever"] = { Enchanting = { list = { { out = GMAGIC, r = { { DUST, 2 } } } } } } }
+
+			T.handlers.AUCTION_HOUSE_SHOW()
+			assert.is_true(T.StartCraftScan())
+			assert.equal(1, #sent)
+			local firstID = sent[1]
+			T.handlers.COMMODITY_SEARCH_RESULTS_UPDATED(firstID)
+			assert.equal(2, #sent)
+			T.handlers.COMMODITY_SEARCH_RESULTS_UPDATED(sent[2])
+			assert.falsy(T.Craft().active)
+			assert.equal(120, ns.LowValue(ns.PlainKey(DUST)))
+		end)
+	end)
 end)
