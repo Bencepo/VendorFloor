@@ -384,6 +384,60 @@ describe("VendorFloor", function()
 			tns.db = nil
 			assert.has_no.errors(function() tns.ForgetPurchases() end)
 		end)
+
+		it("collects confirmed mails at 0.05s event-driven pace instead of waiting 0.4s", function()
+			local inbox = {
+				{ cod = 0, hasItem = 1, invoice = "buyer", items = { [1] = { id = 5000, count = 2 } } },
+				{ cod = 0, hasItem = 1, invoice = "buyer", items = { [1] = { id = 5001, count = 3 } } },
+				{ cod = 0, hasItem = nil, invoice = "seller", items = {} },
+			}
+			local takenCalls = {}
+			local tns, tenv = wow.Load("VendorFloor", { "Locales.lua", "VendorFloor.lua", "Trade.lua" }, function(e)
+				e.VendorFloorDB = {}
+				e.Enum = e.Enum or {}
+				rawset(e.Enum, "BagIndex", { ReagentBag = 5 })
+				e.C_Container = {
+					GetContainerNumFreeSlots = function(bag) return bag == 0 and 10 or 0, 0 end,
+				}
+				e.GetInboxNumItems = function() return #inbox end
+				e.GetInboxHeaderInfo = function(i)
+					local m = inbox[i]
+					return nil, nil, "AH", "Won", 0, m.cod, 29, m.hasItem
+				end
+				e.GetInboxInvoiceInfo = function(i) return inbox[i].invoice end
+				e.GetInboxItem = function(i, a)
+					local it = inbox[i] and inbox[i].items[a]
+					if it then return "Item", it.id, nil, it.count end
+				end
+				e.TakeInboxItem = function(i, a)
+					takenCalls[#takenCalls + 1] = { i = i, a = a, t = e.now }
+					table.remove(inbox, i)
+				end
+			end)
+			tns.test.Init()
+			tns.db.bought[5000] = { units = 2, cost = 100 }
+			tns.db.debought = { [5001] = 3 }
+			tenv.now = 10
+
+			-- First take fires immediately on click
+			tns.tradeTest.StartCollecting()
+			assert.equal(1, #takenCalls)
+			assert.equal(2, takenCalls[1].i)
+
+			-- Confirmation shortens wait to 0.05s from sentAt (well below old 0.4s interval)
+			assert.is_true(tns.tradeTest.ConfirmPendingTake())
+			assert.is_nil(tns.db.debought[5001])
+			tenv.now = 10.06
+			tns.tradeTest.StepCollect()
+			assert.equal(2, #takenCalls)
+			assert.equal(1, takenCalls[2].i)
+
+			assert.is_true(tns.tradeTest.ConfirmPendingTake())
+			tenv.now = 10.12
+			tns.tradeTest.StepCollect()
+			assert.is_false(tns.tradeTest.IsCollecting())
+			assert.equal(5, tns.tradeTest.Taken())
+		end)
 	end)
 
 	describe("event-driven scan, check, and craft query pacing", function()

@@ -17,7 +17,8 @@ local BAGS = { 0, 1, 2, 3, 4 }
 local REAGENT_BAG = (Enum and Enum.BagIndex and Enum.BagIndex.ReagentBag) or 5
 if REAGENT_BAG and REAGENT_BAG > 4 then BAGS[#BAGS + 1] = REAGENT_BAG end
 ns.BAGS = BAGS
-local TAKE_INTERVAL = 0.4  -- seconds between two items taken from the mail
+local TAKE_PACE = 0.05     -- minimum seconds between confirmed mail takes (event-driven)
+local TAKE_TIMEOUT = 0.4   -- fallback wait before checking or retrying an unconfirmed take
 
 local session = { start = time(), buys = 0, spent = 0, value = 0, sold = 0, soldCost = 0 }
 ns.session = session
@@ -261,7 +262,7 @@ end
 -- Mail: take the bought items out of the auction house mail
 ---------------------------------------------------------------------------
 
-local ATTACHMENTS = ATTACHMENTS_MAX_RECEIVE or 16
+local ATTACHMENTS = type(ATTACHMENTS_MAX_RECEIVE) == "number" and ATTACHMENTS_MAX_RECEIVE or 16
 
 local function FreeSlots()
 	local free = 0
@@ -275,17 +276,20 @@ local function FreeSlots()
 end
 
 -- Is this mail an auction house purchase? Reject C.O.D., empty mails, and non-buyer invoices.
+-- Returns true and the attachment count (when available) so callers can stop scanning empty slots early.
 local function IsPurchase(index)
+	local attachCount
 	if GetInboxHeaderInfo then
 		local _, _, _, _, _, codAmount, _, hasItem = GetInboxHeaderInfo(index)
 		if (codAmount or 0) > 0 then return false end
-		if hasItem == 0 then return false end
+		if not hasItem or hasItem <= 0 then return false end
+		attachCount = hasItem
 	end
 	if GetInboxInvoiceInfo then
 		local invoiceType = GetInboxInvoiceInfo(index)
-		return invoiceType == "buyer"
+		if invoiceType ~= "buyer" then return false end
 	end
-	return true
+	return true, attachCount
 end
 
 -- Items to collect from the mail: bought for the vendor tab, or for disenchanting.
@@ -294,14 +298,23 @@ local function Collectable(db, itemID)
 end
 
 -- The next attachment holding an item VendorFloor bought: mail index, attachment index.
-local function NextMailItem()
+local function NextMailItem(startIdx, stopIdx)
 	local db = DB()
 	if not db or not GetInboxNumItems then return nil end
-	for i = GetInboxNumItems(), 1, -1 do
-		if IsPurchase(i) then
+	local num = GetInboxNumItems()
+	local from = startIdx and min(startIdx, num) or num
+	local to = stopIdx or 1
+	for i = from, to, -1 do
+		local ok, attachCount = IsPurchase(i)
+		if ok then
+			local seen = 0
 			for a = 1, ATTACHMENTS do
 				local _, itemID = GetInboxItem(i, a)
-				if itemID and Collectable(db, itemID) then return i, a end
+				if itemID then
+					if Collectable(db, itemID) then return i, a end
+					seen = seen + 1
+					if attachCount and seen >= attachCount then break end
+				end
 			end
 		end
 	end
@@ -313,17 +326,26 @@ local function MailCount()
 	local n = 0
 	if not db or not GetInboxNumItems then return 0 end
 	for i = 1, GetInboxNumItems() do
-		if IsPurchase(i) then
+		local ok, attachCount = IsPurchase(i)
+		if ok then
+			local seen = 0
 			for a = 1, ATTACHMENTS do
 				local _, itemID, _, count = GetInboxItem(i, a)
-				if itemID and Collectable(db, itemID) then n = n + (count or 1) end
+				if itemID then
+					if Collectable(db, itemID) then n = n + (count or 1) end
+					seen = seen + 1
+					if attachCount and seen >= attachCount then break end
+				end
 			end
 		end
 	end
 	return n
 end
 
-local mailButton, collecting, taken, nextTake, pendingTake, stalls = nil, false, 0, 0, nil, 0
+local driver = CreateFrame("Frame")
+driver:Hide()
+
+local mailButton, collecting, taken, nextTake, pendingTake, stalls, scanIdx, scanNum = nil, false, 0, 0, nil, 0, nil, nil
 
 local function ConfirmPendingTake()
 	if not pendingTake then return true end
@@ -342,56 +364,92 @@ local function ConfirmPendingTake()
 			db.debought[id] = left > 0 and left or nil
 		end
 		taken = taken + cnt
+		if numMails < pendingTake.numMails then
+			scanIdx, scanNum = pendingTake.i - 1, numMails
+		else
+			scanIdx, scanNum = pendingTake.i, numMails
+		end
+		local sentAt = pendingTake.sentAt or 0
 		pendingTake, stalls = nil, 0
+		nextTake = sentAt + TAKE_PACE
 		return true
 	end
 	return false
 end
 
 local function StopCollecting(msg)
-	collecting, pendingTake, stalls = false, nil, 0
+	collecting, pendingTake, stalls, scanIdx, scanNum = false, nil, 0, nil, nil
+	pcall(driver.UnregisterAllEvents, driver)
+	driver:Hide()
 	if msg then Print(msg) end
 	if ns.UpdateTradeButtons then ns.UpdateTradeButtons() end
 end
 
-local driver = CreateFrame("Frame")
-driver:Hide()
-driver:SetScript("OnUpdate", function(self)
-	if not collecting then self:Hide() return end
-	if GetTime() < nextTake then return end
+local function StepCollect()
+	if not collecting then
+		driver:Hide()
+		return
+	end
+	local now = GetTime()
+	if now < nextTake then return end
 	if pendingTake then
 		if not ConfirmPendingTake() then
 			stalls = stalls + 1
 			if stalls >= 3 then
-				self:Hide()
 				StopCollecting(L["Bags full. Collected %d items."]:format(taken))
 				return
 			end
-			nextTake = GetTime() + TAKE_INTERVAL
+			if stalls == 2 and FreeSlots() > 0 then
+				TakeInboxItem(pendingTake.i, pendingTake.a)
+			end
+			nextTake = now + TAKE_TIMEOUT
 			return
 		end
+		if now < nextTake then return end
 	end
 	if FreeSlots() == 0 then
-		self:Hide()
 		StopCollecting(L["Bags full. Collected %d items."]:format(taken))
 		return
 	end
-	local i, a = NextMailItem()
+	local numMails = GetInboxNumItems and GetInboxNumItems() or 0
+	local startAt = (scanIdx and scanNum and numMails <= scanNum) and min(scanIdx, numMails) or numMails
+	local i, a = NextMailItem(startAt, 1)
+	if not (i and a) and startAt < numMails then
+		-- New mail arrived and shifted indices up while collecting: sweep the remaining tail once.
+		i, a = NextMailItem(numMails, startAt + 1)
+	end
 	if not (i and a) then
-		self:Hide()
 		StopCollecting(L["Collected %d items."]:format(taken))
 		return
 	end
+	scanIdx, scanNum = i, numMails
 	local _, itemID, _, count = GetInboxItem(i, a)
-	pendingTake = { numMails = GetInboxNumItems(), i = i, a = a, itemID = itemID, count = count or 1 }
+	pendingTake = { numMails = numMails, i = i, a = a, itemID = itemID, count = count or 1, sentAt = now }
+	nextTake = now + TAKE_TIMEOUT
 	TakeInboxItem(i, a)
-	nextTake = GetTime() + TAKE_INTERVAL
+end
+
+driver:SetScript("OnUpdate", StepCollect)
+driver:SetScript("OnEvent", function(_, event, _, msg)
+	if not collecting then return end
+	if event == "MAIL_SUCCESS" then
+		if pendingTake then ConfirmPendingTake() end
+	elseif event == "UI_ERROR_MESSAGE" and pendingTake then
+		if issecretvalue and issecretvalue(msg) then return end
+		if ERR_INV_FULL and msg == ERR_INV_FULL then
+			StopCollecting(L["Bags full. Collected %d items."]:format(taken))
+		end
+	end
 end)
 
 local function StartCollecting()
 	if collecting then return end
-	collecting, taken, nextTake, pendingTake, stalls = true, 0, 0, nil, 0
+	collecting, taken, nextTake, pendingTake, stalls, scanIdx, scanNum = true, 0, 0, nil, 0, nil, nil
+	pcall(driver.RegisterEvent, driver, "MAIL_SUCCESS")
+	pcall(driver.RegisterEvent, driver, "UI_ERROR_MESSAGE")
 	driver:Show()
+	if ns.UpdateTradeButtons then ns.UpdateTradeButtons() end
+	StepCollect()
 end
 
 ---------------------------------------------------------------------------
@@ -557,9 +615,13 @@ end
 
 function ns.UpdateTradeButtons()
 	if mailButton and mailButton:IsShown() then
-		local n = MailCount()
-		mailButton:SetText(L["Collect purchases (%d)"]:format(n))
-		mailButton:SetEnabled(n > 0 and not collecting)
+		if collecting then
+			mailButton:SetEnabled(false)
+		else
+			local n = MailCount()
+			mailButton:SetText(L["Collect purchases (%d)"]:format(n))
+			mailButton:SetEnabled(n > 0)
+		end
 	end
 	if sellButton and sellButton:IsShown() then
 		local n = SellableUnits()
@@ -582,7 +644,10 @@ events:SetScript("OnEvent", function(_, event)
 		end
 		if mailButton then mailButton:Show() end
 	elseif event == "MAIL_INBOX_UPDATE" then
-		if collecting and pendingTake then ConfirmPendingTake() end
+		if collecting then
+			if pendingTake then ConfirmPendingTake() end
+			return
+		end
 	elseif event == "MAIL_CLOSED" then
 		if collecting then StopCollecting() end
 		if mailButton then mailButton:Hide() end
@@ -609,4 +674,8 @@ events:SetScript("OnEvent", function(_, event)
 end)
 
 -- For automated tests; unused in the game.
-ns.tradeTest = { IsPurchase = IsPurchase, FreeSlots = FreeSlots, MailCount = MailCount, NextMailItem = NextMailItem }
+ns.tradeTest = {
+	IsPurchase = IsPurchase, FreeSlots = FreeSlots, MailCount = MailCount, NextMailItem = NextMailItem,
+	StartCollecting = StartCollecting, StepCollect = StepCollect, ConfirmPendingTake = ConfirmPendingTake,
+	IsCollecting = function() return collecting end, Taken = function() return taken end,
+}

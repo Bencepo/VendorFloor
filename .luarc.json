@@ -22,6 +22,7 @@
     "ERR_AUCTION_SOLD_S",
     "ERR_AUCTION_WON_S",
     "ERR_CANT_BE_DISENCHANTED",
+    "ERR_INV_FULL",
     "GetInboxHeaderInfo",
     "GetInboxInvoiceInfo",
     "GetInboxNumItems",
