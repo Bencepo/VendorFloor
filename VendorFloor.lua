@@ -2917,6 +2917,15 @@ local function BuildUI()
 			db.tab, offset = mode, 0
 			ns.cueClick = GetTime()
 			if selected and (selected.mode or "vendor") ~= mode then selected = nil end
+			-- a find of another tab still waiting for its buy click is let go: it would keep
+			-- the Scan button grey and continuous mode waiting on a tab that does not show it
+			local st = buy.state
+			if buy.deal and (buy.deal.mode or "vendor") ~= mode
+				and (st == "item_ready" or st == "commodity_ready" or st == "quote_ok") then
+				if st == "quote_ok" then CancelQuote() end
+				ResetBuy(L["Tab changed: the purchase waiting on the other tab was let go."])
+				return
+			end
 			Refresh()
 		end)
 		f.tabs[mode] = tab

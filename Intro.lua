@@ -95,8 +95,8 @@ local function ShowStep(i)
 		box.arrow:SetPoint("TOP", box, "BOTTOMRIGHT", -40, 2)
 		SetArrow(box.arrow, true)
 	else
-		box:SetPoint("TOPLEFT", target, "BOTTOMLEFT", 0, -30)
-		box.arrow:SetPoint("BOTTOM", box, "TOPLEFT", 40, -2)
+		box:SetPoint("TOPLEFT", target, "BOTTOMLEFT", 0, -22)
+		box.arrow:SetPoint("BOTTOM", box, "TOPLEFT", 40, -6)
 		SetArrow(box.arrow, false)
 	end
 	box:Show()
