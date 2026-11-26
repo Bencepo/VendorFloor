@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.1
+## Unreleased
 
 - New "Share" button next to the buy button: today's and all-time profit as a short text to copy, for Discord or chat, with the link to the addon. The tooltip points to Menu > Export for the website for a share image.
 
