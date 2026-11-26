@@ -11,7 +11,7 @@
 --   win:Check(16, -60, "Label", "Tooltip", function() return db.x end, function(v) db.x = v end)
 --   win:Toggle()
 
-local UI = LibStub:NewLibrary("BencepoUI-1.0", 4)
+local UI = LibStub:NewLibrary("BencepoUI-1.0", 5)
 if not UI then return end
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
@@ -27,10 +27,14 @@ local BASE = {
 	accent = { 0.878, 0.659, 0.227, 1 },
 }
 
-local function flat(f, bg, border)
-	f:SetBackdrop(BACKDROP)
+local function paintFlat(f, bg, border)
 	f:SetBackdropColor(bg[1], bg[2], bg[3], bg[4] or 1)
 	f:SetBackdropBorderColor(border[1], border[2], border[3], border[4] or 1)
+end
+
+local function flat(f, bg, border)
+	f:SetBackdrop(BACKDROP)
+	paintFlat(f, bg, border)
 end
 
 local function tooltip(frame, title, text)
@@ -61,6 +65,7 @@ function UI:ShowLink(T, title, url, note)
 		f:SetClampedToScreen(true)
 		f:SetPoint("CENTER", UIParent, "CENTER", 0, 120)
 		f:EnableMouse(true)
+		f:SetBackdrop(BACKDROP)
 		tinsert(UISpecialFrames, "BencepoUILinkPopup")
 		f.top = f:CreateTexture(nil, "ARTWORK")
 		f.top:SetPoint("TOPLEFT", 1, -1)
@@ -71,6 +76,7 @@ function UI:ShowLink(T, title, url, note)
 		local close = CreateFrame("Button", nil, f, "BackdropTemplate")
 		close:SetSize(20, 20)
 		close:SetPoint("TOPRIGHT", -8, -8)
+		close:SetBackdrop(BACKDROP)
 		f.close = close
 		local x = close:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 		x:SetPoint("CENTER", 0, 1)
@@ -80,14 +86,15 @@ function UI:ShowLink(T, title, url, note)
 		f.well:SetPoint("TOPLEFT", 14, -36)
 		f.well:SetPoint("TOPRIGHT", -14, -36)
 		f.well:SetHeight(24)
+		f.well:SetBackdrop(BACKDROP)
 		local eb = CreateFrame("EditBox", nil, f.well)
 		eb:SetPoint("TOPLEFT", 6, 0)
 		eb:SetPoint("BOTTOMRIGHT", -6, 0)
 		eb:SetFontObject(GameFontHighlight)
 		eb:SetAutoFocus(false)
 		-- read-only: typing puts the link back
-		eb:SetScript("OnTextChanged", function(self)
-			if self:GetText() ~= f.url then self:SetText(f.url); self:HighlightText() end
+		eb:SetScript("OnTextChanged", function(self, userInput)
+			if userInput and self:GetText() ~= f.url then self:SetText(f.url); self:HighlightText() end
 		end)
 		eb:SetScript("OnEditFocusGained", function(self) self:HighlightText() end)
 		eb:SetScript("OnMouseUp", function(self) self:HighlightText() end)
@@ -97,9 +104,9 @@ function UI:ShowLink(T, title, url, note)
 		f.note:SetPoint("TOPLEFT", f.well, "BOTTOMLEFT", 0, -8)
 		linkPopup = f
 	end
-	flat(f, T.bg, T.line)
-	flat(f.close, T.panel, T.line)
-	flat(f.well, T.well, T.line)
+	paintFlat(f, T.bg, T.line)
+	paintFlat(f.close, T.panel, T.line)
+	paintFlat(f.well, T.well, T.line)
 	f.top:SetColorTexture(T.accent[1], T.accent[2], T.accent[3], 1)
 	f.title:SetTextColor(T.accent[1], T.accent[2], T.accent[3])
 	f.title:SetText(title or "")
@@ -376,12 +383,15 @@ function Window:Dropdown(x, y, label, width, items, get, set, tip)
 		local list = listFrame(self)
 		if list:IsShown() and list.owner == b then list:Hide() return end
 		list.owner = b
+		list.set = set
 		local its, cur = getItems(), get()
 		for i, it in ipairs(its) do
 			local r = list.rows[i]
 			if not r then
 				r = CreateFrame("Button", nil, list)
 				r:SetHeight(18)
+				r:SetPoint("TOPLEFT", 1, -4 - (i - 1) * 18)
+				r:SetPoint("TOPRIGHT", -1, -4 - (i - 1) * 18)
 				r.hl = r:CreateTexture(nil, "BACKGROUND")
 				r.hl:SetAllPoints()
 				r.hl:SetColorTexture(T.accent[1], T.accent[2], T.accent[3], 0.25)
@@ -390,17 +400,15 @@ function Window:Dropdown(x, y, label, width, items, get, set, tip)
 				r.fs:SetPoint("LEFT", 8, 0)
 				r:SetScript("OnEnter", function() r.hl:Show() end)
 				r:SetScript("OnLeave", function() r.hl:Hide() end)
+				r:SetScript("OnClick", function(row)
+					list:Hide()
+					changed(self, list.set, row.value)
+				end)
 				list.rows[i] = r
 			end
-			r:ClearAllPoints()
-			r:SetPoint("TOPLEFT", 1, -4 - (i - 1) * 18)
-			r:SetPoint("TOPRIGHT", -1, -4 - (i - 1) * 18)
+			r.value = it[1]
 			r.fs:SetText(it[2])
 			if it[1] == cur then r.fs:SetTextColor(T.accent[1], T.accent[2], T.accent[3]) else r.fs:SetTextColor(T.text[1], T.text[2], T.text[3]) end
-			r:SetScript("OnClick", function()
-				list:Hide()
-				changed(self, set, it[1])
-			end)
 			r:Show()
 		end
 		for i = #its + 1, #list.rows do list.rows[i]:Hide() end
@@ -415,7 +423,7 @@ function Window:Dropdown(x, y, label, width, items, get, set, tip)
 	self:OnRefresh(function()
 		local cur, text = get(), ""
 		for _, it in ipairs(getItems()) do
-			if it[1] == cur then text = it[2] end
+			if it[1] == cur then text = it[2]; break end
 		end
 		fs:SetText(text)
 	end)

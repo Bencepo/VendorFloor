@@ -10,7 +10,15 @@ local floor = math.floor
 local TITLE = "VendorFloor"
 local SITE = "bencepo.github.io/vendorfloor"
 
-local function A(t) return setmetatable(t or {}, { __arr = true }) end
+local ARR_MT = { __arr = true }
+local function A(t) return setmetatable(t or {}, ARR_MT) end
+
+local function EscapeChar(c)
+	if c == '"' then return '\\"'
+	elseif c == "\\" then return "\\\\"
+	elseif c == "\n" then return "\\n"
+	else return string.format("\\u%04x", c:byte()) end
+end
 
 local function enc(v, out)
 	local t = type(v)
@@ -18,13 +26,10 @@ local function enc(v, out)
 	elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
 	elseif t == "number" then
 		if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
-		elseif v == math.floor(v) then out[#out + 1] = string.format("%d", v)
+		elseif v == floor(v) then out[#out + 1] = string.format("%.0f", v)
 		else out[#out + 1] = (string.format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
 	elseif t == "string" then
-		out[#out + 1] = '"' .. v:gsub('[%c"\\]', function(c)
-			if c == '"' then return '\\"' elseif c == "\\" then return "\\\\" elseif c == "\n" then return "\\n"
-			else return string.format("\\u%04x", c:byte()) end
-		end) .. '"'
+		out[#out + 1] = '"' .. v:gsub('[%c"\\]', EscapeChar) .. '"'
 	elseif t == "table" then
 		local n = #v
 		local mt = getmetatable(v)
@@ -48,6 +53,11 @@ local function enc(v, out)
 		out[#out + 1] = "null"
 	end
 end
+ns.JsonEncode = function(v)
+	local out = {}
+	enc(v, out)
+	return table.concat(out)
+end
 
 local exportFrame
 local function showExport(text, summary)
@@ -56,6 +66,7 @@ local function showExport(text, summary)
 		win:SetSize(560, 360)
 		win:SetPoint("CENTER")
 		win:SetFrameStrata("DIALOG")
+		win:SetClampedToScreen(true)
 		win:SetMovable(true)
 		win:EnableMouse(true)
 		win:RegisterForDrag("LeftButton")
@@ -92,6 +103,7 @@ local function showExport(text, summary)
 		edit:SetScript("OnMouseUp", function(self) self:HighlightText() end)
 		scroll:SetScrollChild(edit)
 		win.edit = edit
+		tinsert(UISpecialFrames, "VendorFloorExportFrame")
 		exportFrame = win
 	end
 	exportFrame.text = text
@@ -103,6 +115,10 @@ local function showExport(text, summary)
 end
 
 local MAX_ITEMS = 150
+
+---@param a table
+---@param b table
+local function ByItemProfit(a, b) return (a.sold - a.soldCost) > (b.sold - b.soldCost) end
 
 local function buildExport()
 	local db = ns.db
@@ -122,7 +138,7 @@ local function buildExport()
 			value = it.value or 0, soldUnits = it.soldUnits or 0, sold = it.sold or 0, soldCost = floor(it.soldCost or 0),
 			heldSec = it.heldSec and floor(it.heldSec) or nil, heldUnits = it.heldUnits }
 	end
-	table.sort(items, function(a, b) return (a.sold - a.soldCost) > (b.sold - b.soldCost) end)
+	table.sort(items, ByItemProfit)
 	local top = A()
 	for i = 1, math.min(#items, MAX_ITEMS) do top[#top + 1] = items[i] end
 	local name, realm = UnitName("player"), GetRealmName and GetRealmName() or ""
@@ -179,12 +195,15 @@ end
 
 local function MinimapTooltip(tip)
 	tip:AddLine("VendorFloor " .. (ns.VERSION or ""))
-	local l = VendorFloor_Ledger()
-	if l then
-		local today = l.days[date("%Y-%m-%d")]
+	local db = ns.db
+	local t = db and db.total
+	if t and ns.Money then
+		local today = db.days and db.days[date("%Y-%m-%d")]
+		local unsoldValue = 0
+		if ns.Unsold then _, unsoldValue = ns.Unsold() end
 		tip:AddDoubleLine(L["Profit today"], ns.Money(today and floor((today.sold or 0) - (today.soldCost or 0)) or 0), 1, 1, 1, 1, 1, 1)
-		tip:AddDoubleLine(L["Profit total"], ns.Money(l.profit), 1, 1, 1, 1, 1, 1)
-		tip:AddDoubleLine(L["Still to sell"], ns.Money(l.unsoldValue), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Profit total"], ns.Money(floor((t.sold or 0) - (t.soldCost or 0))), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Still to sell"], ns.Money(unsoldValue or 0), 1, 1, 1, 1, 1, 1)
 	end
 	tip:AddLine(" ")
 	tip:AddLine(L["Left-click: settings"], 0.6, 0.8, 1)

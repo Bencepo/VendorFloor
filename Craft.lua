@@ -16,8 +16,16 @@ local AH_CUT = 0.95
 
 local function DB() return ns.db end
 
+local charKey
 local function CharKey()
-	return (UnitName("player") or "?") .. "-" .. (GetRealmName and GetRealmName() or "")
+	if charKey then return charKey end
+	local name = UnitName and UnitName("player")
+	local realm = GetRealmName and GetRealmName() or ""
+	if type(name) == "string" and name ~= "" and name ~= "Unknown" and type(realm) == "string" and realm ~= "" then
+		charKey = name .. "-" .. realm
+		return charKey
+	end
+	return (type(name) == "string" and name or "?") .. "-" .. (type(realm) == "string" and realm or "")
 end
 
 ---------------------------------------------------------------------------
@@ -37,6 +45,7 @@ local function ScanRecipes()
 			prof = (info.professionName ~= "" and info.professionName) or (info.parentProfessionName ~= "" and info.parentProfessionName) or prof
 		end
 	end
+	if not prof or prof == "" or prof == "?" then return end
 	local list = {}
 	for _, id in ipairs(ids) do
 		local info = T.GetRecipeInfo(id)
@@ -77,16 +86,21 @@ local function ScanMerchant()
 	---@diagnostic disable-next-line: deprecated
 	if not (db and GetMerchantNumItems and GetMerchantItemInfo and GetMerchantItemID) then return end
 	db.vendorBuy = db.vendorBuy or {}
+	local changed = false
 	for i = 1, GetMerchantNumItems() do
 		---@diagnostic disable-next-line: deprecated
 		local _, _, price, quantity, numAvailable, _, _, extendedCost = GetMerchantItemInfo(i)
 		local itemID = GetMerchantItemID(i)
 		-- only unlimited items for gold
 		if itemID and price and price > 0 and not extendedCost and (numAvailable or -1) < 0 then
-			db.vendorBuy[itemID] = price / max(quantity or 1, 1)
+			local unit = price / max(quantity or 1, 1)
+			if db.vendorBuy[itemID] ~= unit then
+				db.vendorBuy[itemID] = unit
+				changed = true
+			end
 		end
 	end
-	ns.craftDirty = true
+	if changed then ns.craftDirty = true end
 end
 
 ---------------------------------------------------------------------------
@@ -138,30 +152,48 @@ local function byProfit(a, b) return a.profit > b.profit end
 
 -- All recipes of this character with a positive profit, best first.
 function ns.CraftResults()
-	if not ns.craftDirty and results.char == CharKey() then return results, missing end
+	local char = CharKey()
+	if not ns.craftDirty and results.char == char then return results, missing end
 	ns.craftDirty = false
-	results, missing = { char = CharKey() }, 0
+	results, missing = { char = char }, 0
 	local db = DB()
-	local mine = db and db.recipes and db.recipes[CharKey()]
+	local mine = db and db.recipes and db.recipes[char]
 	if not mine then return results, missing end
+	local minProfit = db.minProfit or 1
+	local costCache, srcCache = {}, {}
 	for prof, p in pairs(mine) do
 		for _, rec in ipairs(p.list or {}) do
-			local cost, ok, parts = 0, true, {}
+			local cost, ok = 0, true
 			for _, r in ipairs(rec.r) do
-				local unit, src = ReagentCost(r[1])
+				local id = r[1]
+				local unit = costCache[id]
+				if unit == nil then
+					local u, src = ReagentCost(id)
+					unit = u or false
+					costCache[id] = unit
+					srcCache[id] = src
+				end
 				if not unit then ok = false break end
 				cost = cost + unit * r[2]
-				parts[#parts + 1] = { id = r[1], qty = r[2], unit = unit, src = src }
 			end
-			local value, route = ProductValue(rec.out)
-			if ok and value then
-				local revenue = value * rec.qty
-				local profit = revenue - cost
-				if profit >= (db.minProfit or 1) then
-					local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(rec.out)
-					results[#results + 1] = { prof = prof, recipe = rec.name, out = rec.out, qty = rec.qty, cost = cost,
-						revenue = revenue, profit = profit, route = route, parts = parts, name = name or rec.name,
-						link = link, icon = icon }
+			if ok then
+				local value, route = ProductValue(rec.out)
+				if value then
+					local revenue = value * rec.qty
+					local profit = revenue - cost
+					if profit >= minProfit then
+						local parts = {}
+						for _, r in ipairs(rec.r) do
+							local id = r[1]
+							parts[#parts + 1] = { id = id, qty = r[2], unit = costCache[id], src = srcCache[id] }
+						end
+						local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(rec.out)
+						results[#results + 1] = { prof = prof, recipe = rec.name, out = rec.out, qty = rec.qty, cost = cost,
+							revenue = revenue, profit = profit, route = route, parts = parts, name = name or rec.name,
+							link = link, icon = icon }
+					end
+				else
+					missing = missing + 1
 				end
 			else
 				missing = missing + 1

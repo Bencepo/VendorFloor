@@ -37,7 +37,8 @@ local function SlotInfo(bag, slot)
 	return nil
 end
 
-local function Bags() return ns.BAGS or { 0, 1, 2, 3, 4 } end
+local DEFAULT_BAGS = { 0, 1, 2, 3, 4 }
+local function Bags() return ns.BAGS or DEFAULT_BAGS end
 
 -- Basket items in the bags: list of { bag, slot, id, link }, at most as many as were bought.
 local function Contents()
@@ -59,6 +60,42 @@ local function Contents()
 	return list
 end
 ns.BasketContents = Contents
+
+-- Count basket items in the bags without allocating per-slot entry tables.
+local function CountContents()
+	local db = DB()
+	if not (db and db.deBasket and next(db.deBasket)) then return 0 end
+	local left, n = {}, 0
+	for itemID, count in pairs(db.deBasket) do left[itemID] = count end
+	for _, bag in ipairs(Bags()) do
+		for slot = 1, Slots(bag) do
+			local itemID, _, locked = SlotInfo(bag, slot)
+			if itemID and (left[itemID] or 0) > 0 and not locked
+				and (not ns.CanDisenchant or ns.CanDisenchant(itemID)) then
+				left[itemID] = left[itemID] - 1
+				n = n + 1
+			end
+		end
+	end
+	return n
+end
+
+-- First basket item in the bags, returning immediately without scanning remaining slots.
+local function FirstContent()
+	local db = DB()
+	if not (db and db.deBasket and next(db.deBasket)) then return nil end
+	local basket = db.deBasket
+	for _, bag in ipairs(Bags()) do
+		for slot = 1, Slots(bag) do
+			local itemID, _, locked, link = SlotInfo(bag, slot)
+			if itemID and (basket[itemID] or 0) > 0 and not locked
+				and (not ns.CanDisenchant or ns.CanDisenchant(itemID)) then
+				return { bag = bag, slot = slot, id = itemID, link = link }
+			end
+		end
+	end
+	return nil
+end
 
 -- A unit leaves the basket when it is no longer in the bags or the mail: disenchanted
 -- (with the button, by hand or by another addon), sold or traded.
@@ -103,7 +140,7 @@ end
 -- A spell with a bag slot as target, not a macro: a macro cannot run inside a /click macro.
 local function Aim(self)
 	if InCombatLockdown() then return end
-	local target = Contents()[1]
+	local target = FirstContent()
 	if not target then
 		Clear()
 		return
@@ -117,20 +154,36 @@ end
 
 -- Can this character disenchant? (Enchanting learned, Disenchant in the spell book)
 local ENCHANTING_SKILL_LINE = 333
+local knowsDeCache
+
+local function HasEnchantingIndex(index)
+	return index and select(7, GetProfessionInfo(index)) == ENCHANTING_SKILL_LINE
+end
+
 local function KnowsDisenchant()
+	if knowsDeCache ~= nil then return knowsDeCache end
+	local knows = false
 	-- the spell book API differs between clients: take whichever this one has
 	local spellBook = C_SpellBook
-	if spellBook and spellBook.IsSpellInSpellBook and spellBook.IsSpellInSpellBook(DISENCHANT) then return true end
-	if GetProfessions and GetProfessionInfo then
-		for _, index in pairs({ GetProfessions() }) do
-			if index and select(7, GetProfessionInfo(index)) == ENCHANTING_SKILL_LINE then return true end
+	if spellBook and spellBook.IsSpellInSpellBook and spellBook.IsSpellInSpellBook(DISENCHANT) then
+		knows = true
+	elseif GetProfessions and GetProfessionInfo then
+		local p1, p2, p3, p4, p5 = GetProfessions()
+		if HasEnchantingIndex(p1) or HasEnchantingIndex(p2) or HasEnchantingIndex(p3)
+			or HasEnchantingIndex(p4) or HasEnchantingIndex(p5) then
+			knows = true
 		end
 	end
-	-- a lookup by name only finds spells in the spell book (Forever may use its own spell ID)
-	local name = SpellName()
-	if C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(name) then return true end
-	if GetSpellInfo and GetSpellInfo(name) then return true end
-	return false
+	if not knows then
+		-- a lookup by name only finds spells in the spell book (Forever may use its own spell ID)
+		local name = SpellName()
+		if (C_Spell and C_Spell.GetSpellInfo and C_Spell.GetSpellInfo(name))
+			or (GetSpellInfo and GetSpellInfo(name)) then
+			knows = true
+		end
+	end
+	knowsDeCache = knows
+	return knows
 end
 
 -- The basket window: shown when new basket items arrive in the bags, or when opened by hand
@@ -222,13 +275,13 @@ end
 
 function ns.UpdateBasket()
 	if not button or InCombatLockdown() then return end
-	local n = #Contents()
+	local n = CountContents()
 	if n > state.last then state.auto = true end -- new basket items arrived in the bags
 	if n == 0 then state.auto = false end
 	state.last = n
 	button:SetText(L["Disenchant (%d)"]:format(n))
 	button:SetEnabled(n > 0)
-	holder:SetShown(KnowsDisenchant() and (state.manual or state.auto))
+	holder:SetShown((state.manual or state.auto) and KnowsDisenchant())
 end
 
 -- Menu entry: open or close the basket by hand.
@@ -240,7 +293,8 @@ function ns.ToggleBasket()
 	else
 		state.manual = true
 		if not KnowsDisenchant() then
-			print("|cffd9a441VendorFloor|r: " .. L["This character cannot disenchant."])
+			if ns.Print then ns.Print(L["This character cannot disenchant."])
+			else DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. L["This character cannot disenchant."]) end
 		end
 	end
 	ns.UpdateBasket()
@@ -252,11 +306,14 @@ for _, event in ipairs({ "PLAYER_LOGIN", "MAIL_CLOSED", "BAG_UPDATE_DELAYED", "P
 	pcall(events.RegisterEvent, events, event)
 end
 events:SetScript("OnEvent", function(_, event)
+	if event == "PLAYER_LOGIN" or event == "SPELLS_CHANGED" or event == "SKILL_LINES_CHANGED" then
+		knowsDeCache = nil
+	end
 	if not DB() then return end
 	if event == "PLAYER_LOGIN" then
 		Create()
 		if not InCombatLockdown() then Prune() end
-		state.last = #Contents() -- items already in the bags at login do not open the window
+		state.last = CountContents() -- items already in the bags at login do not open the window
 		return
 	elseif event == "PLAYER_REGEN_DISABLED" then
 		-- the bags may change in combat: no click may hit an item it was not aimed at

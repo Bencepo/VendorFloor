@@ -20,25 +20,47 @@ Market.AH_CUT = 0.05
 
 local floor = math.floor
 local max = math.max
+local min = math.min
+local huge = math.huge
+
+local scratchPrices = {}
+local scratchDays = {}
+
+local function ClearArray(t)
+	for i = #t, 1, -1 do t[i] = nil end
+end
 
 local function IsSecret(v)
 	return issecretvalue and issecretvalue(v) or false
 end
 
+local function IsFiniteNumber(v)
+	return type(v) == "number" and not IsSecret(v) and v == v and v ~= huge and v ~= -huge
+end
+
+local function IsValidPrice(v)
+	return IsFiniteNumber(v) and v >= 0.5
+end
+
+local function ClampRetention(v)
+	if not IsFiniteNumber(v) then return Market.RETENTION_DAYS end
+	return min(max(floor(v), Market.MIN_DAYS), 90)
+end
+
 function Market:GetDayIndex(timestamp)
-	local ts = (type(timestamp) == "number" and timestamp > 0) and timestamp or time()
+	local ts = (IsFiniteNumber(timestamp) and timestamp > 0) and timestamp or time()
 	return floor(ts / 86400)
 end
 
 function Market:EnsureDB(db)
 	if type(db) ~= "table" then return nil end
-	db.marketHistory = db.marketHistory or {}
-	db.marketDays = db.marketDays or {} -- day number -> true: days with any reading (for the empty-tab hint)
-	db.marketSettings = db.marketSettings or {}
+	if type(db.marketHistory) ~= "table" then db.marketHistory = {} end
+	if type(db.marketDays) ~= "table" then db.marketDays = {} end -- day number -> true: days with any reading (for the empty-tab hint)
+	if type(db.marketSettings) ~= "table" then db.marketSettings = {} end
 	local cfg = db.marketSettings
-	if type(cfg.minDiscountPct) ~= "number" then cfg.minDiscountPct = 30 end
-	if type(cfg.minNetProfit) ~= "number" then cfg.minNetProfit = 5000 end -- 50 silver
-	if type(cfg.retentionDays) ~= "number" then cfg.retentionDays = Market.RETENTION_DAYS end
+	if not IsFiniteNumber(cfg.minDiscountPct) then cfg.minDiscountPct = 30 end
+	if not IsFiniteNumber(cfg.minNetProfit) then cfg.minNetProfit = 5000 end -- 50 silver
+	cfg.retentionDays = ClampRetention(cfg.retentionDays)
 	if cfg.showTooltip == nil then cfg.showTooltip = true end
 	return db
 end
@@ -54,33 +76,39 @@ function Market:Prune(db, nowTs)
 	local okDB = self:EnsureDB(db)
 	if not okDB then return end
 	local nowDay = self:GetDayIndex(nowTs)
-	local retention = max(floor(okDB.marketSettings.retentionDays or Market.RETENTION_DAYS), Market.MIN_DAYS)
+	local retention = ClampRetention(okDB.marketSettings.retentionDays)
+	okDB.marketSettings.retentionDays = retention
 	local cutoffDay = nowDay - retention
+	local maxDay = nowDay + 1
 
 	for itemKey, entry in pairs(okDB.marketHistory) do
-		if type(entry) ~= "table" then
+		if type(entry) ~= "table" or type(entry.days) ~= "table" then
 			okDB.marketHistory[itemKey] = nil
 		else
-			local lastDay = entry.lastDay or 0
+			local lastDay = IsFiniteNumber(entry.lastDay) and entry.lastDay or 0
 			if lastDay < cutoffDay then
 				okDB.marketHistory[itemKey] = nil
-			elseif type(entry.days) == "table" then
-				local remaining = 0
+			else
+				local remaining, newest = 0, 0
 				for dayIdx, val in pairs(entry.days) do
-					if type(dayIdx) ~= "number" or dayIdx < cutoffDay or type(val) ~= "number" or val <= 0 then
+					if not IsFiniteNumber(dayIdx) or dayIdx < cutoffDay or dayIdx > maxDay or not IsValidPrice(val) then
 						entry.days[dayIdx] = nil
 					else
 						remaining = remaining + 1
+						if dayIdx > newest then newest = dayIdx end
 					end
 				end
-				if remaining == 0 then okDB.marketHistory[itemKey] = nil end
-			else
-				okDB.marketHistory[itemKey] = nil
+				if remaining == 0 then
+					okDB.marketHistory[itemKey] = nil
+				else
+					entry.lastDay = newest
+					if not IsFiniteNumber(entry.scans) or entry.scans < 0 then entry.scans = remaining end
+				end
 			end
 		end
 	end
 	for dayIdx in pairs(okDB.marketDays) do
-		if type(dayIdx) ~= "number" or dayIdx < cutoffDay then okDB.marketDays[dayIdx] = nil end
+		if not IsFiniteNumber(dayIdx) or dayIdx < cutoffDay or dayIdx > maxDay then okDB.marketDays[dayIdx] = nil end
 	end
 end
 
@@ -88,10 +116,13 @@ end
 -- Keeps the lowest reading per calendar day.
 function Market:RecordObservation(db, itemKey, unitPrice, nowTs)
 	local okDB = self:EnsureDB(db)
-	if not okDB or not itemKey or IsSecret(itemKey) then return end
-	if type(unitPrice) ~= "number" or IsSecret(unitPrice) or unitPrice <= 0 then return end
+	if not okDB or not itemKey or IsSecret(itemKey) or type(itemKey) == "table" then return end
+	if not IsValidPrice(unitPrice) then return end
 
 	local key = tostring(itemKey)
+	local rounded = floor(unitPrice + 0.5)
+	if rounded <= 0 then return end
+
 	local dayIdx = self:GetDayIndex(nowTs)
 	local entry = okDB.marketHistory[key]
 	if type(entry) ~= "table" then
@@ -99,22 +130,28 @@ function Market:RecordObservation(db, itemKey, unitPrice, nowTs)
 		okDB.marketHistory[key] = entry
 	end
 
-	entry.days = entry.days or {}
-	entry.scans = (entry.scans or 0) + 1
-	if dayIdx > (entry.lastDay or 0) then entry.lastDay = dayIdx end
+	if type(entry.days) ~= "table" then entry.days = {} end
+	entry.scans = (IsFiniteNumber(entry.scans) and entry.scans or 0) + 1
+	if not IsFiniteNumber(entry.lastDay) or dayIdx > entry.lastDay then entry.lastDay = dayIdx end
 
-	local rounded = floor(unitPrice + 0.5)
-	if rounded > 0 and (not entry.days[dayIdx] or rounded < entry.days[dayIdx]) then
+	local prev = entry.days[dayIdx]
+	local isNewDay = prev == nil
+	if isNewDay or not IsFiniteNumber(prev) or rounded < prev then
 		entry.days[dayIdx] = rounded
 	end
 	okDB.marketDays[dayIdx] = true
 
-	-- at most MAX_DAYS + 7 days per entry until the next Prune
-	local dayList = {}
-	for d in pairs(entry.days) do dayList[#dayList + 1] = d end
-	if #dayList > Market.MAX_DAYS + 7 then
-		table.sort(dayList)
-		for i = 1, #dayList - (Market.MAX_DAYS + 7) do entry.days[dayList[i]] = nil end
+	-- at most MAX_DAYS + 7 days per entry until the next Prune (only check when a new day is added)
+	if isNewDay then
+		ClearArray(scratchDays)
+		for d in pairs(entry.days) do
+			if IsFiniteNumber(d) then scratchDays[#scratchDays + 1] = d else entry.days[d] = nil end
+		end
+		local limit = Market.MAX_DAYS + 7
+		if #scratchDays > limit then
+			table.sort(scratchDays)
+			for i = 1, #scratchDays - limit do entry.days[scratchDays[i]] = nil end
+		end
 	end
 end
 
@@ -122,17 +159,17 @@ end
 -- The median unit price of the other players' auctions resists single outliers.
 function Market:RecordListings(db, itemKey, listings, nowTs)
 	if type(listings) ~= "table" or #listings == 0 then return end
-	local prices = {}
+	ClearArray(scratchPrices)
 	for _, row in ipairs(listings) do
 		if type(row) == "table" and not row[3] then
 			local u = row[1]
-			if type(u) == "number" and not IsSecret(u) and u > 0 then prices[#prices + 1] = u end
+			if IsValidPrice(u) then scratchPrices[#scratchPrices + 1] = u end
 		end
 	end
-	if #prices == 0 then return end
-	table.sort(prices)
-	local n = #prices
-	local med = (n % 2 == 1) and prices[(n + 1) / 2] or ((prices[n / 2] + prices[n / 2 + 1]) / 2)
+	local n = #scratchPrices
+	if n == 0 then return end
+	table.sort(scratchPrices)
+	local med = (n % 2 == 1) and scratchPrices[(n + 1) / 2] or ((scratchPrices[n / 2] + scratchPrices[n / 2 + 1]) / 2)
 	self:RecordObservation(db, itemKey, med, nowTs)
 end
 
@@ -155,15 +192,15 @@ function Market:GetStats(db, itemKey, nowTs)
 
 	local nowDay = self:GetDayIndex(nowTs)
 	local minDay = nowDay - Market.MAX_DAYS
-	local dailyPrices = {}
+	ClearArray(scratchPrices)
 	for dayIdx, val in pairs(entry.days) do
-		if type(dayIdx) == "number" and dayIdx >= minDay and dayIdx <= nowDay and type(val) == "number" and val > 0 then
-			dailyPrices[#dailyPrices + 1] = val
+		if IsFiniteNumber(dayIdx) and dayIdx > minDay and dayIdx <= nowDay and IsValidPrice(val) then
+			scratchPrices[#scratchPrices + 1] = val
 		end
 	end
-	local activeDays = #dailyPrices
+	local activeDays = #scratchPrices
 
-	local scans = entry.scans or 0
+	local scans = IsFiniteNumber(entry.scans) and entry.scans or 0
 	if activeDays < Market.MIN_DAYS or scans < Market.MIN_SCANS then
 		return {
 			ready = false,
@@ -174,7 +211,7 @@ function Market:GetStats(db, itemKey, nowTs)
 		}
 	end
 
-	local marketValue = Median(dailyPrices)
+	local marketValue = Median(scratchPrices)
 	if not marketValue or marketValue <= 0 then return nil end
 
 	local confidence = "Low"
@@ -191,20 +228,31 @@ function Market:NetValue(marketValue)
 	return floor((marketValue or 0) * (1 - Market.AH_CUT))
 end
 
+-- Zero-allocation flip check against ready stats: returns qualifying, netValue, netProfit, discountPct.
+function Market:JudgeFlipFast(db, stats, buyoutUnitPrice)
+	if not (stats and stats.ready and IsFiniteNumber(stats.marketValue) and stats.marketValue > 0) then return false end
+	if not IsFiniteNumber(buyoutUnitPrice) or buyoutUnitPrice <= 0 then return false end
+	local netValue = self:NetValue(stats.marketValue)
+	local netProfit = floor(netValue - buyoutUnitPrice)
+	local discountPct = (stats.marketValue - buyoutUnitPrice) / stats.marketValue * 100
+	local cfg = type(db) == "table" and db.marketSettings
+	local minDisc = (cfg and IsFiniteNumber(cfg.minDiscountPct)) and cfg.minDiscountPct or 30
+	local minNet = (cfg and IsFiniteNumber(cfg.minNetProfit)) and cfg.minNetProfit or 5000
+	local qualifying = discountPct >= minDisc and netProfit >= minNet
+	return qualifying, netValue, netProfit, discountPct
+end
+
 -- The flip check of a unit price against ready stats (GetStats). Separate from EvaluateFlip so
 -- a full scan looks up the stats of an item once and checks each of its auctions with them.
 function Market:JudgeFlip(db, stats, buyoutUnitPrice)
-	if not (stats and stats.ready and stats.marketValue and stats.marketValue > 0) then return nil end
-	if type(buyoutUnitPrice) ~= "number" or IsSecret(buyoutUnitPrice) or buyoutUnitPrice <= 0 then return nil end
-	local netProfit = floor(stats.marketValue * (1 - Market.AH_CUT) - buyoutUnitPrice)
-	local discountPct = (stats.marketValue - buyoutUnitPrice) / stats.marketValue * 100
-	local cfg = (type(db) == "table" and db.marketSettings) or {}
-	local qualifying = discountPct >= (cfg.minDiscountPct or 30) and netProfit >= (cfg.minNetProfit or 5000)
+	if not (stats and stats.ready and IsFiniteNumber(stats.marketValue) and stats.marketValue > 0) then return nil end
+	if not IsFiniteNumber(buyoutUnitPrice) or buyoutUnitPrice <= 0 then return nil end
+	local qualifying, netValue, netProfit, discountPct = self:JudgeFlipFast(db, stats, buyoutUnitPrice)
 	return {
 		ready = true,
 		qualifying = qualifying,
 		marketValue = stats.marketValue,
-		netValue = self:NetValue(stats.marketValue),
+		netValue = netValue,
 		netProfit = netProfit,
 		discountPct = discountPct,
 		confidence = stats.confidence,
@@ -215,7 +263,7 @@ end
 
 function Market:EvaluateFlip(db, itemKey, buyoutUnitPrice, nowTs)
 	local okDB = self:EnsureDB(db)
-	if not okDB or type(buyoutUnitPrice) ~= "number" or IsSecret(buyoutUnitPrice) or buyoutUnitPrice <= 0 then
+	if not okDB or not IsFiniteNumber(buyoutUnitPrice) or buyoutUnitPrice <= 0 then
 		return nil
 	end
 	local stats = self:GetStats(okDB, itemKey, nowTs)
@@ -231,7 +279,7 @@ function Market:HistoryDays(db, nowTs)
 	if not okDB then return 0 end
 	local nowDay, n = self:GetDayIndex(nowTs), 0
 	for dayIdx in pairs(okDB.marketDays) do
-		if type(dayIdx) == "number" and dayIdx > nowDay - Market.MAX_DAYS and dayIdx <= nowDay then n = n + 1 end
+		if IsFiniteNumber(dayIdx) and dayIdx > nowDay - Market.MAX_DAYS and dayIdx <= nowDay then n = n + 1 end
 	end
 	return n
 end
@@ -244,17 +292,21 @@ function Market:SeedFromPrices(db)
 	if not okDB or okDB.marketSeeded then return end
 	okDB.marketSeeded = true
 	for pk, h in pairs(okDB.prices or {}) do
-		if type(h) == "table" and okDB.marketHistory[tostring(pk)] == nil then
+		local key = type(pk) == "string" and not pk:find("^table:") and pk or nil
+		if key and type(h) == "table" and okDB.marketHistory[key] == nil then
 			local entry = { days = {}, scans = 0, lastDay = 0 }
 			for dayIdx, val in pairs(h) do
-				if type(dayIdx) == "number" and type(val) == "number" and val > 0 then
-					entry.days[dayIdx] = floor(val + 0.5)
-					entry.scans = entry.scans + 1
-					if dayIdx > entry.lastDay then entry.lastDay = dayIdx end
-					okDB.marketDays[dayIdx] = true
+				if IsFiniteNumber(dayIdx) and IsValidPrice(val) then
+					local rounded = floor(val + 0.5)
+					if rounded > 0 then
+						entry.days[dayIdx] = rounded
+						entry.scans = entry.scans + 1
+						if dayIdx > entry.lastDay then entry.lastDay = dayIdx end
+						okDB.marketDays[dayIdx] = true
+					end
 				end
 			end
-			if entry.scans > 0 then okDB.marketHistory[tostring(pk)] = entry end
+			if entry.scans > 0 then okDB.marketHistory[key] = entry end
 		end
 	end
 end

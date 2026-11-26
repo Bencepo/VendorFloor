@@ -47,6 +47,7 @@ local function Build(ui)
 	box:SetWidth(W)
 	box:SetFrameStrata("DIALOG")
 	box:SetFrameLevel(60)
+	box:SetClampedToScreen(true)
 	box:EnableMouse(true)
 
 	box.count = box:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
@@ -80,6 +81,8 @@ local function ShowStep(i)
 	local ui = ns.ui
 	local s = STEPS[i]
 	if not (ui and s) then return end
+	local target = Target(ui, s.target)
+	if not target then return end
 	step = i
 	box.title:SetText(L[s.title])
 	box.text:SetText(L[s.text])
@@ -87,7 +90,6 @@ local function ShowStep(i)
 	box.next:SetText(i < #STEPS and L["Next"] or L["Got it"])
 	box:SetHeight(10 + 14 + 6 + math.max(box.text:GetStringHeight() or 0, 42) + 12 + 22 + 10)
 
-	local target = Target(ui, s.target)
 	box:ClearAllPoints()
 	box.arrow:ClearAllPoints()
 	if s.side == "above" then

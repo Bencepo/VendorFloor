@@ -30,6 +30,9 @@ local function Entry(db, id)
 	return e
 end
 
+local MAIL_DAYS = 30
+local function Secret(v) return issecretvalue and issecretvalue(v) end
+
 local function OnPost(loc, qty, unit)
 	local db = DB()
 	if not (db and loc and C_Item and C_Item.GetItemID) then return end
@@ -37,11 +40,12 @@ local function OnPost(loc, qty, unit)
 	if not id then return end
 	local name = GetItemInfo(id)
 	if not name then return end
+	local unitVal = (type(unit) == "number" and not Secret(unit) and unit > 0) and floor(unit + 0.5) or nil
 	local e = Entry(db, id)
 	e.posts = e.posts + 1
 	e.units = e.units + (qty or 1)
 	db.open = db.open or {}
-	db.open[#db.open + 1] = { id = id, name = name, unit = unit and floor(unit + 0.5), at = time() }
+	db.open[#db.open + 1] = { id = id, name = name, unit = unitVal, at = time() }
 end
 
 if C_AuctionHouse and hooksecurefunc then
@@ -85,6 +89,14 @@ local function Purge(db)
 		if now - o.at < KEEP then keep[#keep + 1] = o end
 	end
 	db.open = keep
+	if type(db.seenMail) == "table" then
+		for key, entry in pairs(db.seenMail) do
+			local at = type(entry) == "table" and entry.at or entry
+			if type(at) ~= "number" or now - at > (MAIL_DAYS + 1) * 86400 then
+				db.seenMail[key] = nil
+			end
+		end
+	end
 end
 
 -- A sale or an expiry, matched to the oldest posted auction of that name.
@@ -92,14 +104,17 @@ local function Sold(db, name, unit, at)
 	local o = Oldest(db, name)
 	if not o then return end
 	local e = Entry(db, o.id)
+	local saleAt = at or time()
 	e.sold = e.sold + 1
 	if not o.hit then
 		o.hit = true
 		e.firstN = e.firstN + 1
-		e.firstSum = e.firstSum + max(0, (at or time()) - o.at)
+		e.firstSum = e.firstSum + max(0, saleAt - o.at)
 	end
-	unit = unit or o.unit
-	if unit then e.price, e.priceAt = unit, time() end
+	unit = (type(unit) == "number" and unit > 0) and unit or o.unit
+	if unit and unit > 0 and saleAt >= (e.priceAt or 0) then
+		e.price, e.priceAt = unit, saleAt
+	end
 end
 
 local function Expired(db, name)
@@ -113,38 +128,59 @@ end
 -- Sales and expiries are read from the mailbox: the chat lines about them are hidden from
 -- addons now (secret values). Each sale sends a mail with an invoice (item, amount, price),
 -- each expiry a mail "Auction expired: <item>". Mails stay in the inbox for a while, so
--- each one is counted once (key: subject, money and when it expires).
+-- each one is counted once (key: subject, money, expiry bucket and per-bucket count).
 local EXPIRED_SUBJECT = Pattern(AUCTION_EXPIRED_MAIL_SUBJECT)
-local MAIL_DAYS = 30
-local function Secret(v) return issecretvalue and issecretvalue(v) end
+
+local function ResolveMailKey(seenMail, prefix, bucket)
+	local k = prefix .. bucket
+	if seenMail[k] then return k end
+	local kPrev = prefix .. (bucket - 1)
+	if seenMail[kPrev] then return kPrev end
+	local kNext = prefix .. (bucket + 1)
+	if seenMail[kNext] then return kNext end
+	return k
+end
 
 local function ScanMail()
 	local db = DB()
 	if not (db and db.open and db.open[1] and GetInboxNumItems and GetInboxHeaderInfo) then return end
 	db.seenMail = db.seenMail or {}
 	local now = time()
+	local seenThisPass = {}
 	for i = 1, GetInboxNumItems() do
 		local _, _, _, subject, money, _, daysLeft = GetInboxHeaderInfo(i)
 		if type(subject) == "string" and type(daysLeft) == "number" and not Secret(subject) and not Secret(daysLeft) then
+			local m = (type(money) == "number" and not Secret(money)) and money or 0
 			local expires = now + floor(daysLeft * 86400)
-			local key = subject .. "|" .. tostring(money or 0) .. "|" .. floor(expires / 600)
-			if not db.seenMail[key] then
-				local inv = GetInboxInvoiceInfo and { GetInboxInvoiceInfo(i) } or {}
-				local invoiceType, itemName, bid, count = inv[1], inv[2], inv[4], inv[11]
+			local bucket = floor(expires / 600)
+			local key = ResolveMailKey(db.seenMail, subject .. "|" .. m .. "|", bucket)
+			local occ = (seenThisPass[key] or 0) + 1
+			seenThisPass[key] = occ
+			local prev = db.seenMail[key]
+			local prevCount = type(prev) == "table" and (prev.n or 1) or (prev and 1 or 0)
+			if occ > prevCount then
+				local invoiceType, itemName, bid, buyout, count
+				if GetInboxInvoiceInfo then
+					local invType, invItem, _, invBid, invBuyout, _, _, _, _, _, invCount = GetInboxInvoiceInfo(i)
+					invoiceType, itemName, bid, buyout, count = invType, invItem, invBid, invBuyout, invCount
+				end
 				if invoiceType == "seller" and type(itemName) == "string" and not Secret(itemName) then
-					db.seenMail[key] = now
-					local unit = bid and count and count > 0 and floor(bid / count + 0.5) or nil
+					db.seenMail[key] = { n = occ, at = now }
+					local price = (type(bid) == "number" and not Secret(bid) and bid > 0) and bid
+						or (type(buyout) == "number" and not Secret(buyout) and buyout > 0) and buyout or nil
+					local qty = (type(count) == "number" and not Secret(count) and count > 0) and count or nil
+					local unit = price and qty and floor(price / qty + 0.5) or nil
 					-- the money mail goes out about an hour after the sale
 					Sold(db, itemName, unit, expires - MAIL_DAYS * 86400 - 3600)
-				elseif EXPIRED_SUBJECT and subject:match(EXPIRED_SUBJECT) then
-					db.seenMail[key] = now
-					Expired(db, subject:match(EXPIRED_SUBJECT))
+				else
+					local expiredName = EXPIRED_SUBJECT and subject:match(EXPIRED_SUBJECT)
+					if expiredName then
+						db.seenMail[key] = { n = occ, at = now }
+						Expired(db, expiredName)
+					end
 				end
 			end
 		end
-	end
-	for key, at in pairs(db.seenMail) do
-		if now - at > (MAIL_DAYS + 1) * 86400 then db.seenMail[key] = nil end
 	end
 end
 
@@ -179,11 +215,15 @@ local function Duration(sec)
 	return ("%.1f h"):format(sec / 3600)
 end
 
+---@param a table
+---@param b table
+local function ByPosts(a, b) return a.e.posts > b.e.posts end
+
 function ns.SalesLines(limit)
 	local db = DB()
 	local list, lines = {}, {}
 	for id, e in pairs(db and db.sales or {}) do list[#list + 1] = { id = id, e = e } end
-	table.sort(list, function(a, b) return a.e.posts > b.e.posts end)
+	table.sort(list, ByPosts)
 	if #list == 0 then
 		return { L["No own auctions recorded yet. They are recorded from now on when you post."] }
 	end
@@ -203,4 +243,4 @@ function ns.PrintSales()
 end
 
 -- For the automated tests; unused in the game.
-ns.salesTest = { Pattern = Pattern, OnPost = OnPost, ScanMail = ScanMail }
+ns.salesTest = { Pattern = Pattern, OnPost = OnPost, ScanMail = ScanMail, Purge = Purge }

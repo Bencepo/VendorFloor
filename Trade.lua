@@ -252,7 +252,8 @@ function VendorFloor_Ledger()
 end
 
 function ns.ForgetPurchases()
-	wipe(DB().bought)
+	local db = DB()
+	if db and db.bought then wipe(db.bought) end
 	Changed()
 end
 
@@ -265,17 +266,26 @@ local ATTACHMENTS = ATTACHMENTS_MAX_RECEIVE or 16
 local function FreeSlots()
 	local free = 0
 	for _, bag in ipairs(BAGS) do
-		local n = C_Container.GetContainerNumFreeSlots(bag) or 0
-		free = free + (n or 0)
+		local n, family = C_Container.GetContainerNumFreeSlots(bag)
+		if (family or 0) == 0 then
+			free = free + (n or 0)
+		end
 	end
 	return free
 end
 
--- Is this mail an auction house purchase? Without invoice data every mail counts.
+-- Is this mail an auction house purchase? Reject C.O.D., empty mails, and non-buyer invoices.
 local function IsPurchase(index)
-	if not GetInboxInvoiceInfo then return true end
-	local invoiceType = GetInboxInvoiceInfo(index)
-	return invoiceType == nil or invoiceType == "buyer"
+	if GetInboxHeaderInfo then
+		local _, _, _, _, _, codAmount, _, hasItem = GetInboxHeaderInfo(index)
+		if (codAmount or 0) > 0 then return false end
+		if hasItem == 0 then return false end
+	end
+	if GetInboxInvoiceInfo then
+		local invoiceType = GetInboxInvoiceInfo(index)
+		return invoiceType == "buyer"
+	end
+	return true
 end
 
 -- Items to collect from the mail: bought for the vendor tab, or for disenchanting.
@@ -313,10 +323,33 @@ local function MailCount()
 	return n
 end
 
-local mailButton, collecting, taken, nextTake = nil, false, 0, 0
+local mailButton, collecting, taken, nextTake, pendingTake, stalls = nil, false, 0, 0, nil, 0
+
+local function ConfirmPendingTake()
+	if not pendingTake then return true end
+	local numMails = GetInboxNumItems and GetInboxNumItems() or 0
+	local curID, curCount
+	if pendingTake.i <= numMails then
+		local _, id, _, cnt = GetInboxItem(pendingTake.i, pendingTake.a)
+		curID, curCount = id, cnt
+	end
+	if numMails < pendingTake.numMails or curID ~= pendingTake.itemID or curCount ~= pendingTake.count then
+		local db = DB()
+		local id = pendingTake.itemID
+		local cnt = pendingTake.count or 1
+		if db and id and db.debought and db.debought[id] then
+			local left = db.debought[id] - cnt
+			db.debought[id] = left > 0 and left or nil
+		end
+		taken = taken + cnt
+		pendingTake, stalls = nil, 0
+		return true
+	end
+	return false
+end
 
 local function StopCollecting(msg)
-	collecting = false
+	collecting, pendingTake, stalls = false, nil, 0
 	if msg then Print(msg) end
 	if ns.UpdateTradeButtons then ns.UpdateTradeButtons() end
 end
@@ -326,6 +359,18 @@ driver:Hide()
 driver:SetScript("OnUpdate", function(self)
 	if not collecting then self:Hide() return end
 	if GetTime() < nextTake then return end
+	if pendingTake then
+		if not ConfirmPendingTake() then
+			stalls = stalls + 1
+			if stalls >= 3 then
+				self:Hide()
+				StopCollecting(L["Bags full. Collected %d items."]:format(taken))
+				return
+			end
+			nextTake = GetTime() + TAKE_INTERVAL
+			return
+		end
+	end
 	if FreeSlots() == 0 then
 		self:Hide()
 		StopCollecting(L["Bags full. Collected %d items."]:format(taken))
@@ -338,19 +383,14 @@ driver:SetScript("OnUpdate", function(self)
 		return
 	end
 	local _, itemID, _, count = GetInboxItem(i, a)
-	local db = DB()
-	if itemID and db.debought and db.debought[itemID] then
-		local left = db.debought[itemID] - (count or 1)
-		db.debought[itemID] = left > 0 and left or nil
-	end
+	pendingTake = { numMails = GetInboxNumItems(), i = i, a = a, itemID = itemID, count = count or 1 }
 	TakeInboxItem(i, a)
-	taken = taken + (count or 1)
 	nextTake = GetTime() + TAKE_INTERVAL
 end)
 
 local function StartCollecting()
 	if collecting then return end
-	collecting, taken, nextTake = true, 0, 0
+	collecting, taken, nextTake, pendingTake, stalls = true, 0, 0, nil, 0
 	driver:Show()
 end
 
@@ -405,7 +445,7 @@ if C_Container and hooksecurefunc then
 		hooksecurefunc(C_Container, "UseContainerItem", function(bag, slot)
 			if not merchantOpen then return end
 			local info = C_Container.GetContainerItemInfo(bag, slot)
-			if info and info.itemID then handed[info.itemID] = true end
+			if info and info.itemID then handed[info.itemID] = GetTime() + 5 end
 		end)
 	end
 	if C_Container.PickupContainerItem then
@@ -417,7 +457,7 @@ if C_Container and hooksecurefunc then
 end
 if hooksecurefunc and PickupMerchantItem then
 	hooksecurefunc("PickupMerchantItem", function()
-		if merchantOpen and cursorItem then handed[cursorItem] = true end
+		if merchantOpen and cursorItem then handed[cursorItem] = GetTime() + 5 end
 		cursorItem = nil
 	end)
 end
@@ -437,19 +477,27 @@ end
 
 local function TrackBags()
 	local now = CountBought()
+	local t = GetTime()
 	if merchantOpen and bagCounts then
 		local sold = false
+		local db = DB()
 		for itemID, before in pairs(bagCounts) do
 			local gone = before - (now[itemID] or 0)
-			local price = gone > 0 and handed[itemID] and SellPrice(itemID)
+			local exp = handed[itemID]
+			local price = gone > 0 and exp and exp >= t and SellPrice(itemID)
 			if price and price > 0 then
 				ns.RecordSale(itemID, gone, price * gone)
 				sold = true
+				if not (db and db.bought and db.bought[itemID]) then
+					now[itemID] = nil
+				end
 			end
 		end
-		if sold then now = CountBought() end
+		if sold and ns.OnLedgerChanged then ns.OnLedgerChanged() end
 	end
-	wipe(handed)
+	for itemID, exp in pairs(handed) do
+		if exp < t then handed[itemID] = nil end
+	end
 	bagCounts = now
 end
 
@@ -533,6 +581,8 @@ events:SetScript("OnEvent", function(_, event)
 				L["VendorFloor takes the items it bought out of the auction house mail."], L["Collect purchases (%d)"]:format(0))
 		end
 		if mailButton then mailButton:Show() end
+	elseif event == "MAIL_INBOX_UPDATE" then
+		if collecting and pendingTake then ConfirmPendingTake() end
 	elseif event == "MAIL_CLOSED" then
 		if collecting then StopCollecting() end
 		if mailButton then mailButton:Hide() end
@@ -550,8 +600,13 @@ events:SetScript("OnEvent", function(_, event)
 		if sellButton then sellButton:Show() end
 	elseif event == "MERCHANT_CLOSED" then
 		TrackBags()
+		wipe(handed)
+		cursorItem = nil
 		merchantOpen = false
 		if sellButton then sellButton:Hide() end
 	end
 	ns.UpdateTradeButtons()
 end)
+
+-- For automated tests; unused in the game.
+ns.tradeTest = { IsPurchase = IsPurchase, FreeSlots = FreeSlots, MailCount = MailCount, NextMailItem = NextMailItem }

@@ -256,5 +256,133 @@ describe("VendorFloor", function()
 			S.ScanMail()
 			assert.near(1 / 3, ns.SellRate(2589), 0.001)
 		end)
+		it("counts multiple identical sales/expiries within 600s and handles buyout fallback and older mails", function()
+			S.OnPost({ id = 2589 }, 10, 0) -- unit <= 0 rejected as nil
+			assert.is_nil(db.open[#db.open].unit)
+			S.OnPost({ id = 2589 }, 10, 100)
+			S.OnPost({ id = 2589 }, 10, 100)
+			env.mails = {
+				{ subject = "Auction successful: Linen Cloth", money = 1900, days = 29.9,
+					invoice = { "seller", "Linen Cloth", "Buyer1", 0, 2000, 0, 0, 0, 0, 0, 10 } },
+				{ subject = "Auction successful: Linen Cloth", money = 1900, days = 29.9,
+					invoice = { "seller", "Linen Cloth", "Buyer2", 0, 2000, 0, 0, 0, 0, 0, 10 } },
+				{ subject = "Auction successful: Linen Cloth", money = 950, days = 29.0,
+					invoice = { "seller", "Linen Cloth", "OlderBuyer", 1000, 0, 0, 0, 0, 0, 0, 10 } },
+			}
+			S.ScanMail()
+			S.ScanMail() -- rescan must not double-count
+			assert.equal(3, db.sales[2589].sold)
+			-- newer sale (200c/unit at days=29.9) must not be overwritten by older mail (100c/unit at days=29.0)
+			assert.equal(200, ns.SoldPrice(2589))
+		end)
+	end)
+
+	describe("RecordListing and DB scrubbing", function()
+		it("coerces ItemKey tables to string keys and scrubs corrupted/stale entries on load", function()
+			local key = { itemID = 5000, itemLevel = 18, itemSuffix = 0, battlePetSpeciesID = 0 }
+			ns.RecordListing(key, { { 250, 5 } })
+			assert.equal(250, ns.LowValue("5000:18:0:0"))
+			assert.is_nil(db.lows[key])
+
+			local now = os.time()
+			local oldDay = math.floor(now / 86400) - 20
+			db.prices[key] = { [oldDay] = 100 }
+			db.prices["table: 0xdeadbeef"] = { [math.floor(now / 86400)] = 100 }
+			db.prices["stale:0:0:0"] = { [oldDay] = 100 }
+			db.lows[key] = { 100, now }
+			db.lows["old:0:0:0"] = { 100, now - 4 * 86400 }
+			db.hot = { [1] = { last = now - 31 * 86400, profit = 100 }, [2] = { last = now - 5 * 86400, profit = 100 } }
+			db.marketHistory = { ["table: 0x1234"] = { days = {}, scans = 1, lastDay = 20000 } }
+			T.Init()
+			assert.is_nil(db.prices[key])
+			assert.is_nil(db.prices["table: 0xdeadbeef"])
+			assert.is_nil(db.prices["stale:0:0:0"])
+			assert.is_nil(db.lows[key])
+			assert.is_nil(db.lows["old:0:0:0"])
+			assert.is_nil(db.hot[1])
+			assert.is_not_nil(db.hot[2])
+			assert.is_nil(db.marketHistory["table: 0x1234"])
+		end)
+	end)
+
+	describe("commodity quote validation and scan scoping", function()
+		it("enforces minPercent and minSlot in COMMODITY_PRICE_UPDATED and guards nil deal", function()
+			local buy = T.Buy()
+			buy.state, buy.deal, buy.qty = "quoting", nil, 1
+			T.handlers.COMMODITY_PRICE_UPDATED(0, 100)
+			assert.is_nil(buy.state)
+
+			db.minProfit, db.minPercent, db.minSlot = 10, 50, 0
+			local deal = { k = "5000:0:0:0", id = 5000, vendor = 100, mode = "vendor", name = "Test" }
+			buy.state, buy.deal, buy.qty = "quoting", deal, 2
+			-- unit = 80, gain = 20 (25% < 50% minPercent): rejected
+			T.handlers.COMMODITY_PRICE_UPDATED(0, 160)
+			assert.is_nil(buy.state)
+
+			db.minPercent, db.minSlot = 0, 500
+			buy.state, buy.deal, buy.qty = "quoting", deal, 2
+			-- total gain = 2 * 100 - 100 = 100 < 500 minSlot: rejected
+			T.handlers.COMMODITY_PRICE_UPDATED(0, 100)
+			assert.is_nil(buy.state)
+		end)
+
+		it("StartScan/FinishScan only clears stale deals of the scanned tab family", function()
+			T.handlers.AUCTION_HOUSE_SHOW()
+			T.AddDeal({ k = "vendor1", id = 5000, mode = "vendor", price = 10, vendor = 100, profit = 90 })
+			T.AddDeal({ k = "de1", id = 5001, mode = "de", price = 10, vendor = 100, profit = 90 })
+			db.tab = "de"
+			T.StartScan()
+			T.FinishScan()
+			local foundVendor, foundDe = false, false
+			for _, d in ipairs(T.Deals()) do
+				if d.k == "vendor1" then foundVendor = true end
+				if d.k == "de1" then foundDe = true end
+			end
+			assert.is_true(foundVendor)
+			assert.is_false(foundDe)
+		end)
+	end)
+
+	describe("Export JSON and Trade mail safety", function()
+		it("formats integers above 2^31 without overflow", function()
+			local ens = wow.Load("VendorFloor", { "Locales.lua", "Export.lua" })
+			assert.equal("3000000000", ens.JsonEncode(3000000000))
+			assert.equal("1234567890123", ens.JsonEncode(1234567890123))
+		end)
+
+		it("rejects C.O.D., empty, and non-buyer mails and counts only general bag slots", function()
+			local tns, tenv = wow.Load("VendorFloor", { "Locales.lua", "VendorFloor.lua", "Trade.lua" }, function(e)
+				e.VendorFloorDB = {}
+				e.Enum = e.Enum or {}
+				rawset(e.Enum, "BagIndex", { ReagentBag = 5 })
+				e.C_Container = {
+					GetContainerNumFreeSlots = function(bag)
+						if bag == 5 then return 20, 2048 end -- reagent bag: non-zero family
+						return bag == 0 and 3 or 0, 0
+					end,
+				}
+				e.GetInboxHeaderInfo = function(i)
+					local m = e.mails[i]
+					return nil, nil, "Sender", m.subject, m.money or 0, m.cod or 0, 29, m.hasItem
+				end
+			end)
+			tns.test.Init()
+			tenv.mails = {
+				{ subject = "Buyer", cod = 0, hasItem = 1, invoice = { "buyer" } },
+				{ subject = "COD", cod = 500, hasItem = 1, invoice = { "buyer" } },
+				{ subject = "Expired", cod = 0, hasItem = 1, invoice = nil },
+				{ subject = "Empty", cod = 0, hasItem = 0, invoice = { "buyer" } },
+				{ subject = "Seller", cod = 0, hasItem = 1, invoice = { "seller" } },
+			}
+			assert.is_true(tns.tradeTest.IsPurchase(1))
+			assert.is_false(tns.tradeTest.IsPurchase(2))
+			assert.is_false(tns.tradeTest.IsPurchase(3))
+			assert.is_false(tns.tradeTest.IsPurchase(4))
+			assert.is_false(tns.tradeTest.IsPurchase(5))
+			assert.equal(3, tns.tradeTest.FreeSlots())
+			-- ForgetPurchases nil guard
+			tns.db = nil
+			assert.has_no.errors(function() tns.ForgetPurchases() end)
+		end)
 	end)
 end)

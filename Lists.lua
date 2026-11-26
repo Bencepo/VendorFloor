@@ -41,7 +41,16 @@ end
 
 local index, indexAt = {}, 0
 local MAX_SUGGEST, MIN_CHARS = 8, 3
+local DEFAULT_BAGS = { 0, 1, 2, 3, 4 }
 local building -- ids still to add while the index is built, a slice per frame
+
+---@param a table
+---@param b table
+local function ByLower(a, b) return a.lower < b.lower end
+
+---@param a table
+---@param b table
+local function ByTextLower(a, b) return (a.text or ""):lower() < (b.text or ""):lower() end
 
 -- Built once and kept for a few minutes, a slice per frame: thousands of auction prices
 -- at once made the game stutter while typing.
@@ -56,7 +65,7 @@ local function BuildIndex(onDone)
 	end
 	local slots = C_Container and C_Container.GetContainerNumSlots
 	if slots then
-		for _, bag in ipairs(ns.BAGS or { 0, 1, 2, 3, 4 }) do
+		for _, bag in ipairs(ns.BAGS or DEFAULT_BAGS) do
 			for slot = 1, slots(bag) or 0 do add(C_Container.GetContainerItemID(bag, slot)) end
 		end
 	end
@@ -66,6 +75,7 @@ local function BuildIndex(onDone)
 	local ticker
 	ticker = C_Timer.NewTicker(0, function()
 		local b = building
+		if not b then ticker:Cancel() return end
 		for i = b.at, min(b.at + 199, #b.ids) do
 			local id = b.ids[i]
 			local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(id)
@@ -94,9 +104,8 @@ local function Matches(text)
 		local at = it.lower:find(text, 1, true)
 		if at == 1 then first[#first + 1] = it elseif at then inner[#inner + 1] = it end
 	end
-	local byName = function(a, b) return a.lower < b.lower end
-	table.sort(first, byName)
-	table.sort(inner, byName)
+	table.sort(first, ByLower)
+	table.sort(inner, ByLower)
 	for _, it in ipairs(inner) do first[#first + 1] = it end
 	for i = #first, MAX_SUGGEST + 1, -1 do first[i] = nil end
 	return first
@@ -168,10 +177,10 @@ local function Suggest(box)
 		if not user or box.picking then return end
 		list.pending = (list.pending or 0) + 1
 		local n = list.pending
-		C_Timer.After(0.2, function() if n == list.pending then list:Update() end end)
+		C_Timer.After(0.2, function() if n == list.pending and box:HasFocus() then list:Update() end end)
 	end)
 	box:HookScript("OnEditFocusGained", function() BuildIndex(function() if box:HasFocus() then list:Update() end end) end)
-	box:HookScript("OnEditFocusLost", function() C_Timer.After(0.2, function() list:Hide() end) end)
+	box:HookScript("OnEditFocusLost", function() C_Timer.After(0.2, function() if not box:HasFocus() then list:Hide() end end) end)
 	box:HookScript("OnTabPressed", function() if list:IsShown() then list:Take() end end)
 	box:HookScript("OnArrowPressed", function(_, key)
 		if not list:IsShown() then return end
@@ -217,7 +226,7 @@ local function ListWindow(name, title, topHeight)
 	t:SetText(title)
 	tinsert(UISpecialFrames, name) -- Escape closes it
 
-	w.offset, w.rows = 0, {}
+	w.offset, w.rows, w.items = 0, {}, {}
 	local top = -30 - topHeight
 	for i = 1, ROWS do
 		local row = CreateFrame("Frame", nil, w)
@@ -232,6 +241,13 @@ local function ListWindow(name, title, topHeight)
 		row.remove:SetSize(70, 20)
 		row.remove:SetPoint("RIGHT", 0, 0)
 		row.remove:SetText(L["Remove"])
+		row.remove:SetScript("OnClick", function()
+			if row.removeFn then
+				row.removeFn()
+				w:Fill()
+				if ns.RefreshWindow then ns.RefreshWindow() end
+			end
+		end)
 		row.detail = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		row.detail:SetPoint("RIGHT", row.remove, "LEFT", -8, 0)
 		row.detail:SetJustifyH("RIGHT")
@@ -261,26 +277,21 @@ local function ListWindow(name, title, topHeight)
 	w:EnableMouseWheel(true)
 	w:SetScript("OnMouseWheel", function(self, delta)
 		self.offset = self.offset - delta * 3
-		self:Fill()
+		self:Render()
 	end)
 
-	-- items: { id, text, detail, remove = function }
-	function w:Fill()
-		local items = self:Items()
+	function w:Render()
+		local items = self.items or {}
 		self.offset = max(0, min(self.offset, max(#items - ROWS, 0)))
 		for i, row in ipairs(self.rows) do
 			local it = items[i + self.offset]
 			row.id = it and it.id
+			row.removeFn = it and it.remove or nil
 			if it then
 				local _, link, _, _, _, _, _, _, _, icon = GetItemInfo(it.id)
 				row.icon:SetTexture(icon or 134400)
 				row.text:SetText(link or it.text or ("item:" .. it.id))
 				row.detail:SetText(it.detail or "")
-				row.remove:SetScript("OnClick", function()
-					it.remove()
-					self:Fill()
-					if ns.RefreshWindow then ns.RefreshWindow() end
-				end)
 				row:Show()
 			else
 				row:Hide()
@@ -290,13 +301,19 @@ local function ListWindow(name, title, topHeight)
 		self.count:SetText(#items > ROWS and L["%d–%d of %d"]:format(self.offset + 1, min(self.offset + ROWS, #items), #items)
 			or "")
 	end
+
+	-- items: { id, text, detail, remove = function }
+	function w:Fill()
+		self.items = self:Items()
+		self:Render()
+	end
 	w:SetScript("OnShow", function(self) self:Fill() end)
 	w:Hide()
 	return w
 end
 
 local function ByName(list)
-	table.sort(list, function(a, b) return (a.text or ""):lower() < (b.text or ""):lower() end)
+	table.sort(list, ByTextLower)
 	return list
 end
 
@@ -326,7 +343,7 @@ function ns.ToggleIgnoreList()
 			local db, list = DB(), {}
 			for id, name in pairs(db and db.ignore or {}) do
 				list[#list + 1] = { id = id, text = type(name) == "string" and name or GetItemInfo(id),
-					remove = function() db.ignore[id] = nil end }
+					remove = function() if db and db.ignore then db.ignore[id] = nil end end }
 			end
 			return ByName(list)
 		end
@@ -339,6 +356,7 @@ function ns.ToggleIgnoreList()
 		hide:SetText(L["Hide"])
 		local function Hide()
 			local db, id = DB(), ItemID(box:GetText())
+			if not db then return end
 			if not id then
 				Print(L["Item not recognised. Shift-click it into the field, or type its exact name or ID."])
 				return
@@ -396,11 +414,15 @@ end
 -- Shift-click on an item puts its link into the focused item field.
 local itemBox
 local function InsertLink(link)
-	for _, box in ipairs({ itemBox, ignoreWin and ignoreWin.box }) do
-		if box and box:HasFocus() and link then
-			box:SetText(link)
-			return true
-		end
+	if not link then return end
+	if itemBox and itemBox:HasFocus() then
+		itemBox:SetText(link)
+		return true
+	end
+	local ib = ignoreWin and ignoreWin.box
+	if ib and ib:HasFocus() then
+		ib:SetText(link)
+		return true
 	end
 end
 if ChatEdit_InsertLink then hooksecurefunc("ChatEdit_InsertLink", InsertLink) end
@@ -414,7 +436,7 @@ function ns.ToggleWishlist()
 			local db, list = DB(), {}
 			for id, want in pairs(db and db.wishlist or {}) do
 				list[#list + 1] = { id = id, text = want.name or GetItemInfo(id), detail = WishDetail(want),
-					remove = function() db.wishlist[id] = nil end }
+					remove = function() if db and db.wishlist then db.wishlist[id] = nil end end }
 			end
 			return ByName(list)
 		end
@@ -442,6 +464,7 @@ function ns.ToggleWishlist()
 		end)
 		local function Add()
 			local db = DB()
+			if not db then return end
 			local id = ItemID(itemBox:GetText())
 			local price = ns.ParseMoney and ns.ParseMoney(priceBox:GetText())
 			if not id then
@@ -472,6 +495,7 @@ end
 
 -- From a find's right-click menu: the watchlist with the item and its price filled in.
 function ns.WishPrefill(itemID, price)
+	if not itemID then return end
 	if not wishWin then ns.ToggleWishlist() end
 	wishWin:Show()
 	local _, link = GetItemInfo(itemID)
@@ -499,6 +523,7 @@ function ns.ShowCopy(title, text)
 		w:SetSize(560, 400)
 		w:SetPoint("CENTER")
 		w:SetFrameStrata("DIALOG")
+		w:SetClampedToScreen(true)
 		w:SetMovable(true)
 		w:EnableMouse(true)
 		w:RegisterForDrag("LeftButton")

@@ -170,6 +170,62 @@ describe("Market Flips history", function()
 		assert.is_false(d.marketSettings.showTooltip)
 		assert.is_nil(M:EnsureDB(nil))
 	end)
+
+	it("rejects NaN, infinity, and sub-half-copper prices without mutating history or marketDays", function()
+		local nan = 0 / 0
+		M:RecordObservation(db, "k", nan, NOW)
+		M:RecordObservation(db, "k", math.huge, NOW)
+		M:RecordObservation(db, "k", -math.huge, NOW)
+		M:RecordObservation(db, "k", 0.2, NOW)
+		M:RecordListings(db, "k", { { nan, 1 }, { math.huge, 1 }, { 0.2, 5 } }, NOW)
+		assert.is_nil(next(db.marketHistory))
+		assert.is_nil(next(db.marketDays))
+
+		db.prices = { ["8:0:0:0"] = { [20000] = 0.2, [19999] = nan, [19998] = math.huge } }
+		M:SeedFromPrices(db)
+		assert.is_nil(db.marketHistory["8:0:0:0"])
+		assert.is_nil(next(db.marketDays))
+	end)
+
+	it("aligns GetStats to strictly 14 days matching HistoryDays", function()
+		-- day nowDay - 14 is outside the 14-day window (nowDay - 13 .. nowDay)
+		M:RecordObservation(db, "edge", 99999, NOW - 14 * DAY)
+		M:RecordObservation(db, "edge", 1000, NOW - 2 * DAY)
+		M:RecordObservation(db, "edge", 1000, NOW - 1 * DAY)
+		M:RecordObservation(db, "edge", 1000, NOW)
+		local st = M:GetStats(db, "edge", NOW)
+		assert.is_true(st.ready)
+		assert.equal(3, st.days)
+		assert.equal(1000, st.marketValue)
+		assert.equal(3, M:HistoryDays(db, NOW))
+	end)
+
+	it("JudgeFlipFast matches JudgeFlip and aligns netProfit with netValue", function()
+		record("1:0:0:0", { 10001, 10001, 10001 })
+		local st = M:GetStats(db, "1:0:0:0", NOW)
+		local q, nv, np, disc = M:JudgeFlipFast(db, st, 4000.5)
+		local full = M:JudgeFlip(db, st, 4000.5)
+		assert.equal(full.qualifying, q)
+		assert.equal(full.netValue, nv)
+		assert.equal(full.netProfit, np)
+		assert.equal(full.discountPct, disc)
+		assert.equal(math.floor(nv - 4000.5), np)
+		assert.is_false(M:JudgeFlipFast(db, st, 0 / 0))
+		assert.is_false(M:JudgeFlipFast(db, st, math.huge))
+	end)
+
+	it("Prune clamps retentionDays to [3, 90] and removes future-dated days", function()
+		db.marketSettings.retentionDays = 999
+		M:RecordObservation(db, "fut", 100, NOW)
+		db.marketHistory.fut.days[20005] = 500
+		db.marketHistory.fut.lastDay = 20005
+		db.marketDays[20005] = true
+		M:Prune(db, NOW)
+		assert.equal(90, db.marketSettings.retentionDays)
+		assert.is_nil(db.marketHistory.fut.days[20005])
+		assert.equal(20000, db.marketHistory.fut.lastDay)
+		assert.is_nil(db.marketDays[20005])
+	end)
 end)
 
 describe("Market Flips in VendorFloor", function()

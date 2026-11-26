@@ -8,6 +8,9 @@
 - The ready sound (Check or Buy clickable) is louder and clearer: the ready-check tone on the Master channel, so it is heard even with game sounds turned down.
 - Fixed: switching tabs while a find of the other tab was ready to buy kept the Scan button grey and continuous mode waiting. That purchase is now let go when the tab changes, and scanning goes on.
 - New "Share" button next to the buy button: today's and all-time profit as a short text to copy, for Discord or chat, with the link to the addon. The tooltip points to Menu > Export for the website for a share image.
+- Fixed (Market Flips & scanning): item checks no longer pass ItemKey tables into price history (existing bad keys are scrubbed on load); commodity quotes now enforce `minDiscountPct`, `minPercent` and `minSlot`; scanning on one tab no longer wipes finds from another tab; browse timeout retries work properly; `MarketHistory` rejects invalid/sub-copper prices and aligns its 14-day window.
+- Fixed (Mail, Selling, Lists, Tooltips, Export, Sales): mail collection strictly skips C.O.D. and non-purchase mails, counts only general bag slots (avoiding loops with a reagent bag) and confirms receipt before decrementing DE tracking; bulk vendor sales no longer drop delayed batches from the ledger; Shift-click into the Ignore List works even before opening the Watchlist; item tooltips guard forbidden tooltips and skip work when disabled; JSON export no longer overflows 32-bit integers on large gold totals; auction sales deduplication handles identical batch mails reliably.
+- Lower CPU, memory and idle overhead: full scans compute quantiles in a single sort with zero-alloc flip filtering and batched saves; scrolling and scan progress avoid full UI rebuilds; `GLOBAL_MOUSE_DOWN`, disenchant tracking and AH events are only active when needed; stale `prices`, `lows` and `hot` entries are pruned on login; shared settings window updated to BencepoUI 5.
 
 ## 1.1.0
 
