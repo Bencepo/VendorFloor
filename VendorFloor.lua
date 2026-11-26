@@ -461,7 +461,8 @@ function ns.ReadyCue(enabled)
 	ns.cueReady, ns.cueVisible = enabled and true or false, vis
 	if not enabled or was or not vis or not wasVis or not db.readySound then return end
 	if GetTime() - (ns.cueClick or 0) < 2 then return end
-	PlaySound(SOUNDKIT and SOUNDKIT.UI_BNET_TOAST or 18019)
+	-- the ready-check tone on the Master channel: heard even with game sounds turned down
+	PlaySound(SOUNDKIT and SOUNDKIT.READY_CHECK or 8960, "Master")
 end
 
 -- Stackable goods sell at a fixed price per unit; single items can be bid-only.

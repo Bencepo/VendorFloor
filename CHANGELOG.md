@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- The ready sound (Check or Buy clickable) is louder and clearer: the ready-check tone on the Master channel, so it is heard even with game sounds turned down.
 - Fixed: switching tabs while a find of the other tab was ready to buy kept the Scan button grey and continuous mode waiting. That purchase is now let go when the tab changes, and scanning goes on.
 - New "Share" button next to the buy button: today's and all-time profit as a short text to copy, for Discord or chat, with the link to the addon. The tooltip points to Menu > Export for the website for a share image.
 
