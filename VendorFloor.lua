@@ -44,6 +44,7 @@ local defaults = {
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
 	minProfitSilver = 1,  -- the same in silver, for the slider in the settings
 	sound = true,         -- sound on a new find
+	introSeen = false,    -- the first-steps panel was closed once
 	readySound = true,    -- short sound each time the action button (Check, Buy, Get quote) becomes clickable
 	loop = false,         -- continuous mode: scan again after each round
 	interval = 20,        -- seconds between two rounds
@@ -3010,6 +3011,7 @@ local function BuildUI()
 		{ L["Watchlist"], function() if ns.ToggleWishlist then ns.ToggleWishlist() end end },
 		{ L["Ignore list"], function() if ns.ToggleIgnoreList then ns.ToggleIgnoreList() end end },
 		{ L["Purchase log"], function() if ns.ShowCopy then ns.ShowCopy(L["VendorFloor: purchase log"], ns.Diagnose(buy.deal)) end end },
+		{ L["How it works"], function() if ns.ShowIntro then ns.ShowIntro(true) end end },
 		{ L["Settings"], function() ns.ToggleSettings() end },
 	}
 	for i, e in ipairs(entries) do
@@ -3212,6 +3214,8 @@ local function BuildUI()
 	ns.blizzardSkin = false
 	f:Hide()
 	ui = f
+	ns.ui = f
+	f:HookScript("OnShow", function() if ns.ShowIntro then ns.ShowIntro() end end)
 end
 
 -- A simple text window (statistics, your disenchants, your auctions).

@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0
+
+- First steps: the first time the VendorFloor tab opens, a short panel shows the way from scan to sale in three steps (Scan, Check, Buy). "Got it" closes it for good; Menu > How it works shows it again.
+
 ## 1.0.9
 
 - New: a short sound each time the Check or Buy button becomes clickable, so you no longer wait for the chat summary. It stays quiet right after your own click or a tab change. On by default, switch: Settings > Alerts > "Sound when ready to click" (thanks kanegasi, #27).
