@@ -10,6 +10,7 @@
 
 - **Vendor finds.** Auctions below what a merchant pays. Buy, collect from the mail and sell, each with one button.
 - **Disenchant finds.** Green and blue gear below its disenchant value, from Forever's tables and your own results.
+- **Market Flips.** Auctions far below their usual price (median of up to 14 days of price history, 3 days minimum), with the net profit after the 5% auction house cut.
 - **Disenchant basket.** Enchanters disenchant the bought items one click or one key at a time.
 - **Crafting profits.** Which of your recipes make a profit right now, reagents from the cheapest source.
 - **Realistic values.** Materials count at the cheapest listings and at what your auctions really sold for.

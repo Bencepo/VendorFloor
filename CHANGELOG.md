@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- New tab "Market Flips": auctions far below their usual price, to buy and post again on the auction house. The usual price (market value) is the median of up to 14 days of VendorFloor's own price history (one value per day, other players' auctions only); the profit shown is net, after the 5% auction house cut. An item needs at least 3 days and 3 price readings before it can be a flip; until then the empty tab says how many days of history there are. Full scans, scans and checks all add to the history, kept for 21 days. The prices VendorFloor already saw before this version start the history, so flips can show from the first day.
+- Settings > Market Flips: minimum discount below the market value (default 30%), minimum net profit per unit (default 50 silver), the market value in item tooltips (with "Values in item tooltips") and "Reset flip history".
+- Flip purchases are collected from the mail like the others but never offered to a merchant by "Sell". As always, nothing is bought on its own: every purchase is your click or key.
 - The ready sound (Check or Buy clickable) is louder and clearer: the ready-check tone on the Master channel, so it is heard even with game sounds turned down.
 - Fixed: switching tabs while a find of the other tab was ready to buy kept the Scan button grey and continuous mode waiting. That purchase is now let go when the tab changes, and scanning goes on.
 - New "Share" button next to the buy button: today's and all-time profit as a short text to copy, for Discord or chat, with the link to the addon. The tooltip points to Menu > Export for the website for a share image.

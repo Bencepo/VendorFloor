@@ -34,13 +34,13 @@ local FULL_PER_TICK = 400      -- auctions read per tick (ten ticks a second)
 local MARKET_DAYS = 14         -- days of price history kept per item (one value per day)
 local AH_CUT = 0.95            -- what a sale on the auction house brings after the 5% cut
 local MAX_CHECKS = 150         -- checks per round at most
-local TABS = { "vendor", "de", "craft", "wish" }
+local TABS = { "vendor", "de", "flips", "craft", "wish" }
 
 local defaults = {
 	minPercent = 0,       -- minimum profit in percent of the price (0: off)
 	minSlot = 0,          -- minimum profit per auction, i.e. per bag slot, in copper (0: off)
 	flash = true,         -- flash the taskbar icon on new finds while the game is in the background
-	tab = "vendor",       -- the tab shown: vendor, de (disenchant) or craft
+	tab = "vendor",       -- the tab shown: vendor, de (disenchant), flips (Market Flips), craft or wish
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
 	minProfitSilver = 1,  -- the same in silver, for the slider in the settings
 	sound = true,         -- sound on a new find
@@ -81,6 +81,10 @@ local StartScan, StopScan, Verify, ResetBuy, Refresh, ResultsReady, ReadResults,
 local function Shown(d)
 	if d.mode == "wish" then return true end -- watchlist: your own price limit, no profit filter
 	if d.mode == "de" and ns.CanDisenchant and not ns.CanDisenchant(d.id) then return false end
+	if d.mode == "flips" then -- Market Flips: discount and net profit after the cut (Market settings)
+		local r = ns.Flip and ns.Flip(d.pk or d.key, d.price)
+		return r and r.qualifying or false
+	end
 	if not (db and ns.Worth and d.price and d.vendor) or d.price <= 0 then return true end
 	return ns.Worth(d.vendor, d.price)
 end
@@ -226,6 +230,14 @@ local function GroupKey(key, mode)
 	return DealKey(key, mode)
 end
 
+-- Market Flips (MarketHistory.lua): the flip check of a price key (or auction key) at a unit
+-- price, or nil without history. Its fields: qualifying, marketValue, netValue, netProfit, ...
+function ns.Flip(key, unit)
+	if not (ns.Market and db and key and type(unit) == "number") then return nil end
+	if type(key) == "table" then key = DealKey(key) end
+	return ns.Market:EvaluateFlip(db, key, unit)
+end
+
 local function AddVariant(d, key, price)
 	d.variants = d.variants or {}
 	local dk = DealKey(key)
@@ -316,6 +328,10 @@ ns.Worth = Worth
 -- Worth it for this find: watchlist finds only need to stay within your price limit.
 function ns.Fits(d, target, unit, count)
 	if d and d.mode == "wish" then return unit >= 1 and unit <= target end
+	if d and d.mode == "flips" then
+		local r = ns.Flip(d.pk or d.key, unit)
+		return r and r.qualifying or false
+	end
 	return Worth(target, unit, count)
 end
 
@@ -388,7 +404,7 @@ local function HotEntry(itemID, key, mode)
 end
 
 function ns.LearnBuy(itemID, key, cost, value, mode)
-	if not itemID or mode == "wish" then return end
+	if not itemID or mode == "wish" or mode == "flips" then return end -- quick rounds cannot check flips
 	local h = HotEntry(itemID, key, mode)
 	h.profit, h.buys = h.profit + max((value or 0) - (cost or 0), 0), h.buys + 1
 end
@@ -397,7 +413,7 @@ end
 -- gone again within two minutes (someone else bought it), is where the big profits are.
 -- kind "found": a new find; "gone": a find vanished without your purchase.
 function ns.LearnFind(d, kind)
-	if not (d and d.id) or d.mode == "wish" then return end
+	if not (d and d.id) or d.mode == "wish" or d.mode == "flips" then return end
 	local h = HotEntry(d.id, d.key, d.mode or "vendor")
 	if kind == "found" then
 		h.finds = (h.finds or 0) + 1
@@ -477,6 +493,7 @@ end
 local function DeText(d, text)
 	if d and d.mode == "de" then return (text:gsub("vendor pays %%s", "disenchanting brings about %%s")) end
 	if d and d.mode == "wish" then return (text:gsub("vendor pays %%s", "your limit %%s")) end
+	if d and d.mode == "flips" then return (text:gsub("vendor pays %%s", "sells for about %%s after the cut")) end
 	return text
 end
 
@@ -571,6 +588,8 @@ local function Evaluate(result)
 		local want = db.wishlist and db.wishlist[id]
 		if want and price <= want.max then AddCandidate(result, "wish", want.max, id, name, link, icon) end
 		if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
+		local flip = ns.Flip(key, price)
+		if flip and flip.qualifying then AddCandidate(result, "flips", flip.netValue, id, name, link, icon) end
 		return
 	end
 	if ns.DisenchantValue then
@@ -700,7 +719,7 @@ local function StartQuick()
 	local list, seen = {}, {}
 	for itemID, h in pairs(db.hot or {}) do
 		local score = ns.HotScore(h)
-		if score > 0 and not IsIgnored(itemID) and (h.mode or "vendor") ~= "craft" then
+		if score > 0 and not IsIgnored(itemID) and h.mode ~= "craft" and h.mode ~= "flips" then
 			seen[itemID] = true
 			if IsGear(itemID) then
 				for _, ks in ipairs(h.keys or {}) do
@@ -761,7 +780,7 @@ NextRound = function()
 		if not StartCraftScan() then scan.nextAt = GetTime() + db.interval end
 	elseif db.tab == "wish" then
 		if not ns.StartWish() then scan.nextAt = GetTime() + db.interval end
-	elseif db.tab == "de" then
+	elseif db.tab == "de" or db.tab == "flips" then
 		StartScan()
 	elseif scan.rounds % 3 ~= 0 and StartQuick() then
 		return
@@ -771,11 +790,11 @@ NextRound = function()
 end
 
 local function RoundDone()
-	local v, e, w = newFinds.vendor or 0, newFinds.de or 0, newFinds.wish or 0
+	local v, e, w, fl = newFinds.vendor or 0, newFinds.de or 0, newFinds.wish or 0, newFinds.flips or 0
 	wipe(newFinds)
-	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d."]:format(scan.seen, v, e))
-	if v + e > 0 then
-		Print(L["New finds: vendor %d, disenchant %d."]:format(v, e))
+	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d, flips %d."]:format(scan.seen, v, e, fl))
+	if v + e + fl > 0 then
+		Print(L["New finds: vendor %d, disenchant %d, flips %d."]:format(v, e, fl))
 		Alert()
 	end
 	if w > 0 then
@@ -1422,6 +1441,7 @@ function ns.RecordListing(pk, a)
 	if not med then return end
 	StorePrice(pk, med)
 	StoreLow(pk, ListingLow(a))
+	if ns.Market then ns.Market:RecordListings(db, pk, a) end
 	wipe(matCache) -- disenchant values follow the new price
 end
 
@@ -1786,9 +1806,10 @@ local function FinishFull(failed)
 			StorePrice(pk, med)
 			StoreLow(pk, ListingLow(it.a))
 		end
+		if ns.Market then ns.Market:RecordListings(db, pk, it.a) end
 	end
 	-- 2. finds per tab
-	local found, counts = {}, { vendor = 0, de = 0, wish = 0 }
+	local found, counts = {}, { vendor = 0, de = 0, wish = 0, flips = 0 }
 	local function add(mode, pk, it, target, unit, count)
 		local k = GroupKey(it.key, mode)
 		local g = found[k]
@@ -1809,6 +1830,9 @@ local function FinishFull(failed)
 	end
 	for pk, it in pairs(full.items) do
 		local de = DisenchantValue(it.link or it.id, full.items)
+		-- Market Flips: the item's history is looked up once, each auction checked against it
+		local stats = ns.Market and ns.Market:GetStats(db, pk)
+		if not (stats and stats.ready) then stats = nil end
 		for _, x in ipairs(it.a) do
 			local unit, count, own = x[1], x[2], x[3]
 			if not own then
@@ -1816,6 +1840,8 @@ local function FinishFull(failed)
 				if de and Worth(de, unit, count) then add("de", pk, it, de, unit, count) end
 				local want = db.wishlist and db.wishlist[it.id]
 				if want and unit <= want.max then add("wish", pk, it, want.max, unit, count) end
+				local flip = stats and ns.Market:JudgeFlip(db, stats, unit)
+				if flip and flip.qualifying then add("flips", pk, it, flip.netValue, unit, count) end
 			end
 		end
 	end
@@ -1846,10 +1872,10 @@ local function FinishFull(failed)
 	-- kept for the next visit: until the next full scan is allowed the finds come from here
 	SortDeals()
 	SaveFinds()
-	SetStatus(L["Full scan done: %d auctions. Vendor %d, disenchant %d finds."]:format(full.count or 0,
-		counts.vendor, counts.de))
+	SetStatus(L["Full scan done: %d auctions. Vendor %d, disenchant %d, flips %d finds."]:format(full.count or 0,
+		counts.vendor, counts.de, counts.flips))
 	if new > 0 then
-		Print(L["%d new finds (vendor %d, disenchant %d)."]:format(new, counts.vendor, counts.de))
+		Print(L["%d new finds (vendor %d, disenchant %d, flips %d)."]:format(new, counts.vendor, counts.de, counts.flips))
 		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + 5 end
@@ -1931,6 +1957,7 @@ local function ReadCraftPrice(id)
 		local pk = PlainKey(id)
 		StorePrice(pk, med)
 		StoreLow(pk, ListingLow(a))
+		if ns.Market then ns.Market:RecordListings(db, pk, a) end
 		wipe(matCache)
 		craft.found = craft.found + 1
 	end
@@ -2164,9 +2191,19 @@ end
 local TAB_HINT = {
 	wish = "Items you want, at or below your price limit. Add them with \"Edit watchlist\" (shift-click an item into the field). \"Scan\" searches each watched item; normal and full scans fill this list too.",
 	vendor = "Auctions below what a merchant pays. Scan, or a full scan every 15 minutes.",
+	flips = "Auctions far below their usual price, to buy and post again. The usual price (market value) is the median of up to 14 days of VendorFloor's own price history; net profit counts the 5% auction house cut. Minimum discount and net profit: Settings > Market Flips. Full scans build the history fastest.",
 	de = "Green and blue weapons and armor below what disenchanting them brings (WoW Forever disenchant tables and your own results, materials at the cheapest listings). \"Scan\" on this tab reads only green and blue weapons and armor; full scans fill it too. Needs Enchanting (any skill: Forever lets you disenchant everything from skill 1).",
 	craft = "Your learned recipes that make a profit: product (auction house after the cut, or merchant) minus reagents (auction house or merchant, whichever is cheaper). Open each profession window once so VendorFloor can read your recipes. \"Prices\" looks up the current price of each reagent and product; full scans and merchants you visit add to it.",
 }
+
+-- The empty Market Flips tab while the price history is shorter than the 3 days a flip needs.
+function ns.FlipHint()
+	if not (db and db.tab == "flips" and ns.Market) then return nil end
+	local days, need = ns.Market:HistoryDays(db), ns.Market.MIN_DAYS
+	if days >= need then return nil end
+	return L["Market Flips need at least %d days of price history; VendorFloor has %d so far. Each item needs %d price readings too. Run a full scan once a day (or scan): flips appear from day %d on."]:format(
+		need, days, ns.Market.MIN_SCANS, need)
+end
 
 -- Result list columns (built in BuildUI): price, value, profit and quantity per row.
 function ns.RowColumns(row, price, value, profit, qty)
@@ -2179,6 +2216,7 @@ end
 ns.HEADERS = {
 	vendor = { L["Price"], L["Vendor price"], L["Profit"], L["Qty"] },
 	de = { L["Price"], L["Disenchant value"], L["Profit"], L["Qty"] },
+	flips = { L["Price"], L["After cut"], L["Net profit"], L["Qty"] },
 	craft = { L["Reagents"], L["Sells for"], L["Profit"], L["Via"] },
 	wish = { L["Price"], L["Your limit"], L["Below limit"], L["Qty"] },
 }
@@ -2297,14 +2335,14 @@ Refresh = function()
 	end
 	ui.empty:SetShown(#view == 0)
 	ui.empty:SetText(full.active and L["Full scan running: every auction is read at once. The first finds appear in about a minute."]
-		or L[TAB_HINT[db.tab] or TAB_HINT.vendor])
+		or ns.FlipHint and ns.FlipHint() or L[TAB_HINT[db.tab] or TAB_HINT.vendor])
 	for i = 1, ROWS do
 		local row, d = ui.rows[i], view[i + offset]
 		row.deal, row.craft = d, nil
 		if d then
 			row.icon:SetTexture(d.icon)
 			row.name:SetText(d.link or d.name or ("item:" .. d.id))
-			ns.RowColumns(row, Money(d.price), (d.mode == "de" and "~" or "") .. Money(d.vendor),
+			ns.RowColumns(row, Money(d.price), ((d.mode == "de" or d.mode == "flips") and "~" or "") .. Money(d.vendor),
 				"|cff6cc58c+" .. Money(d.profit or 0) .. "|r", d.count and (d.count .. "×") or "?")
 			row.mark:SetShown(d == selected)
 			row:Show()
@@ -2886,7 +2924,7 @@ local function BuildUI()
 
 	-- tabs: one list per kind of find, never mixed
 	f.tabs = {}
-	local labels = { vendor = L["Vendor"], de = L["Disenchant"], craft = L["Crafting"], wish = L["Watchlist"] }
+	local labels = { vendor = L["Vendor"], de = L["Disenchant"], flips = L["Market Flips"], craft = L["Crafting"], wish = L["Watchlist"] }
 	local nav = C_Texture and C_Texture.GetAtlasInfo and C_Texture.GetAtlasInfo("auctionhouse-nav-button")
 	-- a category button like the auction house's list on the left (its atlas when the client has it)
 	local function NavButton()
@@ -3159,6 +3197,14 @@ local function BuildUI()
 				local n = ns.DeLearnedCount(d.link or d.id)
 				GameTooltip:AddLine(n and L["Based on your own %d disenchants of this item."]:format(n)
 					or L["Based on the general disenchant table (your own results count from 3 disenchants)."], 0.7, 0.7, 0.7, true)
+			elseif d.mode == "flips" then
+				local r = ns.Flip(d.pk or d.key, d.price)
+				if r and r.ready then
+					GameTooltip:AddLine(L["Market value %s, %d%% below it. Sells for about %s after the 5%% cut."]:format(
+						Money(r.marketValue), floor(r.discountPct + 0.5), Money(r.netValue)), 0.88, 0.66, 0.23, true)
+					GameTooltip:AddLine(L["Price history: %d days, %d readings (confidence: %s)."]:format(r.days, r.scans,
+						L[r.confidence or "Low"]), 0.7, 0.7, 0.7, true)
+				end
 			end
 			if d.count and (d.mode or "vendor") ~= "vendor" then
 				GameTooltip:AddLine(L["Below that: %d×, total profit %s"]:format(d.count, Money(d.profit or 0)), 0.25, 1, 0.25)
@@ -3345,11 +3391,20 @@ StaticPopupDialogs["VENDORFLOOR_FORGET"] = {
 		Print(L["Tracked purchases cleared."])
 	end,
 }
+StaticPopupDialogs["VENDORFLOOR_RESET_FLIPS"] = {
+	text = L["Clear the Market Flips price history? Flips need 3 new days of prices afterwards."],
+	button1 = YES, button2 = NO, timeout = 0, whileDead = true, hideOnEscape = true, preferredIndex = 3,
+	OnAccept = function()
+		if ns.Market then ns.Market:Reset(db) end
+		Print(L["Market Flips price history cleared."])
+		ns.RefreshWindow()
+	end,
+}
 local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 434, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 530, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -3420,7 +3475,29 @@ local function BuildSettings()
 		L["Clears the purchases VendorFloor still counts as to sell, e.g. items you kept or sold elsewhere. Your ledger stays."])
 	forget:SetPoint("TOPLEFT", 270, -300)
 
-	w:Text(16, -374, L["Finer amounts and the other filters are set in the auction house window."], 480)
+	-- Market Flips: auctions far below their market value (MarketHistory.lua)
+	local mcfg = ns.Market and ns.Market:EnsureDB(db).marketSettings
+	if mcfg then
+		w:Header(16, -366, L["Market Flips"])
+		w:Slider(16, -390, L["Minimum discount below market value"], 10, 90, 5, function() return mcfg.minDiscountPct end,
+			function(v)
+				mcfg.minDiscountPct = v
+				ns.RefreshWindow()
+			end, L["How far below its market value (median of up to 14 days) an auction must be to count as a flip."], 190, percent)
+		w:Slider(270, -390, L["Minimum net profit per unit (silver)"], 0, 2000, 10,
+			function() return floor((mcfg.minNetProfit or 0) / 100) end,
+			function(v)
+				mcfg.minNetProfit = v * 100
+				ns.RefreshWindow()
+			end, L["What one unit must bring after the 5% auction house cut, minus its price."], 190, silver)
+		w:Check(16, -440, L["Market value in item tooltips"], L["Shows the market value and how many days and readings it rests on. Needs \"Values in item tooltips\"."],
+			function() return mcfg.showTooltip end, function(v) mcfg.showTooltip = v and true or false end)
+		local resetFlips = w:Button(L["Reset flip history"], 200, function() StaticPopup_Show("VENDORFLOOR_RESET_FLIPS") end,
+			L["Clears VendorFloor's Market Flips price history. Your other prices and the ledger stay."])
+		resetFlips:SetPoint("TOPLEFT", 270, -440)
+	end
+
+	w:Text(16, -480, L["Finer amounts and the other filters are set in the auction house window. VendorFloor never buys on its own: every purchase is your click or key."], 480)
 end
 
 function ns.ToggleSettings()
@@ -3466,7 +3543,17 @@ function handlers.ADDON_LOADED(name)
 		for itemID, n in pairs(db.debought or {}) do db.deBasket[itemID] = n end
 	end
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
-	if db.tab ~= "vendor" and db.tab ~= "de" and db.tab ~= "craft" and db.tab ~= "wish" then db.tab = "vendor" end
+	local known = false
+	for _, mode in ipairs(TABS) do known = known or db.tab == mode end
+	if not known then db.tab = "vendor" end
+	if ns.Market then
+		local ok, err = pcall(function()
+			ns.Market:EnsureDB(db)
+			ns.Market:SeedFromPrices(db)
+			ns.Market:Prune(db)
+		end)
+		if not ok then Print(tostring(err)) end
+	end
 	ns.db = db
 	local ok, err = pcall(RegisterSettings)
 	if not ok then Print(tostring(err)) end
@@ -3480,7 +3567,7 @@ local function RestoreFinds()
 	local age = time() - last.at
 	local n = 0
 	for _, g in ipairs(last.list) do
-		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or g.mode == "de") then
+		if not deals[g.k] and not IsIgnored(g.id) and (g.mode == "vendor" or g.mode == "de" or g.mode == "flips") then
 			local d = {}
 			for field, value in pairs(g) do d[field] = value end
 			d.fullAt, d.stale = GetTime() - age, false
@@ -3624,7 +3711,9 @@ end
 function handlers.COMMODITY_PRICE_UPDATED(_, total)
 	if buy.state ~= "quoting" then return end
 	local d = buy.deal
-	if total and total <= buy.qty * (d.vendor - (d.mode == "wish" and 0 or db.minProfit)) then
+	local margin = d.mode == "wish" and 0 or db.minProfit
+	if d.mode == "flips" and ns.Market then margin = ns.Market:EnsureDB(db).marketSettings.minNetProfit end
+	if total and total <= buy.qty * (d.vendor - margin) then
 		buy.state, buy.total, buy.t = "quote_ok", total, GetTime()
 		SetStatus(L[DeText(d, "Quote: %d× for %s, vendor pays %s.")]:format(buy.qty, Money(total), Money(buy.qty * d.vendor)))
 		Refresh()
@@ -3818,5 +3907,6 @@ ns.test = {
 	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
 	IsDisenchantCast = IsDisenchantCast, StartFull = function() StartFull() end, NextRound = function() NextRound() end,
 	FullTick = FullTick, Full = function() return full end, Scan = function() return scan end, handlers = handlers,
-	SetUI = function(u) ui = u end,
+	SetUI = function(u) ui = u end, FinishFull = function(failed) FinishFull(failed) end,
+	Deals = function() return order end, Fits = function(...) return ns.Fits(...) end,
 }

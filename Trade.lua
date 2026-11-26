@@ -110,6 +110,18 @@ function ns.RecordBuy(itemID, qty, cost, value, mode)
 		RecordOther(itemID, qty, cost)
 		return
 	end
+	if mode == "flips" then
+		-- Market Flips are bought to post again on the auction house: collected from the mail
+		-- like the others, but never offered to a merchant (db.bought is what "Sell" sells)
+		db.debought = db.debought or {}
+		db.debought[itemID] = (db.debought[itemID] or 0) + qty
+		db.fliptotal = db.fliptotal or { buys = 0, spent = 0, value = 0 }
+		Add(db.fliptotal, "buys", 1)
+		Add(db.fliptotal, "spent", cost or 0)
+		Add(db.fliptotal, "value", value or 0)
+		Changed()
+		return
+	end
 	if mode == "wish" then
 		-- watchlist purchases are yours to keep: collected with the others, never sold
 		db.debought = db.debought or {}

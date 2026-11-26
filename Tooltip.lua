@@ -2,8 +2,9 @@
 -- Copyright (c) 2026 Bencepo. All rights reserved. See LICENSE.
 --
 -- Optional (settings, off by default): VendorFloor's values in item tooltips. The
--- disenchant value of green and blue gear, the latest low auction price VendorFloor saw
--- and your watchlist limit. The vendor price is left out: the game and many addons show it.
+-- disenchant value of green and blue gear, the latest low auction price VendorFloor saw,
+-- the Market Flips market value and your watchlist limit. The vendor price is left out:
+-- the game and many addons show it.
 
 local _, ns = ...
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
@@ -24,6 +25,15 @@ local function AddLines(tip, link)
 	if ns.PlainKey and ns.LowValue then
 		local ok, low = pcall(function() return ns.LowValue(ns.PlainKey(id)) end)
 		if ok and low then lines[#lines + 1] = { L["Auction house (low)"], ns.Money(low) } end
+	end
+	-- Market Flips: the market value once its history is ready (3 days, 3 readings)
+	local market = ns.Market
+	if market and ns.PlainKey and db.marketSettings and db.marketSettings.showTooltip then
+		local ok, st = pcall(function() return market:GetStats(db, ns.PlainKey(id)) end)
+		if ok and st and st.ready then
+			lines[#lines + 1] = { L["Market value"], ns.Money(st.marketValue) }
+			lines[#lines + 1] = { L["Price history"], L["%d days, %d readings"]:format(st.days, st.scans) }
+		end
 	end
 	local want = db.wishlist and db.wishlist[id]
 	if want then lines[#lines + 1] = { L["Watchlist limit"], ns.Money(want.max) } end
