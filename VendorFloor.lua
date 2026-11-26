@@ -44,6 +44,7 @@ local defaults = {
 	minProfit = 100,      -- minimum profit per unit in copper (distance to the vendor price): 1 silver
 	minProfitSilver = 1,  -- the same in silver, for the slider in the settings
 	sound = true,         -- sound on a new find
+	readySound = true,    -- short sound each time the action button (Check, Buy, Get quote) becomes clickable
 	loop = false,         -- continuous mode: scan again after each round
 	interval = 20,        -- seconds between two rounds
 	spendLimit = 0,       -- gold that may be spent per session (0: no limit)
@@ -448,6 +449,18 @@ local function Alert()
 	lastAlert = GetTime()
 	if db.sound then PlaySound(SOUNDKIT and SOUNDKIT.RAID_WARNING or 8959) end
 	if db.flash and FlashClientIcon then FlashClientIcon() end
+end
+
+-- Short sound the moment the action button becomes clickable (Check, Buy, Get quote).
+-- Quiet right after the player's own click or a tab change (they are looking at the
+-- button already) and when the window has just opened.
+function ns.ReadyCue(enabled)
+	local vis = ui and ui:IsVisible() and true or false
+	local was, wasVis = ns.cueReady, ns.cueVisible
+	ns.cueReady, ns.cueVisible = enabled and true or false, vis
+	if not enabled or was or not vis or not wasVis or not db.readySound then return end
+	if GetTime() - (ns.cueClick or 0) < 2 then return end
+	PlaySound(SOUNDKIT and SOUNDKIT.UI_BNET_TOAST or 18019)
 end
 
 -- Stackable goods sell at a fixed price per unit; single items can be bid-only.
@@ -1136,6 +1149,7 @@ end
 -- Stackable goods need one press more: quote, then confirm.
 function VendorFloor_BuyNext()
 	if not ahOpen then return end
+	ns.cueClick = GetTime()
 	local state = buy.state
 	if state == "item_ready" or state == "commodity_ready" or state == "quote_ok" then
 		Action()
@@ -2258,6 +2272,7 @@ local function RefreshCraft()
 	if miss > 0 and not craft.active then SetStatus(L["%d recipes have no prices yet (reagent or product never seen in a full scan)."]:format(miss)) end
 	ui.action:SetText(L["Read recipes: open a profession window"])
 	ui.action:SetEnabled(false)
+	ns.cueReady = false
 	ui.loop:SetChecked(db.loop)
 end
 
@@ -2365,6 +2380,7 @@ Refresh = function()
 	end
 	ui.action:SetText(text)
 	ui.action:SetEnabled(enabled)
+	ns.ReadyCue(enabled)
 end
 
 -- Scan button: "Stop" while a round runs, while finds are checked and while continuous
@@ -2898,6 +2914,7 @@ local function BuildUI()
 		tab:SetPoint("TOPLEFT", 6, -52 - (i - 1) * 24)
 		tab:SetScript("OnClick", function()
 			db.tab, offset = mode, 0
+			ns.cueClick = GetTime()
 			if selected and (selected.mode or "vendor") ~= mode then selected = nil end
 			Refresh()
 		end)
@@ -3302,7 +3319,7 @@ local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 410, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 434, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -3314,16 +3331,18 @@ local function BuildSettings()
 	w:Header(X, -48, L["Alerts"])
 	w:Check(X, -72, L["Alert sound"], L["Play a sound when a new find appears."],
 		function() return db.sound end, function(v) db.sound = v end)
-	w:Check(X, -96, L["Flash the taskbar"], L["Flash the game's taskbar icon on new finds while the game is in the background."],
+	w:Check(X, -96, L["Sound when ready to click"], L["Short sound each time the Check or Buy button becomes clickable, so you can react at once. Quiet right after your own click."],
+		function() return db.readySound end, function(v) db.readySound = v end)
+	w:Check(X, -120, L["Flash the taskbar"], L["Flash the game's taskbar icon on new finds while the game is in the background."],
 		function() return db.flash end, function(v) db.flash = v end)
-	w:Header(X, -132, L["Scanning"])
-	w:Check(X, -156, L["Continuous mode"], L["Scan again automatically after each round."],
+	w:Header(X, -156, L["Scanning"])
+	w:Check(X, -180, L["Continuous mode"], L["Scan again automatically after each round."],
 		function() return db.loop end, function(v)
 			db.loop = v
 			if not v then scan.nextAt = nil end
 			if ui then ui.loop:SetChecked(v and true or false) end
 		end)
-	w:Slider(X, -186, L["Pause between rounds (seconds)"], 1, 120, 1, function() return db.interval end,
+	w:Slider(X, -210, L["Pause between rounds (seconds)"], 1, 120, 1, function() return db.interval end,
 		function(v) db.interval = v end, L["How long continuous mode waits before the next round."], 190,
 		function(v) return v .. " s" end)
 
@@ -3355,11 +3374,11 @@ local function BuildSettings()
 		function() return db.tooltip end, function(v) db.tooltip = v and true or false end)
 
 	X = 16
-	w:Header(X, -232, L["Limits"])
-	w:Slider(X, -256, L["Spending limit per session (gold)"], 0, 1000, 10, function() return db.spendLimit or 0 end,
+	w:Header(X, -256, L["Limits"])
+	w:Slider(X, -280, L["Spending limit per session (gold)"], 0, 1000, 10, function() return db.spendLimit or 0 end,
 		function(v) db.spendLimit = v end, L["VendorFloor stops buying once this session's purchases reach it. 0 turns it off."], 190,
 		function(v) return v > 0 and (v .. " g") or L["off"] end)
-	w:Slider(X, -296, L["Keep bag slots free"], 0, 40, 1, function() return db.keepSlots or 0 end,
+	w:Slider(X, -320, L["Keep bag slots free"], 0, 40, 1, function() return db.keepSlots or 0 end,
 		function(v) db.keepSlots = v end, L["Stops buying when fewer bag slots would stay free. Purchases still in the mail count until you visit the mailbox. 0 turns it off."], 190,
 		function(v) return v > 0 and tostring(v) or L["off"] end)
 
@@ -3371,7 +3390,7 @@ local function BuildSettings()
 		L["Clears the purchases VendorFloor still counts as to sell, e.g. items you kept or sold elsewhere. Your ledger stays."])
 	forget:SetPoint("TOPLEFT", 270, -300)
 
-	w:Text(16, -350, L["Finer amounts and the other filters are set in the auction house window."], 480)
+	w:Text(16, -374, L["Finer amounts and the other filters are set in the auction house window."], 480)
 end
 
 function ns.ToggleSettings()
@@ -3769,4 +3788,5 @@ ns.test = {
 	Shown = Shown, ItemID = ItemID, AddLearned = AddLearned, ClearCache = function() wipe(matCache) end,
 	IsDisenchantCast = IsDisenchantCast, StartFull = function() StartFull() end, NextRound = function() NextRound() end,
 	FullTick = FullTick, Full = function() return full end, Scan = function() return scan end, handlers = handlers,
+	SetUI = function(u) ui = u end,
 }

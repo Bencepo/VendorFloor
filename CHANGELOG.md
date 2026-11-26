@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.9
+
+- New: a short sound each time the Check or Buy button becomes clickable, so you no longer wait for the chat summary. It stays quiet right after your own click or a tab change. On by default, switch: Settings > Alerts > "Sound when ready to click" (thanks kanegasi, #27).
+
 ## 1.0.8
 
 - The shared settings window (BencepoUI 4): the hint in its title row ("drag to move …") no longer runs into the title and version; it is shortened or left out when there is no room.

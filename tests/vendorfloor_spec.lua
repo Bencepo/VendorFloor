@@ -18,6 +18,38 @@ describe("VendorFloor", function()
 		env.items[11288] = { name = "Greater Magic Wand", quality = 2, ilvl = 23, minLevel = 18, classID = 2 }
 	end)
 
+	describe("ready sound", function()
+		it("plays when the action button becomes clickable, not right after a click", function()
+			local played = 0
+			env.PlaySound = function() played = played + 1 end
+			local shown = true
+			T.SetUI({ IsVisible = function() return shown end })
+			env.now = 100
+			ns.ReadyCue(false)
+			ns.ReadyCue(true)
+			assert.equal(1, played)
+			ns.ReadyCue(true) -- still clickable: no repeat
+			assert.equal(1, played)
+			ns.ReadyCue(false)
+			ns.cueClick = env.now -- the player just clicked
+			env.now = env.now + 1
+			ns.ReadyCue(true)
+			assert.equal(1, played)
+			ns.ReadyCue(false)
+			env.now = env.now + 5
+			db.readySound = false
+			ns.ReadyCue(true)
+			assert.equal(1, played)
+			db.readySound = true
+			ns.ReadyCue(false)
+			shown = false
+			ns.ReadyCue(false)
+			shown = true -- window just opened: quiet
+			ns.ReadyCue(true)
+			assert.equal(1, played)
+		end)
+	end)
+
 	describe("watchlist and limits", function()
 		it("a watchlist find only needs to stay within the limit", function()
 			db.minProfit, db.minPercent = 100, 50
