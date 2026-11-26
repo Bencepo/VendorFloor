@@ -848,11 +848,10 @@ local function RoundDone()
 	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d, flips %d."]:format(scan.seen, v, e, fl))
 	if v + e + fl > 0 then
 		Print(L["New finds: vendor %d, disenchant %d, flips %d."]:format(v, e, fl))
-		Alert()
+		if v + e > 0 then Alert() end
 	end
 	if w > 0 then
 		Print(L["Watchlist: %d items within your price limit."]:format(w))
-		Alert()
 	end
 	if db.loop then scan.nextAt = GetTime() + db.interval end
 end
@@ -2021,7 +2020,7 @@ local function FinishFull(failed)
 		end
 	end
 	-- 3. into the lists
-	local now, new = GetTime(), 0
+	local now, new, newAlert = GetTime(), 0, 0
 	for k, g in pairs(found) do
 		g.commodity = IsCommodity(g.key) == true
 		g.fullAt, g.stale = now, false
@@ -2035,6 +2034,7 @@ local function FinishFull(failed)
 		else
 			Confirm(g, true)
 			new = new + 1
+			if g.mode == "vendor" or g.mode == "de" then newAlert = newAlert + 1 end
 		end
 	end
 	-- the full list is complete: what it did not show is gone
@@ -2051,7 +2051,7 @@ local function FinishFull(failed)
 		counts.vendor, counts.de, counts.flips))
 	if new > 0 then
 		Print(L["%d new finds (vendor %d, disenchant %d, flips %d)."]:format(new, counts.vendor, counts.de, counts.flips))
-		Alert()
+		if newAlert > 0 then Alert() end
 	end
 	if db.loop then scan.nextAt = GetTime() + 5 end
 	Refresh()

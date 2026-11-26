@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.0
 
 - New tab "Market Flips": auctions far below their usual price, to buy and post again on the auction house. The usual price (market value) is the median of up to 14 days of VendorFloor's own price history (one value per day, other players' auctions only); the profit shown is net, after the 5% auction house cut. An item needs at least 3 days and 3 price readings before it can be a flip; until then the empty tab says how many days of history there are. Full scans, scans and checks all add to the history, kept for 21 days. The prices VendorFloor already saw before this version start the history, so flips can show from the first day.
 - Settings > Market Flips: minimum discount below the market value (default 30%), minimum net profit per unit (default 50 silver), the market value in item tooltips (with "Values in item tooltips") and "Reset flip history".
@@ -13,6 +13,7 @@
 - Lower CPU, memory and idle overhead: full scans compute quantiles in a single sort with zero-alloc flip filtering and batched saves; scrolling and scan progress avoid full UI rebuilds; `GLOBAL_MOUSE_DOWN`, disenchant tracking and AH events are only active when needed; stale `prices`, `lows` and `hot` entries are pruned on login; shared settings window updated to BencepoUI 5.
 - Faster scans, checks, crafting price lookups and full scans: queries now send immediately when the auction house throttle is ready and flush on `AUCTION_HOUSE_THROTTLED_MESSAGE_SYSTEM_READY` instead of polling every 0.1 s; check rounds pipeline straight from one result to the next without per-page/per-check UI rebuilds; crafting price lookups advance directly on search-result events; full-scan reading and item-data loading now run per frame within a 10 ms frame budget instead of a fixed 400 auctions per 0.1 s tick.
 - Faster mail collection: taking purchases from the mailbox is now event-driven (`MAIL_INBOX_UPDATE` / `MAIL_SUCCESS`) at up to ~20 items/sec instead of a fixed 0.4 s wait between items, skips full inbox rescans while collecting, tracks inbox position in O(N) with early-exit on attachment count, retries a stalled take once and stops immediately on `ERR_INV_FULL`.
+- Alert sound and taskbar flash now only trigger for new vendor or disenchant finds, not for Market Flips or watchlist-only finds.
 
 ## 1.1.0
 

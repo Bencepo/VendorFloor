@@ -505,5 +505,37 @@ describe("VendorFloor", function()
 			assert.falsy(T.Craft().active)
 			assert.equal(120, ns.LowValue(ns.PlainKey(DUST)))
 		end)
+
+		it("only triggers Alert sound/flash for vendor and disenchant finds, not flips or watchlist", function()
+			local alerts = 0
+			env.PlaySound = function() alerts = alerts + 1 end
+			env.FlashClientIcon = function() alerts = alerts + 1 end
+			env.now = 100
+			db.sound, db.flash = true, true
+			env.items[6100] = { name = "Watched Gem", quality = 2, ilvl = 20, minLevel = 1, classID = 7, sell = 10 }
+			local AH = env.C_AuctionHouse
+			AH.IsThrottledMessageSystemReady = function() return true end
+			AH.GetNumItemSearchResults = function() return 1 end
+			AH.GetItemSearchResultInfo = function() return { auctionID = 1, buyoutAmount = 50, quantity = 1 } end
+
+			-- Watchlist-only find should NOT trigger Alert
+			T.handlers.AUCTION_HOUSE_SHOW()
+			db.wishlist = { [6100] = { max = 100 } }
+			assert.is_true(ns.StartWish())
+			T.handlers.ITEM_SEARCH_RESULTS_UPDATED({ itemID = 6100 })
+			assert.equal(0, alerts)
+
+			-- Vendor find SHOULD trigger Alert
+			env.items[6101] = { name = "Cheap Relic", quality = 1, ilvl = 20, minLevel = 1, classID = 0, sell = 500 }
+			AH.HasFullBrowseResults = function() return true end
+			AH.GetBrowseResults = function()
+				return { { itemKey = { itemID = 6101, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }, minPrice = 50, totalQuantity = 1 } }
+			end
+			db.tab, db.minProfit, db.minPercent = "vendor", 10, 0
+			T.StartScan()
+			T.handlers.AUCTION_HOUSE_BROWSE_RESULTS_UPDATED()
+			T.handlers.ITEM_SEARCH_RESULTS_UPDATED({ itemID = 6101 })
+			assert.equal(2, alerts) -- sound + flash
+		end)
 	end)
 end)
