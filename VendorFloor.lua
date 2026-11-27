@@ -2050,7 +2050,8 @@ local function FinishFull(failed)
 	for pk, it in pairs(full.items) do
 		local de = DisenchantValue(it.link or it.id, full.items)
 		-- Market Flips: the item's history is looked up once, each auction checked against it
-		local stats = ns.FlipsOn() and ns.Market and ns.Market:GetStats(db, pk)
+		local stats = nil ---@type table|nil
+		if ns.FlipsOn() and ns.Market then stats = ns.Market:GetStats(db, pk) end
 		if not (stats and stats.ready) then stats = nil end
 		local want = db.wishlist and db.wishlist[it.id]
 		for _, x in ipairs(it.a) do
@@ -2259,12 +2260,13 @@ local function FullTick(now)
 		local i = full.index
 		while i < limit do
 			local ok, itemID = FullRecord(i)
-			if not ok then
+			local pend = full.pend
+			if not ok and itemID and pend then
 				-- waiting auctions are kept by item: the client reports items, not auctions
-				local list = full.pend[itemID]
+				local list = pend[itemID]
 				if not list then
 					list = {}
-					full.pend[itemID] = list
+					pend[itemID] = list
 					full.pendIds[#full.pendIds + 1] = itemID
 					if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
 				end
