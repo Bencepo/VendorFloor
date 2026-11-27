@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1
 
 - New: Settings > Market Flips > "Enable Market Flips" (on by default). Turned off, VendorFloor is the plain vendor and disenchant sniper again: no flip checks while scanning, no price history, no Market Flips tab and no market value in tooltips. The history already kept stays for when it is turned on again. Thanks to maltundra for the suggestion.
 - Faster checks with Market Flips on: vendor, disenchant and watchlist finds are always checked before flips, so flips no longer use up a round's checks first.
