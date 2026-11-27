@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- New: Settings > Market Flips > "Enable Market Flips" (on by default). Turned off, VendorFloor is the plain vendor and disenchant sniper again: no flip checks while scanning, no price history, no Market Flips tab and no market value in tooltips. The history already kept stays for when it is turned on again. Thanks to maltundra for the suggestion.
+- Faster checks with Market Flips on: vendor, disenchant and watchlist finds are always checked before flips, so flips no longer use up a round's checks first.
+- Faster continuous mode: a find checked within the last 90 seconds whose cheapest price and listed amount have not changed is not searched again; a search without an answer gives up after 1.2 instead of 2 seconds; quick rounds pause after two rounds without a find (the whole item list is read instead) and are tried again every 12th round.
+- Faster full scan while item data loads: waiting auctions are kept by item and read as soon as the client reports the item; the last few auctions whose item never loads no longer hold up the scan for 20 seconds.
+- Lower CPU while scanning: the market value of an item is computed once per new price reading instead of for every browse result and window refresh.
 - Settings window: "More from Bencepo" button in the footer links to all Bencepo addons (BencepoUI 6).
 
 ## 1.2.0

@@ -24,6 +24,10 @@ local min = math.min
 local huge = math.huge
 
 local scratchPrices = {}
+-- GetStats per history entry, valid while its day and reading count stay the same: a scan asks
+-- for the same items again and again, the window for every listed flip on each refresh.
+local statsCache = setmetatable({}, { __mode = "k" })
+local NOT_READY = { ready = false, days = 0, scans = 0, neededDays = 3, neededScans = 3 }
 local scratchDays = {}
 
 local function ClearArray(t)
@@ -62,6 +66,7 @@ function Market:EnsureDB(db)
 	if not IsFiniteNumber(cfg.minNetProfit) then cfg.minNetProfit = 5000 end -- 50 silver
 	cfg.retentionDays = ClampRetention(cfg.retentionDays)
 	if cfg.showTooltip == nil then cfg.showTooltip = true end
+	if cfg.enabled == nil then cfg.enabled = true end -- off: no flip checks, no price history, no tab
 	return db
 end
 
@@ -73,6 +78,7 @@ function Market:Reset(db)
 end
 
 function Market:Prune(db, nowTs)
+	wipe(statsCache)
 	local okDB = self:EnsureDB(db)
 	if not okDB then return end
 	local nowDay = self:GetDayIndex(nowTs)
@@ -117,6 +123,7 @@ end
 function Market:RecordObservation(db, itemKey, unitPrice, nowTs)
 	local okDB = self:EnsureDB(db)
 	if not okDB or not itemKey or IsSecret(itemKey) or type(itemKey) == "table" then return end
+	if okDB.marketSettings.enabled == false then return end
 	if not IsValidPrice(unitPrice) then return end
 
 	local key = tostring(itemKey)
@@ -186,11 +193,17 @@ function Market:GetStats(db, itemKey, nowTs)
 	local okDB = self:EnsureDB(db)
 	if not okDB or not itemKey or IsSecret(itemKey) then return nil end
 	local entry = okDB.marketHistory[tostring(itemKey)]
-	if type(entry) ~= "table" or type(entry.days) ~= "table" then
-		return { ready = false, days = 0, scans = 0, neededDays = Market.MIN_DAYS, neededScans = Market.MIN_SCANS }
-	end
+	if type(entry) ~= "table" or type(entry.days) ~= "table" then return NOT_READY end
 
 	local nowDay = self:GetDayIndex(nowTs)
+	local cached = statsCache[entry]
+	if cached and cached.day == nowDay and cached.n == entry.scans then return cached.st end
+	local st = self:ComputeStats(entry, nowDay)
+	statsCache[entry] = { day = nowDay, n = entry.scans, st = st }
+	return st
+end
+
+function Market:ComputeStats(entry, nowDay)
 	local minDay = nowDay - Market.MAX_DAYS
 	ClearArray(scratchPrices)
 	for dayIdx, val in pairs(entry.days) do

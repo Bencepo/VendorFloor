@@ -24,7 +24,7 @@ local ROWS, ROW_HEIGHT = 12, 22  -- rows shown (as many as fit the window, see A
 local SEND_TIMEOUT = 15
 local BUY_SILENT = 5       -- seconds a purchase check waits before it tries the other item key or gives up
 local keyStyle = {}        -- itemID -> "plain" when gear is only found with the plain item key
-local CHECK_TIMEOUT = 2    -- seconds a check waits after send before it tries again later
+local CHECK_TIMEOUT = 1.2  -- seconds a check waits after send before it tries again later
 local CACHE_WAIT = 0.35    -- results the auction house already holds come without an event: read them after this
 local FULL_COOLDOWN = 15 * 60  -- the auction house allows one full scan every 15 minutes
 local FULL_WAIT = 90           -- seconds a full scan waits for the auction house to answer
@@ -88,7 +88,11 @@ ns.CmpDealProfit = function(a, b)
 	return a.k < b.k
 end
 ns.CmpScore = function(x, y) return x.score > y.score end
+-- Vendor, disenchant and watchlist finds are checked before Market Flips: flips have the
+-- larger gap to their target and would otherwise use up the round's checks first.
 ns.CmpQueue = function(a, b)
+	local fa, fb = a.mode == "flips", b.mode == "flips"
+	if fa ~= fb then return fb end
 	if a.commodity ~= b.commodity then return not a.commodity end
 	return (a.vendor - a.price) > (b.vendor - b.price)
 end
@@ -272,14 +276,20 @@ end
 -- Market Flips (MarketHistory.lua): the flip check of a price key (or auction key) at a unit
 -- price, or nil without history. Its fields: qualifying, marketValue, netValue, netProfit, ...
 function ns.Flip(key, unit)
-	if not (ns.Market and db and key and type(unit) == "number") then return nil end
+	if not (ns.Market and db and key and type(unit) == "number") or not ns.FlipsOn() then return nil end
 	if type(key) == "table" then key = DealKey(key) end
 	return ns.Market:EvaluateFlip(db, key, unit)
 end
 
+-- Market Flips switched on (Settings > Market Flips). Off, VendorFloor is the plain vendor
+-- sniper: no flip checks while scanning, no price history, no Market Flips tab.
+function ns.FlipsOn()
+	return not (db and type(db.marketSettings) == "table" and db.marketSettings.enabled == false)
+end
+
 -- Zero-allocation flip check: returns qualifying, netValue, netProfit, discountPct.
 function ns.FlipFast(key, unit)
-	if not (ns.Market and db and key and type(unit) == "number") then return false end
+	if not (ns.Market and db and key and type(unit) == "number") or not ns.FlipsOn() then return false end
 	if type(key) == "table" then key = DealKey(key) end
 	local stats = ns.Market:GetStats(db, key)
 	if not (stats and stats.ready) then return false end
@@ -585,6 +595,13 @@ local function AddCandidate(result, mode, target, id, name, link, icon)
 		queued[k] = nil
 		return
 	end
+	-- Listed and checked within the last 90 seconds, same cheapest price and amount listed:
+	-- nothing has changed, so continuous mode does not search it again every round.
+	if deals[k] and mode ~= "de" and d.checkedAt and GetTime() - d.checkedAt < 90
+		and price == d.browsePrice and (result.totalQuantity or 0) == (d.listed or 0) then
+		d.stale = false
+		return
+	end
 	if mode == "de" and d.queuedRound == scan.round then
 		-- another level or suffix of an item already in this round's group
 		AddVariant(d, key, price)
@@ -632,8 +649,10 @@ local function Evaluate(result)
 		local want = db.wishlist and db.wishlist[id]
 		if want and price <= want.max then AddCandidate(result, "wish", want.max, id, name, link, icon) end
 		if vendor > 0 and Worth(vendor, price) then AddCandidate(result, "vendor", vendor, id, name, link, icon) end
-		local flipOk, netValue = ns.FlipFast(key, price)
-		if flipOk then AddCandidate(result, "flips", netValue, id, name, link, icon) end
+		if ns.FlipsOn() then
+			local flipOk, netValue = ns.FlipFast(key, price)
+			if flipOk then AddCandidate(result, "flips", netValue, id, name, link, icon) end
+		end
 		return
 	end
 	if ns.DisenchantValue then
@@ -694,7 +713,7 @@ end
 -- Watchlist round: one search per watched item, checked against your price limit.
 function ns.StartWish()
 	if not ahOpen or buy.state or full.active then return false end
-	scan.mode = "vendor"
+	scan.mode, scan.quick = "vendor", 0
 	scan.round = scan.round + 1
 	wipe(queue)
 	wipe(queued)
@@ -750,6 +769,7 @@ StartScan = function()
 		end
 	end
 	local mode = scan.mode
+	scan.quick = 0
 	Send(function() AH.SendBrowseQuery(BrowseQuery(mode)) end)
 	SetStatus(mode == "de" and L["Scanning green and blue weapons and armor …"] or L["Scanning …"])
 	Refresh()
@@ -817,6 +837,7 @@ local function StartQuick()
 	end
 	if not queue[1] then return false end
 	scan.checkTotal, scan.seen, scan.checked = #queue, 0, 0
+	scan.quick = 1
 	SetStatus(L["Quick round: checking %d items, %d of them paid off before …"]:format(#queue, hot))
 	Refresh()
 	ns.PumpCheck()
@@ -835,7 +856,9 @@ NextRound = function()
 		if not ns.StartWish() then scan.nextAt = GetTime() + db.interval end
 	elseif db.tab == "de" or db.tab == "flips" then
 		StartScan()
-	elseif scan.rounds % 3 ~= 0 and StartQuick() then
+	elseif scan.rounds % 3 ~= 0 and ((ns.quickMiss or 0) < 2 or scan.rounds % 12 == 1) and StartQuick() then
+		-- quick rounds cost one query per item like any check; after two quick rounds without a
+		-- find they pause and only come back every 12th round, the whole item list is read instead
 		return
 	else
 		StartScan()
@@ -843,6 +866,10 @@ NextRound = function()
 end
 
 local function RoundDone()
+	if scan.quick == 1 then
+		ns.quickMiss = (scan.quickHits or 0) > 0 and 0 or (ns.quickMiss or 0) + 1
+		scan.quickHits, scan.quick = 0, 0
+	end
 	local v, e, w, fl = newFinds.vendor or 0, newFinds.de or 0, newFinds.wish or 0, newFinds.flips or 0
 	wipe(newFinds)
 	SetStatus(L["Round done: %d items read. New: vendor %d, disenchant %d, flips %d."]:format(scan.seen, v, e, fl))
@@ -989,6 +1016,8 @@ local function FinishCheck(d, offer)
 	local changed = false
 	if offer then
 		noOffer[d.k] = nil
+		d.checkedAt = GetTime()
+		if scan.quick == 1 then scan.quickHits = (scan.quickHits or 0) + 1 end
 		d.price, d.count, d.profit = offer.unit, offer.count, offer.profit
 		Confirm(d)
 		SortDeals()
@@ -1393,7 +1422,8 @@ local function BeginFull(phase)
 	pendingSend, sentAt = nil, nil
 	wipe(full)
 	full.active, full.phase, full.t0 = true, phase, GetTime()
-	full.items, full.pending, full.player = {}, {}, UnitName("player")
+	full.items, full.player = {}, UnitName("player")
+	full.pend, full.pendIds, full.pendN, full.ready = {}, {}, 0, {}
 	full.prevLast = db.lastFull
 	db.lastFull = time()
 end
@@ -1468,6 +1498,23 @@ local function FullRecord(index)
 	end
 	it.a[#it.a + 1] = { unit, count, owner and owner == full.player or nil }
 	return true
+end
+
+-- Read the waiting auctions of one item again. probe: stop at the first one still waiting.
+function ns.FullRetry(itemID, probe)
+	local list = full.pend and full.pend[itemID]
+	if not list then return end
+	local write, n = 0, #list
+	for j = 1, n do
+		local idx = list[j]
+		if (probe and write > 0) or not FullRecord(idx) then
+			write = write + 1
+			list[write] = idx
+		end
+	end
+	for j = write + 1, n do list[j] = nil end
+	full.pendN = full.pendN - (n - write)
+	if write == 0 then full.pend[itemID] = nil end
 end
 
 ---------------------------------------------------------------------------
@@ -2003,7 +2050,7 @@ local function FinishFull(failed)
 	for pk, it in pairs(full.items) do
 		local de = DisenchantValue(it.link or it.id, full.items)
 		-- Market Flips: the item's history is looked up once, each auction checked against it
-		local stats = ns.Market and ns.Market:GetStats(db, pk)
+		local stats = ns.FlipsOn() and ns.Market and ns.Market:GetStats(db, pk)
 		if not (stats and stats.ready) then stats = nil end
 		local want = db.wishlist and db.wishlist[it.id]
 		for _, x in ipairs(it.a) do
@@ -2213,20 +2260,23 @@ local function FullTick(now)
 		while i < limit do
 			local ok, itemID = FullRecord(i)
 			if not ok then
-				full.pending[#full.pending + 1] = i
-				-- ask the client for each item once, not once per auction
-				full.requested = full.requested or {}
-				if itemID and not full.requested[itemID] and C_Item and C_Item.RequestLoadItemDataByID then
-					full.requested[itemID] = true
-					C_Item.RequestLoadItemDataByID(itemID)
+				-- waiting auctions are kept by item: the client reports items, not auctions
+				local list = full.pend[itemID]
+				if not list then
+					list = {}
+					full.pend[itemID] = list
+					full.pendIds[#full.pendIds + 1] = itemID
+					if C_Item and C_Item.RequestLoadItemDataByID then C_Item.RequestLoadItemDataByID(itemID) end
 				end
+				list[#list + 1] = i
+				full.pendN = full.pendN + 1
 			end
 			i = i + 1
 			if stop and i % 50 == 0 and debugprofilestop() >= stop then break end
 		end
 		full.index = i
 		if full.index >= full.count then
-			full.phase, full.loadT, full.progressT, full.gotItem, full.scanAt = "loading", now, now, true, 0
+			full.phase, full.loadT, full.progressT, full.cursor, full.sweepAt = "loading", now, now, 1, 0
 			SetStatus(L["Full scan: reading %d of %d auctions …"]:format(full.index, full.count))
 			full.uiAt = now
 			ns.UpdateProgress()
@@ -2237,44 +2287,53 @@ local function FullTick(now)
 		end
 		return
 	elseif full.phase == "loading" then
-		-- items the client had not loaded yet: up to 30 seconds more
+		-- Items the client had not loaded yet. Items it reports as loaded are read at once,
+		-- the rest is swept in turns (some auctions get their data without an event).
 		-- A client with an empty item cache (fresh install, or a client language played for the
-		-- first time: the cache is per language) has to load almost every item. Keep waiting as
-		-- long as items keep arriving: up to 3 minutes, but stop after 20 seconds without progress.
-		local pending = full.pending
-		local totalPending = #pending
-		if totalPending == 0 then
+		-- first time: the cache is per language) has to load almost every item: keep waiting as
+		-- long as items keep arriving, up to 3 minutes.
+		if full.pendN <= 0 then
 			FinishFull()
 			return
 		end
-		if full.gotItem or now - (full.scanAt or 0) >= 0.2 then
-			full.gotItem, full.scanAt = false, now
-			local stop = debugprofilestop and (debugprofilestop() + 10)
-			local limit = stop and totalPending or min(totalPending, FULL_PER_TICK * 5)
-			local write, processed = 0, 0
-			for n = 1, limit do
-				local idx = pending[n]
-				if not FullRecord(idx) then
-					write = write + 1
-					pending[write] = idx
-				end
-				processed = n
-				if stop and n % 50 == 0 and debugprofilestop() >= stop then break end
-			end
-			for n = processed + 1, totalPending do
-				write = write + 1
-				pending[write] = pending[n]
-			end
-			for n = write + 1, totalPending do
-				pending[n] = nil
-			end
-			if write < totalPending then full.progressT = now end
-			if processed < totalPending and write < processed then full.gotItem = true end
-			totalPending = write
+		local before = full.pendN
+		local stop = debugprofilestop and (debugprofilestop() + 16)
+		-- 1. items the client just reported
+		for id in pairs(full.ready) do
+			full.ready[id] = nil
+			ns.FullRetry(id)
+			if stop and debugprofilestop() >= stop then break end
 		end
-		if totalPending > 0 and now - full.loadT < 180 and now - (full.progressT or full.loadT) < 20 then
+		-- 2. a sweep over the rest, one probe per item, then a short pause
+		if now - full.sweepAt >= 0.5 and not (stop and debugprofilestop() >= stop) then
+			local ids, pend = full.pendIds, full.pend
+			local c, checked = full.cursor, 0
+			local limit = stop and #ids + 1 or 200
+			while checked < limit do
+				if c > #ids then
+					local w = 0 -- one pass done: drop the items read meanwhile
+					for j = 1, #ids do
+						local id = ids[j]
+						if pend[id] then w = w + 1; ids[w] = id end
+					end
+					for j = w + 1, #ids do ids[j] = nil end
+					c, full.sweepAt = 1, now
+					break
+				end
+				if pend[ids[c]] then ns.FullRetry(ids[c], true) end
+				c, checked = c + 1, checked + 1
+				if stop and checked % 20 == 0 and debugprofilestop() >= stop then break end
+			end
+			full.cursor = c
+		end
+		if full.pendN < before then full.progressT = now end
+		local left = full.pendN
+		local idle = now - full.progressT
+		-- the last few auctions whose item never loads do not hold up the whole scan
+		local stuck = idle >= 20 or (idle >= 4 and left <= max(20, (full.count or 0) * 0.005))
+		if left > 0 and now - full.loadT < 180 and not stuck then
 			if now - (full.uiAt or 0) >= 0.1 then
-				SetStatus(L["Full scan: loading item data (%d left) …"]:format(totalPending))
+				SetStatus(L["Full scan: loading item data (%d left) …"]:format(left))
 				full.uiAt = now
 				ns.UpdateProgress()
 			end
@@ -3210,10 +3269,9 @@ local function BuildUI()
 		end
 		return b
 	end
-	for i, mode in ipairs(TABS) do
+	for _, mode in ipairs(TABS) do
 		local tab = NavButton()
 		tab.label = labels[mode]
-		tab:SetPoint("TOPLEFT", 6, -52 - (i - 1) * 24)
 		tab:SetScript("OnClick", function()
 			db.tab, offset = mode, 0
 			ns.cueClick = GetTime()
@@ -3231,6 +3289,7 @@ local function BuildUI()
 		end)
 		f.tabs[mode] = tab
 	end
+	ns.LayoutTabs(f.tabs)
 
 	-- minimum profit in percent: click for more, right-click for less
 	local PRESETS = { 0, 5, 10, 15, 20, 25, 35, 50 }
@@ -3673,11 +3732,56 @@ StaticPopupDialogs["VENDORFLOOR_RESET_FLIPS"] = {
 		ns.RefreshWindow()
 	end,
 }
+-- The tab list without the Market Flips tab while flips are off.
+function ns.LayoutTabs(tabs)
+	tabs = tabs or (ui and ui.tabs)
+	if not tabs then return end
+	local i = 0
+	for _, mode in ipairs(TABS) do
+		local tab = tabs[mode]
+		if tab then
+			local show = mode ~= "flips" or ns.FlipsOn()
+			tab:SetShown(show)
+			if show then
+				tab:ClearAllPoints()
+				tab:SetPoint("TOPLEFT", 6, -52 - i * 24)
+				i = i + 1
+			end
+		end
+	end
+end
+
+-- Switch Market Flips on or off. Off drops the flip finds and leaves the Market Flips tab.
+function ns.SetFlips(on)
+	if not (db and ns.Market) then return end
+	ns.Market:EnsureDB(db).marketSettings.enabled = on and true or false
+	if not on then
+		local removed = false
+		for i = #order, 1, -1 do
+			if order[i].mode == "flips" then
+				RemoveDeal(order[i], true)
+				removed = true
+			end
+		end
+		for k, d in pairs(queued) do
+			if d.mode == "flips" then queued[k] = nil end
+		end
+		for i = #queue, 1, -1 do
+			if queue[i].mode == "flips" then table.remove(queue, i) end
+		end
+		if removed then SaveFinds() end
+		if selected and selected.mode == "flips" then selected = nil end
+		if db.tab == "flips" then db.tab, offset = "vendor", 0 end
+	end
+	ns.LayoutTabs()
+	ns.RefreshWindow()
+end
+
 local function BuildSettings()
 	local UI = _G.LibStub("BencepoUI-1.0")
 	settingsWin = UI:CreateWindow({
 		name = "VendorFloorSettingsFrame", title = L["VendorFloor %s"]:format(L["Settings"]),
-		subtitle = ns.VERSION, width = 520, height = 530, theme = C, accent = C.gold,
+		subtitle = ns.VERSION, width = 520, height = 554, theme = C, accent = C.gold,
 		db = db, posKey = "settingsPoint", hint = L["drag to move, changes apply live"],
 		bugUrl = "https://github.com/Bencepo/VendorFloor/issues/new/choose",
 	})
@@ -3752,25 +3856,27 @@ local function BuildSettings()
 	local mcfg = ns.Market and ns.Market:EnsureDB(db).marketSettings
 	if mcfg then
 		w:Header(16, -366, L["Market Flips"])
-		w:Slider(16, -390, L["Minimum discount below market value"], 10, 90, 5, function() return mcfg.minDiscountPct end,
+		w:Check(16, -390, L["Enable Market Flips"], L["Looks for auctions far below their usual price and keeps a price history for it. Off, VendorFloor only snipes below vendor price and disenchant value, and scans check fewer items."],
+			function() return mcfg.enabled ~= false end, function(v) ns.SetFlips(v) end)
+		w:Slider(16, -414, L["Minimum discount below market value"], 10, 90, 5, function() return mcfg.minDiscountPct end,
 			function(v)
 				mcfg.minDiscountPct = v
 				ns.RefreshWindow()
 			end, L["How far below its market value (median of up to 14 days) an auction must be to count as a flip."], 190, percent)
-		w:Slider(270, -390, L["Minimum net profit per unit (silver)"], 0, 2000, 10,
+		w:Slider(270, -414, L["Minimum net profit per unit (silver)"], 0, 2000, 10,
 			function() return floor((mcfg.minNetProfit or 0) / 100) end,
 			function(v)
 				mcfg.minNetProfit = v * 100
 				ns.RefreshWindow()
 			end, L["What one unit must bring after the 5% auction house cut, minus its price."], 190, silver)
-		w:Check(16, -440, L["Market value in item tooltips"], L["Shows the market value and how many days and readings it rests on. Needs \"Values in item tooltips\"."],
+		w:Check(16, -464, L["Market value in item tooltips"], L["Shows the market value and how many days and readings it rests on. Needs \"Values in item tooltips\"."],
 			function() return mcfg.showTooltip end, function(v) mcfg.showTooltip = v and true or false end)
 		local resetFlips = w:Button(L["Reset flip history"], 200, function() StaticPopup_Show("VENDORFLOOR_RESET_FLIPS") end,
 			L["Clears VendorFloor's Market Flips price history. Your other prices and the ledger stay."])
-		resetFlips:SetPoint("TOPLEFT", 270, -440)
+		resetFlips:SetPoint("TOPLEFT", 270, -464)
 	end
 
-	w:Text(16, -480, L["Finer amounts and the other filters are set in the auction house window. VendorFloor never buys on its own: every purchase is your click or key."], 480)
+	w:Text(16, -504, L["Finer amounts and the other filters are set in the auction house window. VendorFloor never buys on its own: every purchase is your click or key."], 480)
 end
 
 function ns.ToggleSettings()
@@ -3886,9 +3992,10 @@ function handlers.ADDON_LOADED(name)
 		for itemID, n in pairs(db.debought or {}) do db.deBasket[itemID] = n end
 	end
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
+	db.perf = nil -- timing log of a test build
 	local known = false
 	for _, mode in ipairs(TABS) do known = known or db.tab == mode end
-	if not known then db.tab = "vendor" end
+	if not known or (db.tab == "flips" and not ns.FlipsOn()) then db.tab = "vendor" end
 	if ns.Market then
 		local ok, err = pcall(function()
 			ns.Market:EnsureDB(db)
@@ -3945,7 +4052,7 @@ function handlers.AUCTION_HOUSE_CLOSED()
 	if ns.SetAHEvents then ns.SetAHEvents(false) end
 	StopCraftScan()
 	-- the full scan's auction list can be large: let it go
-	full.active, full.items, full.pending, full.requested = false, nil, nil, nil
+	full.active, full.items, full.pend, full.pendIds, full.ready = false, nil, nil, nil, nil
 	if buy.state == "quote_ok" or buy.state == "quoting" then CancelQuote() end
 	wipe(buy)
 	pendingSend, sentAt = nil, nil
@@ -4021,7 +4128,7 @@ function handlers.AUCTION_HOUSE_THROTTLED_MESSAGE_DROPPED()
 end
 
 function handlers.GET_ITEM_INFO_RECEIVED(id, success)
-	if full.active and full.phase == "loading" then full.gotItem = true end
+	if full.active and full.pend and full.pend[id] then full.ready[id] = true end
 	local results = pendingInfo[id]
 	if not results then return end
 	pendingInfo[id] = nil

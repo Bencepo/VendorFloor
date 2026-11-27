@@ -30,7 +30,7 @@ local function AddLines(tip, link)
 	end
 	-- Market Flips: the market value once its history is ready (3 days, 3 readings)
 	local market = ns.Market
-	if market and pk and db.marketSettings and db.marketSettings.showTooltip then
+	if market and pk and db.marketSettings and db.marketSettings.showTooltip and ns.FlipsOn() then
 		local ok, v = pcall(market.GetStats, market, db, pk)
 		if ok and v and v.ready then st = v end
 	end
