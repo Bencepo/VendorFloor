@@ -11,11 +11,12 @@
 --   win:Check(16, -60, "Label", "Tooltip", function() return db.x end, function(v) db.x = v end)
 --   win:Toggle()
 
-local UI = LibStub:NewLibrary("BencepoUI-1.0", 5)
+local UI = LibStub:NewLibrary("BencepoUI-1.0", 6)
 if not UI then return end
 
 local WHITE = "Interface\\Buttons\\WHITE8x8"
 local BACKDROP = { bgFile = WHITE, edgeFile = WHITE, edgeSize = 1 }
+local SITE_URL = "https://bencepo.github.io"
 
 local BASE = {
 	bg = { 0.059, 0.075, 0.094, 0.97 },
@@ -127,7 +128,7 @@ function UI:CreateWindow(opts)
 	local win = CreateFrame("Frame", opts.name, UIParent, "BackdropTemplate")
 	for k, f in pairs(Window) do win[k] = f end
 	win.T, win.refreshers = T, {}
-	-- opts.bugUrl adds a footer below the content with a "Report a bug" button
+	-- opts.bugUrl adds a footer below the content with "More from Bencepo" and "Report a bug" buttons
 	local footer = opts.bugUrl and 32 or 0
 	win:SetSize(opts.width or 500, (opts.height or 400) + footer)
 	win:SetFrameStrata("DIALOG")
@@ -200,6 +201,12 @@ function UI:CreateWindow(opts)
 		sep:SetPoint("BOTTOMRIGHT", -1, footer)
 		sep:SetHeight(1)
 		sep:SetColorTexture(T.line[1], T.line[2], T.line[3], 1)
+		if not opts.noMoreLink then
+			local more = win:Button("More from Bencepo", 130, function()
+				UI:ShowLink(T, "More from Bencepo", SITE_URL, "Copy with Ctrl+C. All Bencepo addons in one place.")
+			end, "Shows the link to all Bencepo addons to copy.")
+			more:SetPoint("BOTTOMLEFT", 12, 5)
+		end
 		local bug = win:Button("Report a bug", 110, function()
 			UI:ShowLink(T, "Report a bug", opts.bugUrl, "Copy with Ctrl+C. No GitHub account? Comment on CurseForge.")
 		end, "Shows the link to the bug reports to copy.")

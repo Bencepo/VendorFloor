@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Settings window: "More from Bencepo" button in the footer links to all Bencepo addons (BencepoUI 6).
+
 ## 1.2.0
 
 - New tab "Market Flips": auctions far below their usual price, to buy and post again on the auction house. The usual price (market value) is the median of up to 14 days of VendorFloor's own price history (one value per day, other players' auctions only); the profit shown is net, after the 5% auction house cut. An item needs at least 3 days and 3 price readings before it can be a flip; until then the empty tab says how many days of history there are. Full scans, scans and checks all add to the history, kept for 21 days. The prices VendorFloor already saw before this version start the history, so flips can show from the first day.

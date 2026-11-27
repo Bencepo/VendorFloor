@@ -6,7 +6,7 @@ VendorFloor: auction house sniper for WoW Forever (modern C_AuctionHouse API, Lu
 
 - `VendorFloor.lua`: scanning, full scan, finds, buying, disenchant values, settings window, events, slash commands. `ns.test` exposes internals for the tests.
 - `Trade.lua` (purchases, mail collection, merchant sales), `Basket.lua` (disenchant basket), `Craft.lua` (crafting tab), `Sales.lua` (own auctions), `Export.lua` (ledger export, minimap button), `Locales.lua` (item info shims and `L`, which returns its key: no translations).
-- `Libs/BencepoUI`: shared settings-window toolkit of all Bencepo addons; must be the same file in each (canonical: minor 4, Nov 2026). Change it in one repo, bump the LibStub minor, copy it to the others: two different copies with the same minor make the result depend on load order.
+- `Libs/BencepoUI`: shared settings-window toolkit of all Bencepo addons; must be the same file in each (canonical: minor 6, Nov 2026). Change it in one repo, bump the LibStub minor, copy it to the others: two different copies with the same minor make the result depend on load order.
 - `web/index.html`: the ledger page on bencepo.github.io/vendorfloor.
 
 ## Rules
