@@ -8,15 +8,21 @@
 -- Sales and expiries are read from the mailbox, also those while you were offline.
 
 local _, ns = ...
+local ipairs, next, pairs, pcall, select, setmetatable, type, wipe =
+	ipairs, next, pairs, pcall, select, setmetatable, type, wipe
+local floor, max, min = math.floor, math.max, math.min
+local format = string.format
+local tremove, tsort = table.remove, table.sort
+
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 local GetItemInfo = ns.GetItemInfo
-local floor, max, min = math.floor, math.max, math.min
 
 local KEEP = 3 * 86400   -- posted auctions are forgotten after this (longest duration is 48 h)
 local FRESH = 3 * 86400  -- a sold price counts this long
 local MIN_ENDED = 3      -- ended auctions needed before the sell rate counts
-
-local function DB() return ns.db end
+local MAIL_DAYS = 30
+local SEEN_KEEP = (MAIL_DAYS + 1) * 86400
+local SALE_MAIL_OFFSET = MAIL_DAYS * 86400 + 3600
 
 -- db.sales[itemID] = { posts, units, sold = buyer messages, firstN = auctions with a sale,
 --   firstSum = seconds from posting to the first buyer (summed), expired, price, priceAt }
@@ -30,17 +36,29 @@ local function Entry(db, id)
 	return e
 end
 
-local MAIL_DAYS = 30
 local function Secret(v) return issecretvalue and issecretvalue(v) end
 
+local function CleanNum(v)
+	if type(v) == "number" and not Secret(v) then return v end
+end
+
+local function PositiveNum(v)
+	if type(v) == "number" and not Secret(v) and v > 0 then return v end
+end
+
+local function CleanStr(v)
+	if type(v) == "string" and not Secret(v) then return v end
+end
+
 local function OnPost(loc, qty, unit)
-	local db = DB()
+	local db = ns.db
 	if not (db and loc and C_Item and C_Item.GetItemID) then return end
 	local id = C_Item.GetItemID(loc)
 	if not id then return end
 	local name = GetItemInfo(id)
 	if not name then return end
-	local unitVal = (type(unit) == "number" and not Secret(unit) and unit > 0) and floor(unit + 0.5) or nil
+	local u = PositiveNum(unit)
+	local unitVal = u and floor(u + 0.5) or nil
 	local e = Entry(db, id)
 	e.posts = e.posts + 1
 	e.units = e.units + (qty or 1)
@@ -73,27 +91,40 @@ end
 -- The oldest posted auction of this name, preferring one without a buyer yet: a sold
 -- auction stays listed until it ends, but a new buyer or an expiry belongs to the next one.
 local function Oldest(db, name)
+	local open = db.open
+	if not open then return nil end
 	local first, firstI
-	for i, o in ipairs(db.open or {}) do
+	for i, o in ipairs(open) do
 		if o.name == name then
 			if not o.hit then return o, i end
-			first, firstI = first or o, firstI or i
+			if not first then first, firstI = o, i end
 		end
 	end
 	return first, firstI
 end
 
 local function Purge(db)
-	local now, keep = time(), {}
-	for _, o in ipairs(db.open or {}) do
-		if now - o.at < KEEP then keep[#keep + 1] = o end
+	local now = time()
+	local open = db.open
+	if open then
+		local w, n = 0, 0
+		for i, o in ipairs(open) do
+			n = i
+			if now - o.at < KEEP then
+				w = w + 1
+				open[w] = o
+			end
+		end
+		for i = w + 1, n do open[i] = nil end
+	else
+		db.open = {}
 	end
-	db.open = keep
-	if type(db.seenMail) == "table" then
-		for key, entry in pairs(db.seenMail) do
+	local seenMail = db.seenMail
+	if type(seenMail) == "table" then
+		for key, entry in pairs(seenMail) do
 			local at = type(entry) == "table" and entry.at or entry
-			if type(at) ~= "number" or now - at > (MAIL_DAYS + 1) * 86400 then
-				db.seenMail[key] = nil
+			if type(at) ~= "number" or now - at > SEEN_KEEP then
+				seenMail[key] = nil
 			end
 		end
 	end
@@ -122,7 +153,7 @@ local function Expired(db, name)
 	if not o then return end
 	local e = Entry(db, o.id)
 	if not o.hit then e.expired = e.expired + 1 end
-	table.remove(db.open, i)
+	tremove(db.open, i)
 end
 
 -- Sales and expiries are read from the mailbox: the chat lines about them are hidden from
@@ -141,47 +172,55 @@ local function ResolveMailKey(seenMail, prefix, bucket)
 	return k
 end
 
+local seenThisPass = {}
+
 local function ScanMail()
-	local db = DB()
+	local db = ns.db
 	if not (db and db.open and db.open[1] and GetInboxNumItems and GetInboxHeaderInfo) then return end
-	db.seenMail = db.seenMail or {}
+	local seenMail = db.seenMail
+	if not seenMail then
+		seenMail = {}
+		db.seenMail = seenMail
+	end
 	local now = time()
-	local seenThisPass = {}
+	wipe(seenThisPass)
 	for i = 1, GetInboxNumItems() do
 		local _, _, _, subject, money, _, daysLeft = GetInboxHeaderInfo(i)
-		if type(subject) == "string" and type(daysLeft) == "number" and not Secret(subject) and not Secret(daysLeft) then
-			local m = (type(money) == "number" and not Secret(money)) and money or 0
+		subject = CleanStr(subject)
+		daysLeft = subject and CleanNum(daysLeft)
+		if subject and daysLeft then
+			local m = CleanNum(money) or 0
 			local expires = now + floor(daysLeft * 86400)
 			local bucket = floor(expires / 600)
-			local key = ResolveMailKey(db.seenMail, subject .. "|" .. m .. "|", bucket)
+			local key = ResolveMailKey(seenMail, subject .. "|" .. m .. "|", bucket)
 			local occ = (seenThisPass[key] or 0) + 1
 			seenThisPass[key] = occ
-			local prev = db.seenMail[key]
+			local prev = seenMail[key]
 			local prevCount = type(prev) == "table" and (prev.n or 1) or (prev and 1 or 0)
 			if occ > prevCount then
 				local invoiceType, itemName, bid, buyout, count
 				if GetInboxInvoiceInfo then
-					local invType, invItem, _, invBid, invBuyout, _, _, _, _, _, invCount = GetInboxInvoiceInfo(i)
-					invoiceType, itemName, bid, buyout, count = invType, invItem, invBid, invBuyout, invCount
+					invoiceType, itemName, _, bid, buyout, _, _, _, _, _, count = GetInboxInvoiceInfo(i)
 				end
-				if invoiceType == "seller" and type(itemName) == "string" and not Secret(itemName) then
-					db.seenMail[key] = { n = occ, at = now }
-					local price = (type(bid) == "number" and not Secret(bid) and bid > 0) and bid
-						or (type(buyout) == "number" and not Secret(buyout) and buyout > 0) and buyout or nil
-					local qty = (type(count) == "number" and not Secret(count) and count > 0) and count or nil
+				itemName = invoiceType == "seller" and CleanStr(itemName)
+				if itemName then
+					seenMail[key] = { n = occ, at = now }
+					local price = PositiveNum(bid) or PositiveNum(buyout)
+					local qty = PositiveNum(count)
 					local unit = price and qty and floor(price / qty + 0.5) or nil
 					-- the money mail goes out about an hour after the sale
-					Sold(db, itemName, unit, expires - MAIL_DAYS * 86400 - 3600)
+					Sold(db, itemName, unit, expires - SALE_MAIL_OFFSET)
 				else
 					local expiredName = EXPIRED_SUBJECT and subject:match(EXPIRED_SUBJECT)
 					if expiredName then
-						db.seenMail[key] = { n = occ, at = now }
+						seenMail[key] = { n = occ, at = now }
 						Expired(db, expiredName)
 					end
 				end
 			end
 		end
 	end
+	wipe(seenThisPass)
 end
 
 local events = CreateFrame("Frame")
@@ -189,7 +228,8 @@ events:RegisterEvent("MAIL_INBOX_UPDATE")
 events:RegisterEvent("PLAYER_LOGIN")
 events:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_LOGIN" then
-		if DB() then Purge(DB()) end
+		local db = ns.db
+		if db then Purge(db) end
 	else
 		pcall(ScanMail)
 	end
@@ -197,13 +237,15 @@ end)
 
 -- Unit price your last sale of this item went for (recent), or nil.
 function ns.SoldPrice(id)
-	local e = DB() and DB().sales and DB().sales[id]
+	local db = ns.db
+	local e = db and db.sales and db.sales[id]
 	if e and e.price and time() - (e.priceAt or 0) < FRESH then return e.price end
 end
 
 -- Share of your ended auctions of this item that found a buyer, or nil if too few ended.
 function ns.SellRate(id)
-	local e = DB() and DB().sales and DB().sales[id]
+	local db = ns.db
+	local e = db and db.sales and db.sales[id]
 	if not e then return nil end
 	local ended = e.firstN + e.expired
 	if ended < MIN_ENDED then return nil end
@@ -211,8 +253,8 @@ function ns.SellRate(id)
 end
 
 local function Duration(sec)
-	if sec < 3600 then return ("%d min"):format(max(floor(sec / 60 + 0.5), 1)) end
-	return ("%.1f h"):format(sec / 3600)
+	if sec < 3600 then return format("%d min", max(floor(sec / 60 + 0.5), 1)) end
+	return format("%.1f h", sec / 3600)
 end
 
 ---@param a table
@@ -220,18 +262,21 @@ end
 local function ByPosts(a, b) return a.e.posts > b.e.posts end
 
 function ns.SalesLines(limit)
-	local db = DB()
-	local list, lines = {}, {}
-	for id, e in pairs(db and db.sales or {}) do list[#list + 1] = { id = id, e = e } end
-	table.sort(list, ByPosts)
-	if #list == 0 then
+	local db = ns.db
+	local sales = db and db.sales
+	if not sales or not next(sales) then
 		return { L["No own auctions recorded yet. They are recorded from now on when you post."] }
 	end
+	local list, lines = {}, {}
+	for id, e in pairs(sales) do list[#list + 1] = { id = id, e = e } end
+	tsort(list, ByPosts)
+	local itemLink = ns.ItemLink
 	for i = 1, min(#list, limit or #list) do
-		local x, e = list[i], list[i].e
+		local x = list[i]
+		local e = x.e
 		local ended = e.firstN + e.expired
-		lines[#lines + 1] = L["%s: posted %d×, sold %d of %d ended, first buyer after %s, last price %s"]:format(
-			ns.ItemLink and ns.ItemLink(x.id) or select(2, GetItemInfo(x.id)) or x.id, e.posts, e.firstN, ended,
+		lines[i] = L["%s: posted %d×, sold %d of %d ended, first buyer after %s, last price %s"]:format(
+			itemLink and itemLink(x.id) or select(2, GetItemInfo(x.id)) or x.id, e.posts, e.firstN, ended,
 			e.firstN > 0 and Duration(e.firstSum / e.firstN) or "–",
 			e.price and ns.Money(e.price) or "–")
 	end
