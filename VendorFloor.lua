@@ -1475,10 +1475,13 @@ end
 -- One auction of the list, collected by item. Returns false, itemID when its item data has not
 -- loaded yet. Every auction with a buyout is kept: the vendor tab needs the cheap ones, the
 -- disenchant and crafting tabs the usual price of all of them.
-local function FullRecord(index)
+-- lenient: also read an auction without "all info". For part of a full scan the client never
+-- sets it, although buyout, count and item are there (only details such as the seller are
+-- missing); those auctions are read once waiting stops paying off.
+local function FullRecord(index, lenient)
 	local _, _, count, _, _, _, _, _, _, buyout, _, _, _, owner, _, _, itemID, hasAll = AH.GetReplicateItemInfo(index)
 	if not itemID then return true end
-	if not hasAll then return false, itemID end
+	if not hasAll and not lenient then return false, itemID end
 	if not buyout or buyout <= 0 or IsIgnored(itemID) then return true end
 	local link = AH.GetReplicateItemLink and AH.GetReplicateItemLink(index)
 	local name, itemLink, _, _, _, _, _, stack, equipLoc, icon, sell = GetItemInfo(link or itemID)
@@ -1500,14 +1503,15 @@ local function FullRecord(index)
 	return true
 end
 
--- Read the waiting auctions of one item again. probe: stop at the first one still waiting.
-function ns.FullRetry(itemID, probe)
+-- Read the waiting auctions of one item again. Every auction is tried: gear variants of one
+-- item load one by one, so one auction still waiting says nothing about the others.
+function ns.FullRetry(itemID)
 	local list = full.pend and full.pend[itemID]
 	if not list then return end
-	local write, n = 0, #list
+	local write, n, lenient = 0, #list, full.lenient
 	for j = 1, n do
 		local idx = list[j]
-		if (probe and write > 0) or not FullRecord(idx) then
+		if not FullRecord(idx, lenient) then
 			write = write + 1
 			list[write] = idx
 		end
@@ -2306,8 +2310,8 @@ local function FullTick(now)
 			ns.FullRetry(id)
 			if stop and debugprofilestop() >= stop then break end
 		end
-		-- 2. a sweep over the rest, one probe per item, then a short pause
-		if now - full.sweepAt >= 0.5 and not (stop and debugprofilestop() >= stop) then
+		-- 2. a sweep over the rest, item by item within the frame budget, then a short pause
+		if now - full.sweepAt >= 0.2 and not (stop and debugprofilestop() >= stop) then
 			local ids, pend = full.pendIds, full.pend
 			local c, checked = full.cursor, 0
 			local limit = stop and #ids + 1 or 200
@@ -2322,15 +2326,21 @@ local function FullTick(now)
 					c, full.sweepAt = 1, now
 					break
 				end
-				if pend[ids[c]] then ns.FullRetry(ids[c], true) end
+				if pend[ids[c]] then ns.FullRetry(ids[c]) end
 				c, checked = c + 1, checked + 1
-				if stop and checked % 20 == 0 and debugprofilestop() >= stop then break end
+				if stop and debugprofilestop() >= stop then break end
 			end
 			full.cursor = c
 		end
 		if full.pendN < before then full.progressT = now end
 		local left = full.pendN
 		local idle = now - full.progressT
+		if (idle >= 2 or now - full.loadT >= 6) and not full.lenient then
+			-- two seconds without progress (or six seconds of loading): the rest has its item data but not "all info", which
+			-- for these auctions never comes. Read them with what is there (next sweeps).
+			full.lenient, full.cursor, full.sweepAt, full.progressT = true, 1, 0, now
+			idle = 0
+		end
 		-- the last few auctions whose item never loads do not hold up the whole scan
 		local stuck = idle >= 20 or (idle >= 4 and left <= max(20, (full.count or 0) * 0.005))
 		if left > 0 and now - full.loadT < 180 and not stuck then
@@ -3994,7 +4004,7 @@ function handlers.ADDON_LOADED(name)
 		for itemID, n in pairs(db.debought or {}) do db.deBasket[itemID] = n end
 	end
 	db.minSlotSilver = floor((db.minSlot or 0) / 100)
-	db.perf = nil -- timing log of a test build
+	db.perf, db.fullperf = nil, nil -- timing logs of test builds
 	local known = false
 	for _, mode in ipairs(TABS) do known = known or db.tab == mode end
 	if not known or (db.tab == "flips" and not ns.FlipsOn()) then db.tab = "vendor" end
