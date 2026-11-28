@@ -6,14 +6,16 @@
 -- right-click). Both replace chat commands.
 
 local _, ns = ...
+local ipairs, pairs, pcall, select, setmetatable, tonumber, tostring, type, wipe =
+	ipairs, pairs, pcall, select, setmetatable, tonumber, tostring, type, wipe
+local floor, max, min = math.floor, math.max, math.min
+local tsort = table.sort
+
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 local GetItemInfo = ns.GetItemInfo
-local floor, max, min = math.floor, math.max, math.min
 local C_Container, C_Item = C_Container, C_Item
 
 local ROW_H, ROWS = 24, 10
-
-local function DB() return ns.db end
 
 local function Money(copper)
 	return ns.Money and ns.Money(copper) or tostring(floor(copper or 0))
@@ -43,47 +45,53 @@ local index, indexAt = {}, 0
 local MAX_SUGGEST, MIN_CHARS = 8, 3
 local DEFAULT_BAGS = { 0, 1, 2, 3, 4 }
 local building -- ids still to add while the index is built, a slice per frame
+local seenIds = {}
+local innerScratch = {}
 
 ---@param a table
 ---@param b table
 local function ByLower(a, b) return a.lower < b.lower end
 
----@param a table
----@param b table
-local function ByTextLower(a, b) return (a.text or ""):lower() < (b.text or ""):lower() end
-
 -- Built once and kept for a few minutes, a slice per frame: thousands of auction prices
 -- at once made the game stutter while typing.
 local function BuildIndex(onDone)
 	if building or (#index > 0 and GetTime() - indexAt < 300) then return end
-	local db, seen, ids = DB(), {}, {}
-	local function add(id) id = tonumber(id) if id and not seen[id] then seen[id] = true ids[#ids + 1] = id end end
+	local db, ids = ns.db, {}
+	wipe(seenIds)
+	local function add(id) id = tonumber(id) if id and not seenIds[id] then seenIds[id] = true ids[#ids + 1] = id end end
 	if db then
 		for _, t in ipairs({ db.wishlist, db.ignore, db.bought, db.debought, db.deBasket }) do
-			for id in pairs(t or {}) do add(id) end
+			for id in pairs(t) do add(id) end
 		end
 	end
 	local slots = C_Container and C_Container.GetContainerNumSlots
-	if slots then
+	local getItemID = C_Container and C_Container.GetContainerItemID
+	if slots and getItemID then
 		for _, bag in ipairs(ns.BAGS or DEFAULT_BAGS) do
-			for slot = 1, slots(bag) or 0 do add(C_Container.GetContainerItemID(bag, slot)) end
+			for slot = 1, slots(bag) or 0 do add(getItemID(bag, slot)) end
 		end
 	end
-	if db then for pk in pairs(db.lows or {}) do add(tostring(pk):match("(%d+):")) end end
+	if db and db.lows then
+		for pk in pairs(db.lows) do
+			add((type(pk) == "string" and pk or tostring(pk)):match("(%d+):"))
+		end
+	end
+	wipe(seenIds)
 	wipe(index)
 	building = { ids = ids, at = 1, requests = 0 }
 	local ticker
 	ticker = C_Timer.NewTicker(0, function()
 		local b = building
 		if not b then ticker:Cancel() return end
+		local requestLoad = C_Item and C_Item.RequestLoadItemDataByID
 		for i = b.at, min(b.at + 199, #b.ids) do
 			local id = b.ids[i]
 			local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(id)
 			if name then
 				index[#index + 1] = { id = id, name = name, lower = name:lower(), link = link, icon = icon }
-			elseif b.requests < 30 and C_Item and C_Item.RequestLoadItemDataByID then
+			elseif b.requests < 30 and requestLoad then
 				b.requests = b.requests + 1
-				C_Item.RequestLoadItemDataByID(id)
+				requestLoad(id)
 			end
 		end
 		b.at = b.at + 200
@@ -99,23 +107,40 @@ end
 local function Matches(text)
 	text = strtrim(text or ""):lower()
 	if #text < MIN_CHARS or text:find("|H") then return {} end
-	local first, inner = {}, {}
+	local first = {}
+	wipe(innerScratch)
 	for _, it in ipairs(index) do
 		local at = it.lower:find(text, 1, true)
-		if at == 1 then first[#first + 1] = it elseif at then inner[#inner + 1] = it end
+		if at == 1 then first[#first + 1] = it elseif at then innerScratch[#innerScratch + 1] = it end
 	end
-	table.sort(first, ByLower)
-	table.sort(inner, ByLower)
-	for _, it in ipairs(inner) do first[#first + 1] = it end
-	for i = #first, MAX_SUGGEST + 1, -1 do first[i] = nil end
+	tsort(first, ByLower)
+	if #first < MAX_SUGGEST then
+		if innerScratch[1] then
+			tsort(innerScratch, ByLower)
+			for i = 1, min(#innerScratch, MAX_SUGGEST - #first) do
+				first[#first + 1] = innerScratch[i]
+			end
+		end
+	else
+		for i = #first, MAX_SUGGEST + 1, -1 do first[i] = nil end
+	end
+	wipe(innerScratch)
 	return first
 end
+
+local SUGGEST_BACKDROP = {
+	bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+	edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+	tile = true,
+	tileSize = 16,
+	edgeSize = 16,
+	insets = { left = 4, right = 4, top = 4, bottom = 4 },
+}
 
 -- Attaches a suggestion list to an item field. Up/Down choose, Tab or Enter take one.
 local function Suggest(box)
 	local list = CreateFrame("Frame", nil, box, "BackdropTemplate")
-	list:SetBackdrop({ bgFile = "Interface\\Tooltips\\UI-Tooltip-Background", edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		tile = true, tileSize = 16, edgeSize = 16, insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+	list:SetBackdrop(SUGGEST_BACKDROP)
 	list:SetBackdropColor(0, 0, 0, 0.95)
 	list:SetPoint("TOPLEFT", box, "BOTTOMLEFT", -6, 0)
 	list:SetWidth(260)
@@ -201,30 +226,42 @@ end
 -- A list window: title, optional top area, rows with icon, text, detail and a remove button
 ---------------------------------------------------------------------------
 
-local function ListWindow(name, title, topHeight)
+local DIALOG_BACKDROP = {
+	bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+	edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
+	tile = true,
+	tileSize = 32,
+	edgeSize = 32,
+	insets = { left = 11, right = 12, top = 12, bottom = 11 },
+}
+
+local function DialogWindow(name, width, height)
 	local ok, w = pcall(CreateFrame, "Frame", name, UIParent, "BasicFrameTemplateWithInset")
 	if not ok or not w then
 		w = CreateFrame("Frame", name, UIParent, "BackdropTemplate")
-		w:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-			edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true, tileSize = 32, edgeSize = 32,
-			insets = { left = 11, right = 12, top = 12, bottom = 11 } })
+		w:SetBackdrop(DIALOG_BACKDROP)
 		local close = CreateFrame("Button", nil, w, "UIPanelCloseButton")
 		close:SetPoint("TOPRIGHT", -4, -4)
 	end
-	w:SetSize(420, 70 + topHeight + ROWS * ROW_H)
-	w:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+	w:SetSize(width, height)
 	w:SetFrameStrata("DIALOG")
-	w:SetToplevel(true)
 	w:SetClampedToScreen(true)
 	w:SetMovable(true)
 	w:EnableMouse(true)
 	w:RegisterForDrag("LeftButton")
 	w:SetScript("OnDragStart", w.StartMoving)
 	w:SetScript("OnDragStop", w.StopMovingOrSizing)
-	local t = w.TitleText or w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-	if not w.TitleText then t:SetPoint("TOP", 0, -16) end
-	t:SetText(title)
+	w.title = w.TitleText or w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	if not w.TitleText then w.title:SetPoint("TOP", 0, -16) end
 	tinsert(UISpecialFrames, name) -- Escape closes it
+	return w
+end
+
+local function ListWindow(name, title, topHeight)
+	local w = DialogWindow(name, 420, 70 + topHeight + ROWS * ROW_H)
+	w:SetPoint("CENTER", UIParent, "CENTER", 0, 60)
+	w:SetToplevel(true)
+	w.title:SetText(title)
 
 	w.offset, w.rows, w.items = 0, {}, {}
 	local top = -30 - topHeight
@@ -244,9 +281,13 @@ local function ListWindow(name, title, topHeight)
 		row.remove:SetScript("OnClick", function()
 			if row.removeFn then
 				row.removeFn()
-				w:Fill()
-				if ns.RefreshWindow then ns.RefreshWindow() end
+			elseif row.id and w.RemoveItem then
+				w:RemoveItem(row.id)
+			else
+				return
 			end
+			w:Fill()
+			if ns.RefreshWindow then ns.RefreshWindow() end
 		end)
 		row.detail = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 		row.detail:SetPoint("RIGHT", row.remove, "LEFT", -8, 0)
@@ -313,7 +354,11 @@ local function ListWindow(name, title, topHeight)
 end
 
 local function ByName(list)
-	table.sort(list, ByTextLower)
+	for i = 1, #list do
+		local it = list[i]
+		it.lower = (it.text or ""):lower()
+	end
+	tsort(list, ByLower)
 	return list
 end
 
@@ -339,11 +384,16 @@ function ns.ToggleIgnoreList()
 	if not ignoreWin then
 		ignoreWin = ListWindow("VendorFloorIgnoreFrame", L["VendorFloor: ignore list"], 58)
 		ignoreWin.empty:SetText(L["No hidden items. Right-click a find in the list to hide that item."])
+		function ignoreWin:RemoveItem(id)
+			local db = ns.db
+			if db and db.ignore then db.ignore[id] = nil end
+		end
 		function ignoreWin:Items()
-			local db, list = DB(), {}
-			for id, name in pairs(db and db.ignore or {}) do
-				list[#list + 1] = { id = id, text = type(name) == "string" and name or GetItemInfo(id),
-					remove = function() if db and db.ignore then db.ignore[id] = nil end end }
+			local db, list = ns.db, {}
+			if db and db.ignore then
+				for id, name in pairs(db.ignore) do
+					list[#list + 1] = { id = id, text = type(name) == "string" and name or GetItemInfo(id) }
+				end
 			end
 			return ByName(list)
 		end
@@ -355,7 +405,7 @@ function ns.ToggleIgnoreList()
 		hide:SetPoint("LEFT", box, "RIGHT", 8, 0)
 		hide:SetText(L["Hide"])
 		local function Hide()
-			local db, id = DB(), ItemID(box:GetText())
+			local db, id = ns.db, ItemID(box:GetText())
 			if not db then return end
 			if not id then
 				Print(L["Item not recognised. Shift-click it into the field, or type its exact name or ID."])
@@ -376,7 +426,7 @@ function ns.ToggleIgnoreList()
 		clear:SetPoint("BOTTOMRIGHT", -14, 10)
 		clear:SetText(L["Show all again"])
 		clear:SetScript("OnClick", function()
-			local db = DB()
+			local db = ns.db
 			if db then db.ignore = {} end
 			ignoreWin:Fill()
 			if ns.RefreshWindow then ns.RefreshWindow() end
@@ -399,7 +449,7 @@ end
 
 -- After a watchlist purchase: count down the units still wanted; done when none are left.
 function ns.WishBought(itemID, qty, mode)
-	local db = DB()
+	local db = ns.db
 	if mode ~= "wish" or not (db and db.wishlist and db.wishlist[itemID]) then return end
 	local want = db.wishlist[itemID]
 	if (want.qty or 0) <= 0 then return end
@@ -432,11 +482,16 @@ function ns.ToggleWishlist()
 	if not wishWin then
 		wishWin = ListWindow("VendorFloorWishlistFrame", L["VendorFloor: watchlist"], 58)
 		wishWin.empty:SetText(L["Nothing watched yet. Shift-click an item into the field above, set your price limit and click \"Add\"."])
+		function wishWin:RemoveItem(id)
+			local db = ns.db
+			if db and db.wishlist then db.wishlist[id] = nil end
+		end
 		function wishWin:Items()
-			local db, list = DB(), {}
-			for id, want in pairs(db and db.wishlist or {}) do
-				list[#list + 1] = { id = id, text = want.name or GetItemInfo(id), detail = WishDetail(want),
-					remove = function() if db and db.wishlist then db.wishlist[id] = nil end end }
+			local db, list = ns.db, {}
+			if db and db.wishlist then
+				for id, want in pairs(db.wishlist) do
+					list[#list + 1] = { id = id, text = want.name or GetItemInfo(id), detail = WishDetail(want) }
+				end
 			end
 			return ByName(list)
 		end
@@ -463,7 +518,7 @@ function ns.ToggleWishlist()
 			if GameTooltip:GetOwner() == self then GameTooltip:Hide() end
 		end)
 		local function Add()
-			local db = DB()
+			local db = ns.db
 			if not db then return end
 			local id = ItemID(itemBox:GetText())
 			local price = ns.ParseMoney and ns.ParseMoney(priceBox:GetText())
@@ -488,7 +543,8 @@ function ns.ToggleWishlist()
 		end
 		add:SetScript("OnClick", Add)
 		itemBox:SetScript("OnEnterPressed", function() OnEnter(itemBox, Add) end)
-		for _, box in ipairs({ priceBox, qtyBox }) do box:SetScript("OnEnterPressed", Add) end
+		priceBox:SetScript("OnEnterPressed", Add)
+		qtyBox:SetScript("OnEnterPressed", Add)
 	end
 	wishWin:SetShown(not wishWin:IsShown())
 end
@@ -511,26 +567,8 @@ end
 local copyWin
 function ns.ShowCopy(title, text)
 	if not copyWin then
-		local ok, w = pcall(CreateFrame, "Frame", "VendorFloorCopyFrame", UIParent, "BasicFrameTemplateWithInset")
-		if not ok or not w then
-			w = CreateFrame("Frame", "VendorFloorCopyFrame", UIParent, "BackdropTemplate")
-			w:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-				edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border", tile = true, tileSize = 32, edgeSize = 32,
-				insets = { left = 11, right = 12, top = 12, bottom = 11 } })
-			local close = CreateFrame("Button", nil, w, "UIPanelCloseButton")
-			close:SetPoint("TOPRIGHT", -4, -4)
-		end
-		w:SetSize(560, 400)
+		local w = DialogWindow("VendorFloorCopyFrame", 560, 400)
 		w:SetPoint("CENTER")
-		w:SetFrameStrata("DIALOG")
-		w:SetClampedToScreen(true)
-		w:SetMovable(true)
-		w:EnableMouse(true)
-		w:RegisterForDrag("LeftButton")
-		w:SetScript("OnDragStart", w.StartMoving)
-		w:SetScript("OnDragStop", w.StopMovingOrSizing)
-		w.title = w.TitleText or w:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-		if not w.TitleText then w.title:SetPoint("TOP", 0, -16) end
 		local hint = w:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 		hint:SetPoint("BOTTOMLEFT", 16, 12)
 		hint:SetText(L["Ctrl+C copies the text. Paste it into your bug report."])
@@ -547,7 +585,6 @@ function ns.ShowCopy(title, text)
 		box:SetScript("OnTextChanged", function(b, user) if user then b:SetText(w.text or "") b:HighlightText() end end)
 		sf:SetScrollChild(box)
 		w.box = box
-		tinsert(UISpecialFrames, "VendorFloorCopyFrame")
 		copyWin = w
 	end
 	copyWin.title:SetText(title)
