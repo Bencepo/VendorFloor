@@ -9,12 +9,17 @@
 -- whichever is more) minus the reagents (auction house or merchant, whichever is cheaper).
 
 local _, ns = ...
+local ipairs, pairs, pcall, select, setmetatable, type, wipe =
+	ipairs, pairs, pcall, select, setmetatable, type, wipe
+local max, min = math.max, math.min
+local format = string.format
+local tsort = table.sort
+
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 local GetItemInfo = ns.GetItemInfo
-local max = math.max
+local TITLE = "VendorFloor"
+local CHAT_PREFIX = "|cff33ff99VendorFloor:|r "
 local AH_CUT = 0.95
-
-local function DB() return ns.db end
 
 local charKey
 local function CharKey()
@@ -33,7 +38,7 @@ end
 ---------------------------------------------------------------------------
 
 local function ScanRecipes()
-	local db = DB()
+	local db = ns.db
 	local T = C_TradeSkillUI
 	if not (db and T and T.GetAllRecipeIDs and T.GetRecipeInfo and T.GetRecipeSchematic) then return end
 	local ids = T.GetAllRecipeIDs()
@@ -46,23 +51,27 @@ local function ScanRecipes()
 		end
 	end
 	if not prof or prof == "" or prof == "?" then return end
+	local basicType = Enum and Enum.CraftingReagentType and Enum.CraftingReagentType.Basic
 	local list = {}
 	for _, id in ipairs(ids) do
 		local info = T.GetRecipeInfo(id)
 		if type(info) == "table" and info.learned then
 			local ok, sch = pcall(T.GetRecipeSchematic, id, false)
 			if ok and type(sch) == "table" and sch.outputItemID then
-				local reagents = {}
-				for _, slot in ipairs(sch.reagentSlotSchematics or {}) do
-					local r = slot.reagents and slot.reagents[1]
-					local basic = slot.reagentType == nil or (Enum.CraftingReagentType and slot.reagentType == Enum.CraftingReagentType.Basic)
-					if r and r.itemID and basic and (slot.required ~= false) then
-						reagents[#reagents + 1] = { r.itemID, slot.quantityRequired or 1 }
+				local slots = sch.reagentSlotSchematics
+				if slots and slots[1] then
+					local reagents = {}
+					for _, slot in ipairs(slots) do
+						local r = slot.reagents and slot.reagents[1]
+						local basic = slot.reagentType == nil or (basicType ~= nil and slot.reagentType == basicType)
+						if r and r.itemID and basic and (slot.required ~= false) then
+							reagents[#reagents + 1] = { r.itemID, slot.quantityRequired or 1 }
+						end
 					end
-				end
-				if reagents[1] then
-					local qty = ((sch.quantityMin or 1) + (sch.quantityMax or sch.quantityMin or 1)) / 2
-					list[#list + 1] = { id = id, name = info.name, out = sch.outputItemID, qty = qty, r = reagents }
+					if reagents[1] then
+						local qty = ((sch.quantityMin or 1) + (sch.quantityMax or sch.quantityMin or 1)) / 2
+						list[#list + 1] = { id = id, name = info.name, out = sch.outputItemID, qty = qty, r = reagents }
+					end
 				end
 			end
 		end
@@ -81,22 +90,28 @@ end
 ---------------------------------------------------------------------------
 
 local function ScanMerchant()
-	local db = DB()
+	local db = ns.db
 	-- GetMerchantItemInfo is the merchant API of this client (C_MerchantFrame is retail only).
 	---@diagnostic disable-next-line: deprecated
 	if not (db and GetMerchantNumItems and GetMerchantItemInfo and GetMerchantItemID) then return end
-	db.vendorBuy = db.vendorBuy or {}
+	local vendorBuy = db.vendorBuy
+	if not vendorBuy then
+		vendorBuy = {}
+		db.vendorBuy = vendorBuy
+	end
 	local changed = false
 	for i = 1, GetMerchantNumItems() do
 		---@diagnostic disable-next-line: deprecated
 		local _, _, price, quantity, numAvailable, _, _, extendedCost = GetMerchantItemInfo(i)
-		local itemID = GetMerchantItemID(i)
 		-- only unlimited items for gold
-		if itemID and price and price > 0 and not extendedCost and (numAvailable or -1) < 0 then
-			local unit = price / max(quantity or 1, 1)
-			if db.vendorBuy[itemID] ~= unit then
-				db.vendorBuy[itemID] = unit
-				changed = true
+		if price and price > 0 and not extendedCost and (numAvailable or -1) < 0 then
+			local itemID = GetMerchantItemID(i)
+			if itemID then
+				local unit = price / max(quantity or 1, 1)
+				if vendorBuy[itemID] ~= unit then
+					vendorBuy[itemID] = unit
+					changed = true
+				end
 			end
 		end
 	end
@@ -108,8 +123,7 @@ end
 ---------------------------------------------------------------------------
 
 -- Cheapest way to get one unit: auction house (usual price) or merchant.
-local function ReagentCost(itemID)
-	local db = DB()
+local function ReagentCost(db, itemID)
 	-- buying: the cheapest listings (low price), else the usual price
 	local pk = ns.PlainKey and ns.PlainKey(itemID)
 	local market = pk and ((ns.LowValue and ns.LowValue(pk)) or (ns.MarketValue and ns.MarketValue(pk)))
@@ -145,6 +159,7 @@ end
 
 -- Craft results, best first; results.char marks the character they belong to.
 local results, missing = {}, 0
+local costCache, srcCache, valCache, routeCache = {}, {}, {}, {}
 
 ---@param a table
 ---@param b table
@@ -156,62 +171,91 @@ function ns.CraftResults()
 	if not ns.craftDirty and results.char == char then return results, missing end
 	ns.craftDirty = false
 	results, missing = { char = char }, 0
-	local db = DB()
+	local db = ns.db
 	local mine = db and db.recipes and db.recipes[char]
 	if not mine then return results, missing end
 	local minProfit = db.minProfit or 1
-	local costCache, srcCache = {}, {}
+	wipe(costCache)
+	wipe(srcCache)
+	wipe(valCache)
+	wipe(routeCache)
 	for prof, p in pairs(mine) do
-		for _, rec in ipairs(p.list or {}) do
-			local cost, ok = 0, true
-			for _, r in ipairs(rec.r) do
-				local id = r[1]
-				local unit = costCache[id]
-				if unit == nil then
-					local u, src = ReagentCost(id)
-					unit = u or false
-					costCache[id] = unit
-					srcCache[id] = src
+		local recList = p.list
+		if recList then
+			for _, rec in ipairs(recList) do
+				local cost, ok = 0, true
+				local recReagents = rec.r
+				for _, r in ipairs(recReagents) do
+					local id = r[1]
+					local unit = costCache[id]
+					if unit == nil then
+						local u, src = ReagentCost(db, id)
+						unit = u or false
+						costCache[id] = unit
+						srcCache[id] = src
+					end
+					if not unit then ok = false break end
+					cost = cost + unit * r[2]
 				end
-				if not unit then ok = false break end
-				cost = cost + unit * r[2]
-			end
-			if ok then
-				local value, route = ProductValue(rec.out)
-				if value then
-					local revenue = value * rec.qty
-					local profit = revenue - cost
-					if profit >= minProfit then
-						local parts = {}
-						for _, r in ipairs(rec.r) do
-							local id = r[1]
-							parts[#parts + 1] = { id = id, qty = r[2], unit = costCache[id], src = srcCache[id] }
+				if ok then
+					local outID = rec.out
+					local value = valCache[outID]
+					if value == nil then
+						local v, rt = ProductValue(outID)
+						value = v or false
+						valCache[outID] = value
+						routeCache[outID] = rt
+					end
+					if value then
+						local revenue = value * rec.qty
+						local profit = revenue - cost
+						if profit >= minProfit then
+							local parts = {}
+							for j = 1, #recReagents do
+								local r = recReagents[j]
+								local id = r[1]
+								parts[j] = { id = id, qty = r[2], unit = costCache[id], src = srcCache[id] }
+							end
+							local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(outID)
+							results[#results + 1] = { prof = prof, recipe = rec.name, out = outID, qty = rec.qty, cost = cost,
+								revenue = revenue, profit = profit, route = routeCache[outID], parts = parts, name = name or rec.name,
+								link = link, icon = icon }
 						end
-						local name, link, _, _, _, _, _, _, _, icon = GetItemInfo(rec.out)
-						results[#results + 1] = { prof = prof, recipe = rec.name, out = rec.out, qty = rec.qty, cost = cost,
-							revenue = revenue, profit = profit, route = route, parts = parts, name = name or rec.name,
-							link = link, icon = icon }
+					else
+						missing = missing + 1
 					end
 				else
 					missing = missing + 1
 				end
-			else
-				missing = missing + 1
 			end
 		end
 	end
-	table.sort(results, byProfit)
+	wipe(costCache)
+	wipe(srcCache)
+	wipe(valCache)
+	wipe(routeCache)
+	tsort(results, byProfit)
 	return results, missing
 end
 
+local function HasProfession(mine)
+	if not mine then return false end
+	for prof in pairs(mine) do
+		if prof ~= "" and prof ~= "?" then return true end
+	end
+	return false
+end
+
 function ns.CraftProfessions()
-	local db = DB()
+	local db = ns.db
 	local mine = db and db.recipes and db.recipes[CharKey()]
 	local names = {}
-	for prof in pairs(mine or {}) do
-		if prof ~= "" and prof ~= "?" then names[#names + 1] = prof end
+	if mine then
+		for prof in pairs(mine) do
+			if prof ~= "" and prof ~= "?" then names[#names + 1] = prof end
+		end
+		tsort(names)
 	end
-	table.sort(names)
 	return names
 end
 
@@ -219,14 +263,15 @@ end
 function ns.PrintCraft()
 	local list, miss = ns.CraftResults()
 	local out = DEFAULT_CHAT_FRAME
-	if not ns.CraftProfessions()[1] then
-		out:AddMessage("|cff33ff99VendorFloor:|r " .. L["Open each profession window once so VendorFloor can read your recipes."])
+	local db = ns.db
+	if not HasProfession(db and db.recipes and db.recipes[CharKey()]) then
+		out:AddMessage(CHAT_PREFIX .. L["Open each profession window once so VendorFloor can read your recipes."])
 		return
 	end
-	out:AddMessage("|cff33ff99VendorFloor:|r " .. L["%d crafts with profit (%d recipes without prices yet):"]:format(#list, miss))
-	for i = 1, math.min(#list, 10) do
+	out:AddMessage(CHAT_PREFIX .. L["%d crafts with profit (%d recipes without prices yet):"]:format(#list, miss))
+	for i = 1, min(#list, 10) do
 		local c = list[i]
-		out:AddMessage(("  %s: %s %s, +%s"):format(c.prof, c.link or c.name, ns.Money(c.cost) .. " > " .. ns.Money(c.revenue),
+		out:AddMessage(format("  %s: %s %s > %s, +%s", c.prof, c.link or c.name, ns.Money(c.cost), ns.Money(c.revenue),
 			ns.Money(c.profit)))
 	end
 end
@@ -251,7 +296,7 @@ local function AddButton()
 	end)
 	button:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_BOTTOM")
-		GameTooltip:AddLine("VendorFloor")
+		GameTooltip:AddLine(TITLE)
 		GameTooltip:AddLine(L["Shows which of your learned recipes make a profit, with prices from VendorFloor's full scans and from merchants."], 1, 1, 1, true)
 		GameTooltip:Show()
 	end)
@@ -265,8 +310,12 @@ for _, event in ipairs({ "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "MERCHAN
 	pcall(events.RegisterEvent, events, event)
 end
 local pending = false
+local function RunPendingScan()
+	pending = false
+	pcall(ScanRecipes)
+end
 events:SetScript("OnEvent", function(_, event)
-	if not DB() then return end
+	if not ns.db then return end
 	if event == "MERCHANT_SHOW" or event == "MERCHANT_UPDATE" then
 		pcall(ScanMerchant)
 		return
@@ -275,9 +324,6 @@ events:SetScript("OnEvent", function(_, event)
 	-- the list arrives in parts: read it once it has settled
 	if not pending then
 		pending = true
-		C_Timer.After(1, function()
-			pending = false
-			pcall(ScanRecipes)
-		end)
+		C_Timer.After(1, RunPendingScan)
 	end
 end)
