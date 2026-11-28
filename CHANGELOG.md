@@ -1,9 +1,5 @@
 # Changelog
 
-## Unreleased
-
-- Code cleanup, no change in behaviour.
-
 ## 1.2.2
 
 - Fixed: full scans dropped a large part of the auction house. For roughly a quarter of all auctions the client never marks the data as complete, although price, amount and item are there; VendorFloor waited for it, gave up after 20 seconds and left those auctions out. They are now read with the data that is there, so full scans see every auction again, find more and price items better.
