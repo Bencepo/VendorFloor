@@ -7,90 +7,120 @@
 -- click or key press, as the game requires.
 
 local _, ns = ...
+local ipairs, next, pairs, pcall, select, setmetatable, wipe =
+	ipairs, next, pairs, pcall, select, setmetatable, wipe
+local format = string.format
+
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
 
+local TITLE = "VendorFloor"
+local CHAT_PREFIX = "|cff33ff99VendorFloor:|r "
 local DISENCHANT = 13262
 local BUTTON_NAME = "VendorFloorBasketButton"
+local BINDING_CLICK = "CLICK " .. BUTTON_NAME .. ":LeftButton"
 
-local function DB() return ns.db end
-
+local spellNameCache
 local function SpellName()
+	if spellNameCache then return spellNameCache end
 	if C_Spell and C_Spell.GetSpellName then
 		local name = C_Spell.GetSpellName(DISENCHANT)
-		if name then return name end
+		if name then
+			spellNameCache = name
+			return name
+		end
 	end
 	if GetSpellInfo then
 		local name = GetSpellInfo(DISENCHANT)
-		if name then return name end
+		if name then
+			spellNameCache = name
+			return name
+		end
 	end
 	return L["Disenchant"]
-end
-
-local function Slots(bag)
-	if not (C_Container and C_Container.GetContainerNumSlots) then return 0 end
-	return C_Container.GetContainerNumSlots(bag) or 0
-end
-
-local function SlotInfo(bag, slot)
-	local info = C_Container and C_Container.GetContainerItemInfo and C_Container.GetContainerItemInfo(bag, slot)
-	if info then return info.itemID, info.stackCount or 1, info.isLocked, info.hyperlink end
-	return nil
 end
 
 local DEFAULT_BAGS = { 0, 1, 2, 3, 4 }
 local function Bags() return ns.BAGS or DEFAULT_BAGS end
 
+local leftScratch = {}
+local inBagsScratch = {}
+local targetBuf = {}
+
 -- Basket items in the bags: list of { bag, slot, id, link }, at most as many as were bought.
 local function Contents()
-	local db = DB()
+	local db = ns.db
 	local list = {}
-	if not (db and db.deBasket and next(db.deBasket)) then return list end
-	local left = {}
-	for itemID, n in pairs(db.deBasket) do left[itemID] = n end
+	local basket = db and db.deBasket
+	if not (basket and next(basket)) then return list end
+	local CC = C_Container
+	local getSlots = CC and CC.GetContainerNumSlots
+	local getInfo = CC and CC.GetContainerItemInfo
+	if not (getSlots and getInfo) then return list end
+	wipe(leftScratch)
+	for itemID, n in pairs(basket) do leftScratch[itemID] = n end
+	local canDE = ns.CanDisenchant
 	for _, bag in ipairs(Bags()) do
-		for slot = 1, Slots(bag) do
-			local itemID, _, locked, link = SlotInfo(bag, slot)
-			if itemID and (left[itemID] or 0) > 0 and not locked
-				and (not ns.CanDisenchant or ns.CanDisenchant(itemID)) then
-				left[itemID] = left[itemID] - 1
-				list[#list + 1] = { bag = bag, slot = slot, id = itemID, link = link }
+		for slot = 1, getSlots(bag) or 0 do
+			local info = getInfo(bag, slot)
+			local itemID = info and info.itemID
+			if itemID and (leftScratch[itemID] or 0) > 0 and not info.isLocked
+				and (not canDE or canDE(itemID)) then
+				leftScratch[itemID] = leftScratch[itemID] - 1
+				list[#list + 1] = { bag = bag, slot = slot, id = itemID, link = info.hyperlink }
 			end
 		end
 	end
+	wipe(leftScratch)
 	return list
 end
 ns.BasketContents = Contents
 
 -- Count basket items in the bags without allocating per-slot entry tables.
 local function CountContents()
-	local db = DB()
-	if not (db and db.deBasket and next(db.deBasket)) then return 0 end
-	local left, n = {}, 0
-	for itemID, count in pairs(db.deBasket) do left[itemID] = count end
+	local db = ns.db
+	local basket = db and db.deBasket
+	if not (basket and next(basket)) then return 0 end
+	local CC = C_Container
+	local getSlots = CC and CC.GetContainerNumSlots
+	local getInfo = CC and CC.GetContainerItemInfo
+	if not (getSlots and getInfo) then return 0 end
+	wipe(leftScratch)
+	local n = 0
+	for itemID, count in pairs(basket) do leftScratch[itemID] = count end
+	local canDE = ns.CanDisenchant
 	for _, bag in ipairs(Bags()) do
-		for slot = 1, Slots(bag) do
-			local itemID, _, locked = SlotInfo(bag, slot)
-			if itemID and (left[itemID] or 0) > 0 and not locked
-				and (not ns.CanDisenchant or ns.CanDisenchant(itemID)) then
-				left[itemID] = left[itemID] - 1
+		for slot = 1, getSlots(bag) or 0 do
+			local info = getInfo(bag, slot)
+			local itemID = info and info.itemID
+			if itemID and (leftScratch[itemID] or 0) > 0 and not info.isLocked
+				and (not canDE or canDE(itemID)) then
+				leftScratch[itemID] = leftScratch[itemID] - 1
 				n = n + 1
 			end
 		end
 	end
+	wipe(leftScratch)
 	return n
 end
 
 -- First basket item in the bags, returning immediately without scanning remaining slots.
 local function FirstContent()
-	local db = DB()
-	if not (db and db.deBasket and next(db.deBasket)) then return nil end
-	local basket = db.deBasket
+	local db = ns.db
+	local basket = db and db.deBasket
+	if not (basket and next(basket)) then return nil end
+	local CC = C_Container
+	local getSlots = CC and CC.GetContainerNumSlots
+	local getInfo = CC and CC.GetContainerItemInfo
+	if not (getSlots and getInfo) then return nil end
+	local canDE = ns.CanDisenchant
 	for _, bag in ipairs(Bags()) do
-		for slot = 1, Slots(bag) do
-			local itemID, _, locked, link = SlotInfo(bag, slot)
-			if itemID and (basket[itemID] or 0) > 0 and not locked
-				and (not ns.CanDisenchant or ns.CanDisenchant(itemID)) then
-				return { bag = bag, slot = slot, id = itemID, link = link }
+		for slot = 1, getSlots(bag) or 0 do
+			local info = getInfo(bag, slot)
+			local itemID = info and info.itemID
+			if itemID and (basket[itemID] or 0) > 0 and not info.isLocked
+				and (not canDE or canDE(itemID)) then
+				targetBuf.bag, targetBuf.slot, targetBuf.id, targetBuf.link = bag, slot, itemID, info.hyperlink
+				return targetBuf
 			end
 		end
 	end
@@ -100,23 +130,34 @@ end
 -- A unit leaves the basket when it is no longer in the bags or the mail: disenchanted
 -- (with the button, by hand or by another addon), sold or traded.
 local function Prune()
-	local db = DB()
-	if not (db and db.deBasket and next(db.deBasket)) then return end
-	local inBags = {}
-	for _, bag in ipairs(Bags()) do
-		for slot = 1, Slots(bag) do
-			local itemID, count = SlotInfo(bag, slot)
-			if itemID then inBags[itemID] = (inBags[itemID] or 0) + (count or 1) end
+	local db = ns.db
+	local basket = db and db.deBasket
+	if not (basket and next(basket)) then return end
+	wipe(inBagsScratch)
+	local CC = C_Container
+	local getSlots = CC and CC.GetContainerNumSlots
+	local getInfo = CC and CC.GetContainerItemInfo
+	if getSlots and getInfo then
+		for _, bag in ipairs(Bags()) do
+			for slot = 1, getSlots(bag) or 0 do
+				local info = getInfo(bag, slot)
+				local itemID = info and info.itemID
+				if itemID then
+					inBagsScratch[itemID] = (inBagsScratch[itemID] or 0) + (info.stackCount or 1)
+				end
+			end
 		end
 	end
-	for itemID, n in pairs(db.deBasket) do
-		local keep = (inBags[itemID] or 0) + ((db.debought and db.debought[itemID]) or 0)
+	local debought = db.debought
+	for itemID, n in pairs(basket) do
+		local keep = (inBagsScratch[itemID] or 0) + ((debought and debought[itemID]) or 0)
 		if keep <= 0 then
-			db.deBasket[itemID] = nil
+			basket[itemID] = nil
 		elseif keep < n then
-			db.deBasket[itemID] = keep
+			basket[itemID] = keep
 		end
 	end
+	wipe(inBagsScratch)
 end
 
 ---------------------------------------------------------------------------
@@ -132,6 +173,10 @@ local function Clear()
 	button:SetAttribute("target-bag", nil)
 	button:SetAttribute("target-slot", nil)
 	button.target = nil
+end
+
+local function ClearNextFrame()
+	C_Timer.After(0, Clear)
 end
 
 -- Out of combat right before the click: aim the button at the next basket item.
@@ -189,10 +234,10 @@ end
 -- The basket window: shown when new basket items arrive in the bags, or when opened by hand
 -- (menu entry or key binding). Hidden again when it is empty, unless opened by hand, or with x.
 local holder
-local state = { manual = false, auto = false, last = 0 }
+local state = { manual = false, auto = false, last = 0, shownCount = nil }
 
 local function SavePosition()
-	local db = DB()
+	local db = ns.db
 	if not (db and holder) then return end
 	local point, _, relPoint, x, y = holder:GetPoint(1)
 	if point then db.basketPos = { point, relPoint, x, y } end
@@ -210,7 +255,8 @@ local function Create()
 	holder:SetScript("OnDragStart", function(self) if not InCombatLockdown() then self:StartMoving() end end)
 	holder:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() SavePosition() end)
 	if ns.Flat then ns.Flat(holder) end
-	local pos = DB() and DB().basketPos
+	local db = ns.db
+	local pos = db and db.basketPos
 	if pos then
 		holder:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
 	else
@@ -244,25 +290,33 @@ local function Create()
 	-- "cast on key down" setting says
 	button:SetAttribute("useOnKeyDown", false)
 	button:SetText(L["Disenchant (%d)"]:format(0))
+	state.shownCount = 0
 	button:SetScript("PreClick", Aim)
-	button:SetScript("PostClick", function() C_Timer.After(0, Clear) end)
+	button:SetScript("PostClick", ClearNextFrame)
 	button:HookScript("OnEnter", function(self)
 		GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
-		GameTooltip:AddLine("VendorFloor")
+		GameTooltip:AddLine(TITLE)
 		GameTooltip:AddLine(L["Disenchants the next item you bought on the disenchant tab: one click per item."], 1, 1, 1, true)
 		local list = Contents()
 		if list[1] then
 			GameTooltip:AddLine(" ")
 			local shown = {}
-			for _, e in ipairs(list) do shown[e.id] = shown[e.id] or { link = e.link, n = 0 } shown[e.id].n = shown[e.id].n + 1 end
+			for _, e in ipairs(list) do
+				local entry = shown[e.id]
+				if entry then
+					entry.n = entry.n + 1
+				else
+					shown[e.id] = { link = e.link, n = 1 }
+				end
+			end
 			local lines = 0
 			for _, e in pairs(shown) do
 				lines = lines + 1
 				if lines > 12 then break end
-				GameTooltip:AddLine(("%s ×%d"):format(e.link or "?", e.n))
+				GameTooltip:AddLine(format("%s ×%d", e.link or "?", e.n))
 			end
 		end
-		local key = GetBindingKey and GetBindingKey("CLICK " .. BUTTON_NAME .. ":LeftButton")
+		local key = GetBindingKey and GetBindingKey(BINDING_CLICK)
 		GameTooltip:AddLine(" ")
 		GameTooltip:AddLine(key and L["Key: %s"]:format(key) or L["Tip: set a key for it under Key Bindings > AddOns > VendorFloor."],
 			0.6, 0.6, 0.6, true)
@@ -279,7 +333,10 @@ function ns.UpdateBasket()
 	if n > state.last then state.auto = true end -- new basket items arrived in the bags
 	if n == 0 then state.auto = false end
 	state.last = n
-	button:SetText(L["Disenchant (%d)"]:format(n))
+	if state.shownCount ~= n then
+		state.shownCount = n
+		button:SetText(L["Disenchant (%d)"]:format(n))
+	end
 	button:SetEnabled(n > 0)
 	holder:SetShown((state.manual or state.auto) and KnowsDisenchant())
 end
@@ -294,7 +351,7 @@ function ns.ToggleBasket()
 		state.manual = true
 		if not KnowsDisenchant() then
 			if ns.Print then ns.Print(L["This character cannot disenchant."])
-			else DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. L["This character cannot disenchant."]) end
+			else DEFAULT_CHAT_FRAME:AddMessage(CHAT_PREFIX .. L["This character cannot disenchant."]) end
 		end
 	end
 	ns.UpdateBasket()
@@ -309,7 +366,7 @@ events:SetScript("OnEvent", function(_, event)
 	if event == "PLAYER_LOGIN" or event == "SPELLS_CHANGED" or event == "SKILL_LINES_CHANGED" then
 		knowsDeCache = nil
 	end
-	if not DB() then return end
+	if not ns.db then return end
 	if event == "PLAYER_LOGIN" then
 		Create()
 		if not InCombatLockdown() then Prune() end
@@ -327,4 +384,4 @@ events:SetScript("OnEvent", function(_, event)
 	ns.UpdateBasket()
 end)
 
-_G["BINDING_NAME_CLICK " .. BUTTON_NAME .. ":LeftButton"] = L["Disenchant next basket item"]
+_G["BINDING_NAME_" .. BINDING_CLICK] = L["Disenchant next basket item"]
