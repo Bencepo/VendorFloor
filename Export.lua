@@ -5,10 +5,19 @@
 -- into the web page bencepo.github.io/vendorfloor. Nothing is sent anywhere.
 
 local _, ns = ...
+local getmetatable, pairs, pcall, setmetatable, tostring, type =
+	getmetatable, pairs, pcall, setmetatable, tostring, type
+local floor, huge, min = math.floor, math.huge, math.min
+local format = string.format
+local tconcat, tsort = table.concat, table.sort
+
 local L = ns.L or setmetatable({}, { __index = function(_, key) return key end })
-local floor = math.floor
 local TITLE = "VendorFloor"
 local SITE = "bencepo.github.io/vendorfloor"
+
+local function ChatPrint(msg)
+	DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. msg)
+end
 
 local ARR_MT = { __arr = true }
 local function A(t) return setmetatable(t or {}, ARR_MT) end
@@ -17,7 +26,7 @@ local function EscapeChar(c)
 	if c == '"' then return '\\"'
 	elseif c == "\\" then return "\\\\"
 	elseif c == "\n" then return "\\n"
-	else return string.format("\\u%04x", c:byte()) end
+	else return format("\\u%04x", c:byte()) end
 end
 
 local function enc(v, out)
@@ -25,9 +34,9 @@ local function enc(v, out)
 	if t == "nil" then out[#out + 1] = "null"
 	elseif t == "boolean" then out[#out + 1] = v and "true" or "false"
 	elseif t == "number" then
-		if v ~= v or v == math.huge or v == -math.huge then out[#out + 1] = "null"
-		elseif v == floor(v) then out[#out + 1] = string.format("%.0f", v)
-		else out[#out + 1] = (string.format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
+		if v ~= v or v == huge or v == -huge then out[#out + 1] = "null"
+		elseif v == floor(v) then out[#out + 1] = format("%.0f", v)
+		else out[#out + 1] = (format("%.2f", v):gsub("0+$", ""):gsub("%.$", "")) end
 	elseif t == "string" then
 		out[#out + 1] = '"' .. v:gsub('[%c"\\]', EscapeChar) .. '"'
 	elseif t == "table" then
@@ -53,11 +62,20 @@ local function enc(v, out)
 		out[#out + 1] = "null"
 	end
 end
-ns.JsonEncode = function(v)
+
+function ns.JsonEncode(v)
 	local out = {}
 	enc(v, out)
-	return table.concat(out)
+	return tconcat(out)
 end
+
+local EXPORT_BACKDROP = {
+	bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
+	edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+	edgeSize = 16,
+	insets = { left = 4, right = 4, top = 4, bottom = 4 },
+}
+local EXPORT_HINT = L["Press Ctrl+C, then paste it at %s. Esc closes."]:format(SITE)
 
 local exportFrame
 local function showExport(text, summary)
@@ -73,9 +91,7 @@ local function showExport(text, summary)
 		win:SetScript("OnDragStart", win.StartMoving)
 		win:SetScript("OnDragStop", win.StopMovingOrSizing)
 		if win.SetBackdrop then
-			win:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background-Dark",
-				edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
-				insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+			win:SetBackdrop(EXPORT_BACKDROP)
 		end
 		win.title = win:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 		win.title:SetPoint("TOPLEFT", 14, -12)
@@ -107,7 +123,7 @@ local function showExport(text, summary)
 		exportFrame = win
 	end
 	exportFrame.text = text
-	exportFrame.info:SetText((summary or "") .. "\n" .. L["Press Ctrl+C, then paste it at %s. Esc closes."]:format(SITE))
+	exportFrame.info:SetText((summary or "") .. "\n" .. EXPORT_HINT)
 	exportFrame.edit:SetText(text)
 	exportFrame:Show()
 	exportFrame.edit:SetFocus()
@@ -127,20 +143,23 @@ local function buildExport()
 	local days = A()
 	local keys = {}
 	for k in pairs(ledger.days) do keys[#keys + 1] = k end
-	table.sort(keys)
-	for _, k in ipairs(keys) do
+	tsort(keys)
+	for i = 1, #keys do
+		local k = keys[i]
 		local d = ledger.days[k]
-		days[#days + 1] = { d = k, buys = d.buys, spent = d.spent, sold = d.sold, soldCost = d.soldCost }
+		days[i] = { d = k, buys = d.buys, spent = d.spent, sold = d.sold, soldCost = d.soldCost }
 	end
 	local items = {}
-	for id, it in pairs(db.items or {}) do
-		items[#items + 1] = { id = id, name = it.name, buys = it.buys or 0, units = it.units or 0, spent = it.spent or 0,
-			value = it.value or 0, soldUnits = it.soldUnits or 0, sold = it.sold or 0, soldCost = floor(it.soldCost or 0),
-			heldSec = it.heldSec and floor(it.heldSec) or nil, heldUnits = it.heldUnits }
+	if db.items then
+		for id, it in pairs(db.items) do
+			items[#items + 1] = { id = id, name = it.name, buys = it.buys or 0, units = it.units or 0, spent = it.spent or 0,
+				value = it.value or 0, soldUnits = it.soldUnits or 0, sold = it.sold or 0, soldCost = floor(it.soldCost or 0),
+				heldSec = it.heldSec and floor(it.heldSec) or nil, heldUnits = it.heldUnits }
+		end
+		tsort(items, ByItemProfit)
 	end
-	table.sort(items, ByItemProfit)
 	local top = A()
-	for i = 1, math.min(#items, MAX_ITEMS) do top[#top + 1] = items[i] end
+	for i = 1, min(#items, MAX_ITEMS) do top[i] = items[i] end
 	local name, realm = UnitName("player"), GetRealmName and GetRealmName() or ""
 	return { vendorFloor = 1, version = ns.VERSION, date = date("%Y-%m-%d %H:%M"), ts = time(),
 		char = { name = name, realm = realm }, minProfit = db.minProfit,
@@ -152,14 +171,13 @@ end
 function ns.ShowExport()
 	local ok, data = pcall(buildExport)
 	if not ok or not data then
-		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r " .. L["Export failed: %s"]:format(tostring(data)))
+		ChatPrint(L["Export failed: %s"]:format(tostring(data)))
 		return
 	end
-	local out = {}
-	enc(data, out)
+	local json = ns.JsonEncode(data)
 	local summary = L["%d buys, profit %s, still to sell %s"]:format(data.total.buys,
 		ns.Money(data.total.profit), ns.Money(data.total.unsoldValue))
-	showExport(table.concat(out), summary)
+	showExport(json, summary)
 end
 
 ---------------------------------------------------------------------------
@@ -176,7 +194,7 @@ local function MinimapIcon(name, icon, db, onClick, onTooltip)
 	local obj = ldb:GetDataObjectByName(name) or ldb:NewDataObject(name, {
 		type = "launcher", label = name, icon = icon,
 		OnClick = function(_, button) onClick(button) end,
-		OnTooltipShow = function(tip) onTooltip(tip) end,
+		OnTooltipShow = onTooltip,
 	})
 	if not dbi:IsRegistered(name) then dbi:Register(name, obj, db) end
 	return { SetShown = function(_, show) if show then dbi:Show(name) else dbi:Hide(name) end end }
@@ -193,16 +211,20 @@ local function MinimapClick(button)
 	end
 end
 
+local function RowProfit(row)
+	return row and floor((row.sold or 0) - (row.soldCost or 0)) or 0
+end
+
 local function MinimapTooltip(tip)
-	tip:AddLine("VendorFloor " .. (ns.VERSION or ""))
+	tip:AddLine(TITLE .. " " .. (ns.VERSION or ""))
 	local db = ns.db
 	local t = db and db.total
 	if t and ns.Money then
 		local today = db.days and db.days[date("%Y-%m-%d")]
 		local unsoldValue = 0
 		if ns.Unsold then _, unsoldValue = ns.Unsold() end
-		tip:AddDoubleLine(L["Profit today"], ns.Money(today and floor((today.sold or 0) - (today.soldCost or 0)) or 0), 1, 1, 1, 1, 1, 1)
-		tip:AddDoubleLine(L["Profit total"], ns.Money(floor((t.sold or 0) - (t.soldCost or 0))), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Profit today"], ns.Money(RowProfit(today)), 1, 1, 1, 1, 1, 1)
+		tip:AddDoubleLine(L["Profit total"], ns.Money(RowProfit(t)), 1, 1, 1, 1, 1, 1)
 		tip:AddDoubleLine(L["Still to sell"], ns.Money(unsoldValue or 0), 1, 1, 1, 1, 1, 1)
 	end
 	tip:AddLine(" ")
@@ -229,12 +251,12 @@ local minimapEvents = CreateFrame("Frame")
 minimapEvents:RegisterEvent("PLAYER_LOGIN")
 minimapEvents:SetScript("OnEvent", function()
 	if not ns.db then return end
-	local ok, b = pcall(MinimapIcon, "VendorFloor", "Interface\\AddOns\\VendorFloor\\Icons\\minimap",
+	local ok, b = pcall(MinimapIcon, TITLE, "Interface\\AddOns\\VendorFloor\\Icons\\minimap",
 		MinimapSettings(), MinimapClick, MinimapTooltip)
 	if ok then
 		minimapButton = b
 	else
-		DEFAULT_CHAT_FRAME:AddMessage("|cff33ff99VendorFloor:|r minimap button failed: " .. tostring(b))
+		ChatPrint("minimap button failed: " .. tostring(b))
 	end
 end)
 
